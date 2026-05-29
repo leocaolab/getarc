@@ -1,0 +1,37 @@
+A.R.C. License (v0.5, 2026-05-29)
+
+Copyright (c) 2026 leocaolab. All rights reserved.
+
+You may use the arc binaries and the A.R.C. tooling distributed via this
+repository, for any purpose, personal or commercial, including inside
+an organization, without payment.
+
+You may not:
+
+  1. Redistribute the binaries. Link to this repository instead so users
+     get current releases. Vendoring the binary into another distribution,
+     installer, or product is not permitted without prior written
+     agreement.
+
+  2. Reverse-engineer, decompile, disassemble, or attempt to derive the
+     source of the arc engine binary.
+
+  3. Use the arc name, logo, or trademarks to imply endorsement of, or
+     affiliation with, your product or service.
+
+No warranty. The software is provided "as is", without warranty of any
+kind, express or implied. In no event shall the copyright holder be
+liable for any claim, damages, or other liability arising from the use
+of the software.
+
+The arc engine source is not distributed under this license. The wrapper
+projects (arc-vscode, arc-skills, arc-mcp, homebrew-arc) are released
+under their own MIT licenses in their respective repositories.
+
+These terms may be revised in future versions. Continued use of newer
+binary releases constitutes acceptance of the terms shipped with each
+release.
+
+For questions, alternate-use requests, or commercial agreements:
+open an issue on https://github.com/leocaolab/getarc or contact via
+the email listed in the repo profile.
