@@ -19,29 +19,56 @@ free downloads. See [LICENSE](LICENSE).
 
 ## Why not just ask an agent to review?
 
+### 1. The perception vs. the reality
+
+![Two panels. Left, "The perception: grand codebase projection" — people imagine the agent standing before a giant holographic projection of the whole codebase, saying "Amazing! It can see everything and make perfect high-level decisions!" Right, "The reality: localized telescope patching" — the agent actually squints through a telescope at one small block of code, drowning in tangled wires, with no visible context: "I can only see one small block at a time! This blind, line-by-line review is a nightmare."](perception-vs-reality.png)
+
+People picture an agent reviewing your code like a *grand projection* —
+it sees **everything** and makes perfect high-level calls. The reality
+is a **telescope**: attention is finite, so the agent squints at one
+small block at a time, with almost no context around it. It never holds
+the whole codebase at once.
+
+### 2. So the review is buckshot
+
 ![Two panels. Left, "Agent's review (unsystematic)": a robot sprays a codebase wall with a machine gun, leaving scattered holes labelled MISSING BUG, SECURITY HOLE, LOGIC ERROR MISSED, MAJOR OMISSION. Right, "Our systematic review (thorough)": a code-review engine and robotic rollers lay complete, uniform coverage over the wall — results: all errors caught, final verification OK.](agent-vs-arc.png)
 
-You can — ask Claude or Codex to "review this codebase" and it *feels*
-thorough. But an agent review isn't **systematic**: no fixed rule set,
-no whole-repo pass, no memory of what it checked last time. It's
-buckshot — a few shots land, most miss, and the bugs live in the gaps.
-Re-run it and you get different holes.
+Because it only ever sees a narrow slice, an agent's review isn't
+**systematic**: no fixed rule set, no whole-repo pass, no memory of what
+it checked last time. It's buckshot — a few shots land, most miss, and
+the bugs live in the gaps. Re-run it and you get different holes.
 
 arc is the other thing by construction. **Deterministic recall hooks**
 sweep the *whole* codebase and gate the LLM judge on their signals;
 **rubrics** pin the rules; the **finding-entity model** remembers every
 finding across runs, so nothing silently drops. The model is smart —
-the system is what makes it thorough, with no big omissions. (More in
-[§ What arc actually does](#what-arc-actually-does).)
+the system is what makes it thorough, with no big omissions.
 
-**The philosophy, in one line:** review is a *coverage* problem, not an
-intelligence problem. arc goes for coverage, aims the rules squarely at
-the mistakes agents actually make (there's even a rubric for
-LLM-generated code smells), and turns every one into something
+### 3. And left unmeasured, the codebase rots
+
+![One panel, "The problem we are solving: spaghetti agent programming" — a frazzled AI robot tangled in a mess of spaghetti wiring, slapping a band-aid over code in the wrong place, surrounded by warnings: 5 broken connections (dangling threads, dead-end paths) and 6 identical redundant logic implementations. Speech bubble: "It's not simplification... it's overwriting in the wrong places! And now there are 5 threads and 6 identical implementations!"](spaghetti-rot.png)
+
+The same blindness compounds. Patch after patch, the agent overwrites
+in the wrong places, leaves dead-ends, and re-implements the same logic
+six times — because it can't see that it already exists. That's **rot**,
+and it's why agent-driven velocity flattens and then goes **negative**:
+eventually there are so many broken paths and duplicates that the agent
+itself can't find its way. arc **detects and measures** that rot
+(`arc rot` — god-modules, cross-file duplication, dead code, broken
+layering, weak types) and hands you the **diagnosis**, finding by
+finding, so you can treat it before it compounds.
+
+### The philosophy, in one line
+
+Review is a **coverage** problem, not an intelligence problem. arc goes
+for coverage, aims the rules squarely at the mistakes agents actually
+make (there's even a rubric for LLM-generated code smells), measures how
+much your codebase has rotted, and turns every problem into something
 **visible, manageable, and quantifiable** — a tracked finding with a
 status, a history, and a fingerprint, not a line in a chat log that
 scrolls away. You see the whole board, act on each finding, and measure
-whether you're converging.
+whether you're converging. (More in
+[§ What arc actually does](#what-arc-actually-does).)
 
 ---
 
