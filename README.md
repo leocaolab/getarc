@@ -92,15 +92,9 @@ arc --version
 
 ### Intel Mac / other targets
 
-Build from source via Rust (CLI is pure Rust, no other runtime needed):
-
-```bash
-# arc engine source isn't public — see § "Why no source link" below.
-# For Intel Mac users specifically: use the Apple Silicon binary
-# under Rosetta 2 if you have it installed.
-```
-
-If you need an Intel Mac native binary, open an issue.
+The arc engine source isn't public, so there's no from-source build. On
+an **Intel Mac**, run the Apple Silicon binary above under Rosetta 2. If
+you need a native Intel-Mac (or other-target) binary, open an issue.
 
 ---
 
