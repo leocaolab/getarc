@@ -17,6 +17,25 @@ free downloads. See [LICENSE](LICENSE).
 
 ---
 
+## Why not just ask an agent to review?
+
+![Two panels. Left, "Agent's review (unsystematic)": a robot sprays a codebase wall with a machine gun, leaving scattered holes labelled MISSING BUG, SECURITY HOLE, LOGIC ERROR MISSED, MAJOR OMISSION. Right, "Our systematic review (thorough)": a code-review engine and robotic rollers lay complete, uniform coverage over the wall — results: all errors caught, final verification OK.](agent-vs-arc.png)
+
+You can — ask Claude or Codex to "review this codebase" and it *feels*
+thorough. But an agent review isn't **systematic**: no fixed rule set,
+no whole-repo pass, no memory of what it checked last time. It's
+buckshot — a few shots land, most miss, and the bugs live in the gaps.
+Re-run it and you get different holes.
+
+arc is the other thing by construction. **Deterministic recall hooks**
+sweep the *whole* codebase and gate the LLM judge on their signals;
+**rubrics** pin the rules; the **finding-entity model** remembers every
+finding across runs, so nothing silently drops. The model is smart —
+the system is what makes it thorough, with no big omissions. (More in
+[§ What arc actually does](#what-arc-actually-does).)
+
+---
+
 ## Install
 
 ### macOS (Apple Silicon)
