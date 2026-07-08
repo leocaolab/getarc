@@ -7,6 +7,11 @@ forth until they converge or you step in. State lives in
 
 Single Rust binary. macOS (Apple Silicon) + Linux x86_64.
 
+> **Preview / beta.** arc 0.8.0 is an early public preview. It's free,
+> it works today, and it already reviews and fixes its own codebase —
+> but expect rough edges. Please kick the tyres and
+> [open issues](#questions--bugs); tester feedback is what shapes 1.0.
+
 **Free.** Use it for whatever you want. Source is closed; binaries are
 free downloads. See [LICENSE](LICENSE).
 
@@ -19,7 +24,7 @@ free downloads. See [LICENSE](LICENSE).
 ```bash
 curl -L https://github.com/leocaolab/getarc/releases/latest/download/arc-darwin-arm64.tar.gz | tar xz
 sudo mv arc /usr/local/bin/
-arc --version       # → arc 0.5.0
+arc --version       # → arc 0.8.0
 ```
 
 ### Linux x86_64
@@ -53,9 +58,14 @@ arc init                              # interactive: pick Critic + Fixer provide
 export GEMINI_API_KEY=...              # or whatever arc init told you to set
 arc review                            # Critic reviews, files findings, does NOT edit code
 arc report                            # current findings
-arc fix                               # Fixer fixes all open findings
-arc auto                              # full loop: review → fix → re-review → commit
+arc fix                               # Fixer fixes open findings (merges back when the build passes)
+arc auto                              # full loop: review → fix → verify → merge → commit
 ```
+
+Config is two files: `arc init` writes `<repo>/.arc/config.toml`
+(role → provider mapping, safe to commit — no secrets); your providers +
+API keys live in `~/.tars/config.toml`, which is never committed. See the
+[user guide](GUIDE.md#4-configuration).
 
 Full operations manual + every flag: `arc <cmd> --help`.
 
@@ -73,30 +83,44 @@ Each release tarball ships:
 
 ## VS Code extension
 
-Bundled in the tarball above:
+**This is the best way to use arc.** The extension (v0.2.21) turns the
+findings board into a live panel inside your editor — read the debate,
+jump to code, apply verdicts without leaving VS Code.
+
+### Install the .vsix
+
+The `arc-vscode.vsix` file ships **inside every release tarball** (next
+to the `arc` binary), so if you unpacked the tarball above you already
+have it:
 
 ```bash
 code --install-extension arc-vscode.vsix
 ```
 
-Or download just the extension:
+Prefer to grab just the extension? Download it standalone from the
+release:
 
 ```bash
 curl -LO https://github.com/leocaolab/getarc/releases/latest/download/arc-vscode.vsix
 code --install-extension arc-vscode.vsix
 ```
 
-Once installed:
+(Or in VS Code: Command Palette → **Extensions: Install from VSIX…** →
+pick `arc-vscode.vsix`.)
+
+### What it gives you
 
 - **Findings tree** rooted on `crate / file → finding`, deduped by
   fingerprint. `✨` marks findings first-seen in the latest review.
 - **Per-issue webview** with the full Critic↔Fixer debate, clickable
-  Locations (file:line jumps to source, commit-cell opens a real diff
-  of what that commit changed).
-- **Inline squiggles**, **CodeLens**, **Cmd+. lightbulb** for the
+  Locations (file:line jumps to source, the commit cell opens a real diff
+  of what that round changed).
+- **Inline squiggles**, **CodeLens**, and **Cmd+. lightbulb** for the
   verdict actions (verify / mark-fixed / won't-fix / agreed / reopen /
   escalate / mark-duplicate).
-- **Status-bar `⚡ Arc Scan`** + per-file debounced scanOnSave.
+- **Status-bar `⚡ Arc Scan`** + per-file debounced scan-on-save.
+- **Auto-refresh** — the panel watches `.arc/` and updates itself as arc
+  moves findings across the board, so you always see the current state.
 
 Extension source: [leocaolab/arc-vscode](https://github.com/leocaolab/arc-vscode) (MIT).
 Coming soon to Open VSX (Cursor / VSCodium native discoverability).
@@ -129,14 +153,16 @@ converges to fixed / verified / won't-fix / escalated.
 
 **One row per real bug.** Findings are identified by
 `fingerprint(file, snippet, rule_id)` and carry an append-only event
-timeline (`found → fixed → reopened → verified`). Re-reviewing the
-same code doesn't create duplicates; regressions reopen the same
+timeline (`found → fixed → merged → verified → closed`). Re-reviewing
+the same code doesn't create duplicates; a regression reopens the same
 finding.
 
 **Fix actually fixes.** The Fixer runs Claude Code CLI (or Codex CLI)
 in an isolated git worktree, edits real files, and the patch merges
 back to your tree only after the worktree compiled. Conflicts are
-saved as a `.patch` and never silently apply.
+saved as a `.patch` and never silently apply. Verification is the
+Critic re-judging the fix — under `arc auto` a fix is never merged
+until it verifies.
 
 **You stay in control.** Everything runs locally. Findings + the
 debate + the SQLite database live in `<repo>/.arc/` — no daemon, no

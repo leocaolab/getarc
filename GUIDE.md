@@ -4,11 +4,15 @@ The deeper manual. For install + the 30-second pitch, see the
 [README](README.md). Every command's exhaustive flags live in
 `arc <cmd> --help`; this guide is the workflow.
 
+> **Preview / beta (0.8.0).** arc is an early public preview — free and
+> usable today, rough edges expected. Please
+> [open issues](#questions--bugs) as you hit them.
+
 ---
 
 ## The loop
 
-arc has one shape: **review → read → fix → verify → land**. Everything
+arc has one shape: **review → read → fix → verify → close**. Everything
 below is a station on that line.
 
 ```
@@ -16,17 +20,26 @@ arc review          Critic reads your code, files findings. Touches NOTHING.
    ↓
 arc report          See the findings (or open the VS Code panel).
    ↓
-arc fix / arc auto  Fixer edits files in an isolated worktree.
+arc fix / arc auto  Fixer edits files in an isolated worktree, merges the fix in.
    ↓
-arc verify          Verifier re-checks each fix → verified / reopen / escalate.
+arc verify          The Critic re-judges each fix → verified / reopen / escalate.
    ↓
-(merge)             A fix lands in your tree only after it compiles.
+arc close           A finding that's both merged AND verified is closed.
 ```
+
+A finding walks a single lifecycle:
+
+```
+found → fixed → merged → verified → closed
+```
+
+`closed` is the only terminal — the *route* it took (fixed & verified,
+an agreed won't-fix, or a duplicate) is preserved in the timeline. A
+regression reopens the **same** finding, it never spawns a duplicate.
 
 State lives in `<repo>/.arc/` (SQLite + SARIF). No daemon, no server.
 A finding is one row, identified by its database id — the handle you
-pass to `arc fix 42`. Re-reviewing the same code never duplicates it;
-a regression reopens the same finding.
+pass to `arc fix 42`. Re-reviewing the same code never duplicates it.
 
 ---
 
@@ -37,19 +50,34 @@ arc init                 # interactive: pick a Critic provider + a Fixer provide
 export GEMINI_API_KEY=…   # or whatever arc init told you to set
 ```
 
-`arc init` writes `.arc/config.toml` (see [§4](#4-configuration)). The
-two roles that matter:
+Config lives in **two files** (full detail in [§4](#4-configuration)):
 
-- **Critic** — finds bugs. A fast, cheap model is ideal (e.g. Gemini Flash).
+- `<repo>/.arc/config.toml` — just the role → provider-name mapping.
+  `arc init` writes it; safe to commit (no secrets).
+- `~/.tars/config.toml` — your provider definitions and where the API
+  keys come from. **Never commit this.**
+
+`arc init` is interactive. In CI / a non-TTY it instead writes
+`.arc/config.toml.example` + `.arc/.gitignore` and exits non-zero with
+copy-and-edit instructions.
+
+The two roles that matter:
+
+- **Critic** — finds bugs, and re-judges fixes at verify time. A fast,
+  cheap model is ideal (e.g. Gemini Flash).
 - **Fixer** — edits files. This must be a tool-capable coding CLI
   (**Claude Code CLI** or **Codex CLI**) — it reads, edits, and runs
   commands in the worktree. A plain chat API can't edit files.
 
-VS Code extension (optional but recommended):
+VS Code extension (optional but strongly recommended). The
+`arc-vscode.vsix` ships inside every release tarball; install it with:
 
 ```bash
 code --install-extension arc-vscode.vsix
 ```
+
+(Or in VS Code: Command Palette → **Extensions: Install from VSIX…**.)
+See [§2](#in-the-vs-code-panel) for what it shows.
 
 ---
 
@@ -80,8 +108,11 @@ Click a finding in the tree. The panel is built to be read top-to-bottom:
   (Critic / Fixer), **when**, the rule it's grounded in
   (`Based on <rule_id>` + a one-line explanation of that rule), the
   message, and links. A finding's life reads top to bottom:
-  **Critic** (found it) → **Fixer** (fixed it) → **Critic** (verified)
-  → **Fixer** (merged to main).
+  **Critic** (found it) → **Fixer** (fixed it) → merged into your tree →
+  **Critic** (verified it) → closed.
+
+The panel **auto-refreshes**: it watches `.arc/` and redraws as arc
+moves findings across the board, so you never re-open it by hand.
 
 ### Without the extension (CI, other editors)
 
@@ -96,27 +127,38 @@ SARIF viewer (or your CI's code-scanning tab) at it.
 arc fix                 # fix every open finding
 arc fix <path>          # fix the findings in one file or folder
 arc fix 42              # fix one finding by its id
+arc fix --no-commit     # fix, but leave each on its arc/fix-<id> branch (stop at `fixed`)
 arc verify              # re-check all fixed findings
 arc verify 42           # re-check one
+arc close               # close findings that are BOTH merged AND verified
 ```
 
 Each fix runs in an **isolated git worktree**. The Fixer edits real
-files there; arc reads the resulting diff. The patch merges back into
-your tree **only after it compiles** (a `cargo check` / build gate) — a
-fix that breaks the build is never landed. Conflicts are saved as a
-`.patch` under `.arc/fixes/` and never silently applied.
+files there; arc reads the resulting diff. A bare `arc fix` is fully
+automatic: on a clean build it **merges the fix back onto your tree**
+(the finding goes `fixed → merged`). A fix that breaks the build is
+never landed; conflicts are saved as a `.patch` under `.arc/fixes/` and
+never silently applied. Pass `--no-commit` to stop at `fixed` and keep
+the fix on its `arc/fix-<id>` branch for manual review.
+
+`arc verify` then has the Critic re-judge a fixed finding →
+`verified` / `reopen` / `escalate`. `arc close` retires a finding that
+is **both merged and verified** (it also runs automatically at the tail
+of `arc verify` and `arc auto`).
 
 ### Hands-off: `arc auto`
 
 ```bash
-arc auto                       # review → fix → re-review → … → commit
+arc auto                       # review → fix → verify → merge → commit
 arc auto --file <path>         # scope the whole loop to one file
-arc auto --max-turns 5         # cap the convergence rounds
+arc auto --max-turns 5         # cap the convergence rounds (default 3)
 arc auto --no-commit           # apply fixes but stop before committing
 ```
 
-`arc auto` runs the full convergence loop and commits when it
-converges. Each auto-fix commit carries a `Review-Id:` git trailer.
+`arc auto` runs the full convergence loop hands-off. Crucially, **verify
+gates the merge**: a fix is never merged unverified — it must pass the
+Critic's re-judgement first. When a finding is both merged and verified,
+`auto` closes it. Each auto-fix commit carries a `Review-Id:` git trailer.
 
 ### Manual control
 
@@ -138,35 +180,128 @@ the Fixer's job, not yours — there's no such button.)
 
 ## 4. Configuration
 
-`.arc/config.toml` (written by `arc init`, committed or gitignored as
-you like). Two halves: **providers** (how to reach a model) and
-**roles** (which provider does which job).
+arc's model layer **is** [tars](https://github.com/leocaolab/tars), a
+provider-abstraction library. Config splits across **two files** — one
+private, one committable:
+
+| File | Holds | Commit? |
+|---|---|---|
+| `~/.tars/config.toml` (or `$ARC_TARS_CONFIG`) | provider definitions + where API keys come from (`[providers.*]`) | **never** |
+| `<repo>/.arc/config.toml` | role → provider-name mapping (`[roles]`) + optional tuning | yes — no secrets |
+
+`arc init` sets up both interactively. In CI / a non-TTY it writes
+`.arc/config.toml.example` + `.arc/.gitignore` and exits non-zero with
+copy-and-edit instructions instead.
+
+### Providers — `~/.tars/config.toml`
+
+Each `[providers.<name>]` block says how to reach one model. The API key
+never lives in the file — it's referenced by env-var name:
 
 ```toml
 [providers.gemini_flash]
 type = "gemini"
 default_model = "gemini-2.5-flash"
+auth = { kind = "secret", secret = { source = "env", var = "GEMINI_API_KEY" } }
 
 [providers.claude_cli]
 type = "claude_cli"
-timeout_secs = 900            # raise it for big files — the fixer's
-                              # build-gate compile can be slow on a
-                              # large workspace (default is 300s)
-
-[roles]
-critic  = "gemini_flash"      # FIND bugs — fast + cheap
-fixer   = "claude_cli"        # FIX bugs — must be a tool-capable CLI
+default_model = "claude-sonnet-4-5"
+tools = "default"             # let the agent Read/Edit/Bash in the worktree
+timeout_secs = 900            # raise for big workspaces — the fixer's
+                              # build-gate compile is slow when cold
 ```
 
-Provider `type`s: `gemini`, `anthropic`, `openai`, `claude_cli`,
-`claude_sdk`, `codex_cli`, or any local OpenAI-compatible endpoint.
-Per-provider keys (`timeout_secs`, `api_key_env`, `thinking`) are read
-by arc and stripped before the model layer sees them.
+Supported `type`s: `gemini`, `anthropic`, `openai`, `deepseek`,
+`claude_cli`, `claude_sdk`, `gemini_cli`, `codex_cli`, or `openai_compat`
+(a local endpoint — LM Studio / vLLM — with a `base_url`). `deepseek` is
+built into tars, so you can reference it by name without a block.
 
-**Rubrics** — the rule sets the Critic reviews against — live under
-`rubrics/*.yaml`. Each rule carries a one-line `description` (that's the
-"Based on…" explanation the panel shows). The defaults ship inside the
-binary; drop your own YAML in `rubrics/` to extend them.
+### Roles — `<repo>/.arc/config.toml`
+
+Map each of arc's jobs to a provider you defined above:
+
+```toml
+[roles]
+default   = "claude_cli"     # fallback for any unset role
+critic    = "gemini_flash"   # FIND bugs (and re-judge fixes at verify time)
+fixer     = "claude_cli"     # FIX bugs — must be a tool-capable CLI
+# critic_l4 = "gemini_flash" # optional: override the per-file (L4) critic
+# critic_l5 = "gemini_flash" # optional: override the structural-rot (L5) critic
+# audit     = "gemini_flash" # optional: a third-opinion role
+```
+
+There is **no `verifier` role** — verification is the **Critic
+re-judging** a fix, so it runs under the `critic` role. `.arc/config.toml`
+may also carry optional tuning sections (`[review]`, `[gate]`,
+`[merge]`); see `arc init`'s output.
+
+---
+
+## 4a. Rubrics
+
+A **rubric** is a YAML rule set the Critic reviews against. The defaults
+ship embedded in the binary; each rule carries a one-line `description`
+that's exactly the "Based on …" explanation the VS Code panel shows on a
+finding.
+
+### The set arc ships
+
+- **L4 — per-file contracts** (`l4_contracts.yaml`): typed-error
+  discipline — `untyped-error-origin`, `missing-error-classification`,
+  `swallowed-exception`.
+- **L5 — structure / architecture** (`l5_architecture.yaml`): god-modules,
+  cross-file duplication, dead code, layering / dependency-direction
+  violations, weak / stringly-typed state, inheritance fanout,
+  driver-seam misuse.
+- **Per-language best practices** — one file per language, applied only to
+  files in that language. `rust_best_practices.yaml` (no-unwrap-in-library,
+  stringly-typed-domain-value, parse-dont-validate, clone-in-hot-path),
+  `typescript_best_practices.yaml` (type-assertion-bypasses-checker),
+  plus `python`, `go`, `java`. arc's language graph covers 8 languages
+  (rust/python/ts/js/go/java/c/cpp); the best-practices rubrics ship for
+  the five above today, with more landing.
+- **security_common.yaml** (validate-external-input, no-hardcoded-secrets)
+  and **fp_lens.yaml** — a functional-programming lens
+  (partial-function-as-total).
+
+### What we dogfood
+
+arc reviews its **own** Rust codebase, so the rubrics that fire on it are
+L4 contracts + L5 architecture + rust_best_practices + security_common +
+fp_lens. Real findings that surfaced this way, and got fixed:
+
+- an untyped error stringified at a boundary (`untyped-error-origin`);
+- a hardcoded XOR key (`no-hardcoded-secrets`);
+- a diff helper using `--ignore-all-space`, which would hide
+  whitespace-only changes from the verifier.
+
+### Add your own rules
+
+Drop a YAML file at `<your-repo>/rubrics/<name>.yaml`. arc reads it at
+runtime alongside the embedded defaults — no rebuild. A rule's canonical
+id is `<file-stem>::<rule.name>` (so `rubrics/my_rules.yaml` with a rule
+`no-foo` → `my_rules::no-foo`, the id you'll see in reports, the panel,
+and `--enable`/`--disable`). The format:
+
+```yaml
+name: My Rules
+description: >
+  One-line summary of what this rubric set covers.
+language: [rust, python]     # applicability — never fires on other languages
+rules:
+  - name: no-foo
+    status: stable            # stable | experimental | deprecated (fires-by-default gate)
+    description: |
+      ANTI-PATTERN: <what's wrong and the concrete hazard it causes>.
+      It is instantiated by <forms/examples>, NOT any single token.
+      FLAG <the concrete call site>. EXEMPT <known false-positive contexts>.
+```
+
+Rules are checked by the Critic during `arc review` (L4 per-file); the
+top-level `language: [...]` filter decides which files a rubric applies
+to. `status: experimental` rules stay off until you pass `--experimental`
+(or `--enable <id>`).
 
 ---
 
@@ -190,13 +325,14 @@ arc review --commit HEAD
 
 | Command | Does |
 |---|---|
-| `arc init` | configure providers + roles → `.arc/config.toml` |
-| `arc review` | Critic reviews; files findings; never edits |
-| `arc scan` | deterministic structural-rot scan (no LLM) |
+| `arc init` | write the role→provider mapping → `.arc/config.toml` |
+| `arc review` | Critic reviews per-file (L4); files findings; never edits |
+| `arc rot` | whole-repo structural-rot review (L5); AST-detect then LLM-confirm (`--no-judge` = detect only) |
 | `arc report` | the current board (`--new`, `--status <s>`) |
-| `arc fix [path\|id]` | Fixer repairs open findings |
-| `arc auto` | autonomous review→fix→re-review→commit |
-| `arc verify [id]` | Verifier re-checks fixes |
+| `arc fix [path\|id]` | Fixer repairs open findings; auto-merges on a clean build |
+| `arc auto` | autonomous review→fix→verify→merge→commit |
+| `arc verify [id]` | Critic re-checks fixes → verified / reopen / escalate |
+| `arc close [id]` | close findings that are both merged and verified |
 | `arc resolve <id> --as <state>` | set a finding's state manually |
 | `arc ack <id>` | acknowledge (→ agreed) |
 | `arc revert` | undo one fix/auto run's commits |
