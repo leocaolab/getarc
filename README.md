@@ -177,21 +177,23 @@ pick `arc-vscode.vsix`.)
 - **Auto-refresh** — the panel watches `.arc/` and updates itself as arc
   moves findings across the board, so you always see the current state.
 
-Extension source: [leocaolab/arc-vscode](https://github.com/leocaolab/arc-vscode) (MIT).
-Coming soon to Open VSX (Cursor / VSCodium native discoverability).
+The extension ships as a free `.vsix` in every release — see § above.
 
 ---
 
 ## Integrations
 
-| Surface | Repo | License |
-|---|---|---|
-| VS Code extension | [`leocaolab/arc-vscode`](https://github.com/leocaolab/arc-vscode) | MIT |
-| Claude Code skill | [`leocaolab/arc-skills`](https://github.com/leocaolab/arc-skills) | MIT |
-| MCP server (Cursor / Claude Desktop / Continue / Claude Code) | [`leocaolab/arc-mcp`](https://github.com/leocaolab/arc-mcp) | MIT |
-| Homebrew tap | [`leocaolab/homebrew-arc`](https://github.com/leocaolab/homebrew-arc) | MIT |
+- **VS Code extension** — a free `.vsix`, bundled in every release
+  tarball (and downloadable on its own). See
+  [§ VS Code extension](#vs-code-extension).
+- **Claude Code skill** — MIT, right here in this repo:
+  [`skill/`](skill/). Drop `skill/SKILL.md` into `~/.claude/skills/arc-review/`
+  and Claude drives `arc` for you — it even auto-installs the binary on
+  first use.
 
-All the wrappers are open. The engine is closed.
+The CLI itself runs on [tars](https://github.com/leocaolab/tars) for
+provider access (Anthropic / OpenAI / Gemini / Claude CLI / Codex CLI /
+local OpenAI-compatible endpoints).
 
 ---
 
@@ -233,20 +235,7 @@ Free for any use (personal, commercial, internal). You may not:
 redistribute the binaries (link to this repo instead), reverse-engineer,
 or decompile. See [LICENSE](LICENSE) for the full text.
 
-The arc engine source is not public — see § "Why no source link" below.
-
----
-
-## Why no source link
-
-The arc engine is closed because the detectors (~10 today, ~16 on the
-queue), the multi-language graph (8 langs), the finding-entity
-alignment model, and the webview-to-SARIF emission pipeline took
-real iteration against real dogfood. AI-era moats are execution
-speed + iteration, not source secrecy — so the wrappers (extension,
-skill, MCP server) are open, and the engine isn't.
-
-If that policy ever changes, this section will say so.
+The arc engine source is not public.
 
 ---
 
