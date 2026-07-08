@@ -34,6 +34,15 @@ finding across runs, so nothing silently drops. The model is smart —
 the system is what makes it thorough, with no big omissions. (More in
 [§ What arc actually does](#what-arc-actually-does).)
 
+**The philosophy, in one line:** review is a *coverage* problem, not an
+intelligence problem. arc goes for coverage, aims the rules squarely at
+the mistakes agents actually make (there's even a rubric for
+LLM-generated code smells), and turns every one into something
+**visible, manageable, and quantifiable** — a tracked finding with a
+status, a history, and a fingerprint, not a line in a chat log that
+scrolls away. You see the whole board, act on each finding, and measure
+whether you're converging.
+
 ---
 
 ## Install
