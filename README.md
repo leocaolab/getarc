@@ -132,7 +132,7 @@ Each release tarball ships:
 
 ## VS Code extension
 
-**This is the best way to use arc.** The extension (v0.2.21) turns the
+**This is the best way to use arc.** The extension (v0.2.22) turns the
 findings board into a live panel inside your editor — read the debate,
 jump to code, apply verdicts without leaving VS Code.
 
