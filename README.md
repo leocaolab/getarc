@@ -136,6 +136,8 @@ Each release tarball ships:
 findings board into a live panel inside your editor — read the debate,
 jump to code, apply verdicts without leaving VS Code.
 
+![The arc VS Code extension in action. Left: the findings tree grouped crate / file → finding, each with a status (AGREED / VERIFIED / NEW) and the rule it's grounded in (`l4_contracts::…`); ✨ marks findings first seen in the latest review. Middle: the reviewed source with inline decorations. Right: the per-issue panel — the snippet, a Locations table (found / agreed, each row linking its commit and a real diff), and the full History: the Critic files a `boolean-trap-parameter` finding, it's acknowledged, and in a later round the Critic itself concludes "this function has one parameter — no boolean trap exists — not a finding."](vscode-review.png)
+
 ### Install the .vsix
 
 The `arc-vscode.vsix` file ships **inside every release tarball** (next
