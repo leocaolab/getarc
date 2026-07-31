@@ -5,7 +5,7 @@ A Fixer LLM (or Claude / Codex CLI) edits files. They go back and
 forth until they converge or you step in. State lives in
 `<repo>/.arc/` (SQLite + SARIF).
 
-Single Rust binary. macOS (Apple Silicon) + Linux x86_64.
+Single Rust binary. macOS (Apple Silicon). Linux x86_64 coming soon.
 
 > **Preview / beta.** arc 0.8.0 is an early public preview. It's free,
 > it works today, and it already reviews and fixes its own codebase —
@@ -79,16 +79,13 @@ whether you're converging. (More in
 ```bash
 curl -L https://github.com/leocaolab/getarc/releases/latest/download/arc-darwin-arm64.tar.gz | tar xz
 sudo mv arc /usr/local/bin/
-arc --version       # → arc 0.8.0
+arc --version       # → arc 1.0.0
 ```
 
 ### Linux x86_64
 
-```bash
-curl -L https://github.com/leocaolab/getarc/releases/latest/download/arc-linux-x64.tar.gz | tar xz
-sudo mv arc /usr/local/bin/
-arc --version
-```
+Coming soon — the Linux build is pending a build machine. For now use the
+Apple-Silicon binary above (Rosetta 2 on an Intel Mac works), or open an issue.
 
 ### Intel Mac / other targets
 
