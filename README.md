@@ -5,7 +5,7 @@ A Fixer LLM (or Claude / Codex CLI) edits files. They go back and
 forth until they converge or you step in. State lives in
 `<repo>/.arc/` (SQLite + SARIF).
 
-Single Rust binary. macOS (Apple Silicon). Linux x86_64 coming soon.
+Single Rust binary. macOS (Apple Silicon) + Linux x86_64.
 
 > **v1.0.0 — released.** arc is free, runs entirely locally, and reviews +
 > fixes its own codebase every release. Hit a rough edge? Please
@@ -83,8 +83,11 @@ arc --version       # → arc 1.0.0
 
 ### Linux x86_64
 
-Coming soon — the Linux build is pending a build machine. For now use the
-Apple-Silicon binary above (Rosetta 2 on an Intel Mac works), or open an issue.
+```bash
+curl -L https://github.com/leocaolab/getarc/releases/latest/download/arc-linux-x64.tar.gz | tar xz
+sudo mv arc /usr/local/bin/
+arc --version       # → arc 1.0.0
+```
 
 ### Intel Mac / other targets
 

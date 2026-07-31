@@ -25,10 +25,16 @@ mv arc /usr/local/bin/        # anywhere on your $PATH
 arc --version                 # 1.0.0
 ```
 
+**CLI (Linux x86_64):**
+
+```bash
+curl -L https://github.com/leocaolab/getarc/releases/latest/download/arc-linux-x64.tar.gz | tar xz
+mv arc /usr/local/bin/        # anywhere on your $PATH
+arc --version                 # 1.0.0
+```
+
 **VS Code extension (optional):** download `arc-vscode.vsix` from the same
 release, then `code --install-extension arc-vscode.vsix`.
-
-> Linux x64 build is pending a build machine; macOS arm64 is the first target.
 
 Then `arc init` to configure providers (§6) and `arc review` / `arc auto` to run.
 
