@@ -114,7 +114,7 @@ arc auto                              # full loop: review → fix → verify →
 Config is two files: `arc init` writes `<repo>/.arc/config.toml`
 (role → provider mapping, safe to commit — no secrets); your providers +
 API keys live in `~/.tars/config.toml`, which is never committed. See the
-[user guide](GUIDE.md#4-configuration).
+[user guide](GUIDE.md#6-configuration).
 
 Full operations manual + every flag: `arc <cmd> --help`.
 
