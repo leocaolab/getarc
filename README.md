@@ -7,10 +7,9 @@ forth until they converge or you step in. State lives in
 
 Single Rust binary. macOS (Apple Silicon). Linux x86_64 coming soon.
 
-> **Preview / beta.** arc 0.8.0 is an early public preview. It's free,
-> it works today, and it already reviews and fixes its own codebase —
-> but expect rough edges. Please kick the tyres and
-> [open issues](#questions--bugs); tester feedback is what shapes 1.0.
+> **v1.0.0 — released.** arc is free, runs entirely locally, and reviews +
+> fixes its own codebase every release. Hit a rough edge? Please
+> [open an issue](#questions--bugs).
 
 **Free.** Use it for whatever you want. Source is closed; binaries are
 free downloads. See [LICENSE](LICENSE).
@@ -54,7 +53,7 @@ six times — because it can't see that it already exists. That's **rot**,
 and it's why agent-driven velocity flattens and then goes **negative**:
 eventually there are so many broken paths and duplicates that the agent
 itself can't find its way. arc **detects and measures** that rot
-(`arc rot` — god-modules, cross-file duplication, dead code, broken
+(`arc rot` — god-modules, cross-file duplication, broken
 layering, weak types) and hands you the **diagnosis**, finding by
 finding, so you can treat it before it compounds.
 
@@ -104,8 +103,10 @@ arc init                              # interactive: pick Critic + Fixer provide
 export GEMINI_API_KEY=...              # or whatever arc init told you to set
 arc review                            # Critic reviews, files findings, does NOT edit code
 arc report                            # current findings
-arc fix                               # Fixer fixes open findings (merges back when the build passes)
-arc auto                              # full loop: review → fix → verify → merge → commit
+arc fix                               # Fixer fixes open findings (FIX-ONLY — does not merge)
+arc verify                            # independent Verifier re-checks the fixes
+arc close                             # land verified fixes onto HEAD (the single merger)
+arc auto                              # or all of the above in ONE pass: review → fix → verify → close → commit
 ```
 
 Config is two files: `arc init` writes `<repo>/.arc/config.toml`
@@ -129,7 +130,7 @@ Each release tarball ships:
 
 ## VS Code extension
 
-**This is the best way to use arc.** The extension (v0.2.22) turns the
+**This is the best way to use arc.** The extension (v0.2.27) turns the
 findings board into a live panel inside your editor — read the debate,
 jump to code, apply verdicts without leaving VS Code.
 
@@ -208,11 +209,12 @@ the same code doesn't create duplicates; a regression reopens the same
 finding.
 
 **Fix actually fixes.** The Fixer runs Claude Code CLI (or Codex CLI)
-in an isolated git worktree, edits real files, and the patch merges
-back to your tree only after the worktree compiled. Conflicts are
-saved as a `.patch` and never silently apply. Verification is the
-Critic re-judging the fix — under `arc auto` a fix is never merged
-until it verifies.
+in an isolated git worktree and edits real files; the worktree must
+compile. `arc fix` is **FIX-ONLY — it never merges**. An independent
+Verifier re-judges the fix, and only `arc close` lands verified fixes
+onto your tree (verify-gated). `arc auto` chains this in one pass:
+review → fix → verify → close. Conflicts are saved as a `.patch` and
+never silently apply.
 
 **You stay in control.** Everything runs locally. Findings + the
 debate + the SQLite database live in `<repo>/.arc/` — no daemon, no
