@@ -184,16 +184,22 @@ The extension ships as a free `.vsix` in every release — see § above.
   tarball (and downloadable on its own). See
   [§ VS Code extension](#vs-code-extension).
 - **Claude Code skill (recommended way to use A.R.C.)** — let Claude drive it.
-  Install once:
+
+  One-command install (plugin):
+  ```bash
+  claude plugin marketplace add leocaolab/getarc
+  /plugin install arc@getarc
+  ```
+  Or copy it manually:
   ```bash
   mkdir -p ~/.claude/skills/arc-review
-  curl -L https://raw.githubusercontent.com/leocaolab/getarc/main/skill/SKILL.md \
+  curl -L https://raw.githubusercontent.com/leocaolab/getarc/main/skills/arc-review/SKILL.md \
     -o ~/.claude/skills/arc-review/SKILL.md
   ```
   Then just tell Claude **"review and fix this repo with arc"**. The skill
   **installs the binary if missing, configures your providers for you, and runs
   `arc auto`** (or a step-by-step review) — the whole download → configure →
-  review → fix flow, hands-off. See [`skill/SKILL.md`](skill/SKILL.md).
+  review → fix flow, hands-off. See [`skills/arc-review/SKILL.md`](skills/arc-review/SKILL.md).
 
 The CLI itself runs on [tars](https://github.com/leocaolab/tars) for
 provider access (Anthropic / OpenAI / Gemini / Claude CLI / Codex CLI /

@@ -1,0 +1,18 @@
+{
+  "name": "getarc",
+  "owner": {
+    "name": "Leo Cao",
+    "url": "https://github.com/leocaolab"
+  },
+  "metadata": {
+    "description": "A.R.C. — opinionated, self-healing code review for your LLM's code."
+  },
+  "plugins": [
+    {
+      "name": "arc",
+      "source": "./",
+      "description": "A.R.C. — an opinionated, self-healing code reviewer for your LLM's code. The skill drives the arc CLI end to end: install the binary, configure providers, review, and auto-fix.",
+      "version": "1.0.0"
+    }
+  ]
+}

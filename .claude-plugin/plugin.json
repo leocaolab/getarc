@@ -1,0 +1,10 @@
+{
+  "name": "arc",
+  "description": "A.R.C. — the staff engineer for your LLM's code. Adversarial review + self-healing auto-fix + structural-rot detection, driven through the arc CLI.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Leo Cao"
+  },
+  "homepage": "https://github.com/leocaolab/getarc",
+  "repository": "https://github.com/leocaolab/getarc"
+}
