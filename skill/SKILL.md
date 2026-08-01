@@ -91,25 +91,39 @@ Steps:
 If a review later fails with an auth error, surface the one missing thing
 (usually an unset API-key env var) and let the user fix it — don't loop.
 
-## Step 3 — run the review
+## Step 3 — run it (auto, or step-by-step)
 
-Default to the current working tree. Scope it by what's under review:
+Two ways — pick by how hands-off the user wants to be.
+
+### A · Hands-off — `arc auto` (recommended, the default ask)
 
 ```bash
-arc review                       # per-file L4 review of the working tree (default)
-arc review --file <path>         # just a file or directory
-arc review --commit <sha>        # review one commit's diff instead
-arc rot                          # whole-repo STRUCTURAL review — god-modules,
-                                 #   cross-file duplication, layering, weak types
-                                 #   (the rot the working-tree pass won't see)
+arc auto                         # the whole working tree
+arc auto --file <path>           # scope to a file / directory
 ```
 
-`--mode enrich` (the default) gives the Critic each file plus its
-call-graph callers/callees; `--mode file` isolates a file; `--mode
-cluster` partitions the whole call graph into review units. `arc` must
-run inside a git repository (it anchors `.arc/` and reads git).
+ONE pass, nearly unattended: it reviews, fixes each finding in an isolated
+git worktree, an **independent Verifier** gates it, lands the verified fixes,
+and commits. Re-run for another pass. This is the fastest way to actually
+*improve* the code — not just get a list. When the user says "review and fix
+this" / "clean this up" / "run arc on this repo", **default to `arc auto`**.
 
-## Step 4 — report, then act
+### B · Step-by-step — when they want to inspect before anything changes
+
+```bash
+arc review                       # Critic reviews the working tree, files findings, edits NOTHING
+arc review --file <path>         # scope to a file / directory
+arc review --commit <sha>        # review one commit's diff
+arc rot                          # whole-repo STRUCTURAL review (god-modules, duplication, layering, weak types)
+```
+
+Then inspect with `arc report` and drive the fixes yourself (Step 4).
+
+`--mode enrich` (default) gives the Critic each file + its call-graph
+neighbours; `--mode file` isolates a file; `--mode cluster` partitions the
+call graph. `arc` must run inside a git repository (it anchors `.arc/`).
+
+## Step 4 — report + steer (the manual pipeline)
 
 ```bash
 arc report                       # the board — every finding, grouped by file, with status
@@ -119,12 +133,12 @@ arc report --status open         # filter to one lens (open|fixed|merged|verifie
 Summarize arc's findings for the user, leading with the **cross-file**
 ones (the bugs single-file review misses) — name the call chain and the
 two files involved. Do NOT invent findings; report only what `arc`
-output. Then offer next steps:
+output. Then drive them:
 
-- `arc fix` — Fixer resolves open findings in an isolated worktree (**FIX-ONLY — does not merge**)
+- `arc fix <id|path>` — Fixer resolves findings in an isolated worktree (**FIX-ONLY — does not merge**)
 - `arc verify` — independent Verifier re-checks the fixes → verified / reopen / escalate
 - `arc close` — land verified fixes onto HEAD (**the single, verify-gated merger**)
-- `arc auto` — hands-off, ONE pass: review → fix → verify → close → commit (re-run for another pass)
 - `arc resolve <id> --as wontfix` — set a verdict directly (`new|fixed|verified|wontfix|agreed|escalated|duplicate`)
 
-Full flags for any verb: `arc <cmd> --help`.
+These four ARE what `arc auto` runs for you in one pass — use them when the
+user wants to inspect or override each step. Full flags: `arc <cmd> --help`.
