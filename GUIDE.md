@@ -138,13 +138,14 @@ Critic doesn't re-flag it — the escape hatch for the rare justified case.
 
 ## 5. Measuring how rotten a system is — `arc rot`
 
-arc **detects and quantifies** structural rot; it does **not** auto-refactor it
-(refactoring is an experimental capability in `arc_experimental`, off the main
-path). Use `arc rot` to get a tracked rot inventory; you decide what to fix.
+arc **detects and quantifies** structural rot, and — when you point it at a
+target — acts on it with `arc refactor` (§7). `arc rot` gives you the tracked rot
+inventory; you decide what to refactor.
 
 ```bash
 arc rot                 # whole-repo structural review (L5)
 arc rot --no-judge      # deterministic detect only — no LLM, just the signals
+arc refactor <target>   # hand ONE target's L5 suggestions to the Agent, land via the full gate
 ```
 
 L5 detects emergent rot a single file can't reveal, in four layers:
@@ -215,6 +216,7 @@ credentials come from the env vars the tars providers name (e.g.
 | `arc init` | write `.arc/config.toml` from your tars registry (interactive; non-TTY writes an example) |
 | `arc review` | per-file L4 review; files findings, never edits |
 | `arc rot` | whole-repo L5 structural-rot review |
+| `arc refactor <target>` | act on ONE target's L5 suggestions — rewrite across files (carries call sites + tests), land via the full verify-gated build+test gate |
 | `arc report` | show the current board |
 | `arc fix <id\|path>` | Fixer resolves findings — **FIX-ONLY, does not merge** |
 | `arc verify` | independent Verifier re-checks fixed findings |

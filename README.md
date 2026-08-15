@@ -123,6 +123,51 @@ Full operations manual + every flag: `arc <cmd> --help`.
 
 ---
 
+## Test intelligence — arc tests what it changes, and measures your coverage
+
+New in 1.1. arc doesn't just change code; it verifies the change is *tested*,
+and reads back your test suite's real signal.
+
+```bash
+arc tap init                          # make JUnit a side-effect of your normal test run (once)
+arc tap test 'target/**/junit.xml'    # ingest what your runner produced into .arc/tap.db
+arc tap signal                        # slowest + flaky tests, from real run history
+arc tap coverage                      # coverage as MUTANT SURVIVAL, not an llvm-cov %
+arc tap gaps                           # open coverage-gap tickets arc couldn't auto-cover
+arc affected                          # which existing tests a diff can touch (guppy rdeps)
+```
+
+- **`arc fix` generates + gates tests for the code it changes** (default on). It
+  computes the affected test set deterministically, writes new tests, and
+  **gates each one**: a test that compiles + passes lands with the fix; one that
+  fails is filed as a `coverage_gap` ticket (with the real runner output), never
+  pushed into your tree. Turn it off with `[test] generate = false`.
+- **Coverage = mutant survival, not a percentage.** A changed region that *was*
+  run but no test flipped is an uncovered gap — a line-coverage % can't see that.
+  `arc tap coverage` separates the survival rate, the actionable survivor list,
+  and the untested count (so "0 gaps" can never masquerade as "fully covered").
+- **arc is a *consumer* of your test results** — your runner writes the JUnit XML,
+  `arc tap` records and reads it back. It never imposes its own runner.
+
+## Refactor structural rot — `arc refactor <target>`
+
+`arc rot` finds structural rot (god-modules, cross-file duplication, weak types);
+`arc refactor` acts on it. It hands a **named target's** L5 suggestions to the
+Agent, which rewrites **across files** — moving a symbol carries its call sites
+*and* tests — then lands the change only through the **full verify-gated
+build+test gate**: accepted only if the whole tree still builds and passes.
+
+```bash
+arc rot                               # seed structural (L5) suggestions
+arc refactor src/core/god_module.rs   # or: arc refactor F-42  (a suggestion id)
+```
+
+Unlike `arc fix`, `arc refactor` **always names a target** (a file/folder path or
+an `F-<id>`) — a target-less refactor is refused, never a whole-board sweep — and
+it acts on `suggestion` findings, not just `new` ones.
+
+---
+
 ## What you also get in the tarball
 
 Each release tarball ships:
