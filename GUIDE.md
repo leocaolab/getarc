@@ -22,7 +22,7 @@ no source required**. Get both from
 ```bash
 curl -L https://github.com/leocaolab/getarc/releases/latest/download/arc-darwin-arm64.tar.gz | tar xz
 mv arc /usr/local/bin/        # anywhere on your $PATH
-arc --version                 # 1.0.0
+arc --version                 # 1.1.0
 ```
 
 **CLI (Linux x86_64):**
@@ -30,7 +30,7 @@ arc --version                 # 1.0.0
 ```bash
 curl -L https://github.com/leocaolab/getarc/releases/latest/download/arc-linux-x64.tar.gz | tar xz
 mv arc /usr/local/bin/        # anywhere on your $PATH
-arc --version                 # 1.0.0
+arc --version                 # 1.1.0
 ```
 
 **VS Code extension (optional):** download `arc-vscode.vsix` from the same
@@ -223,11 +223,23 @@ credentials come from the env vars the tars providers name (e.g.
 | `arc resolve <id> --as <state>` | manual override to any state |
 | `arc reconcile` | crash-recovery: land orphaned fix branches, build-gated |
 | `arc install-hook [--auto]` | post-commit background review (`--auto` also fixes) |
+| `arc affected` | deterministic test-impact selection for a diff (guppy rdeps — which existing tests it can touch) |
+| `arc tap <sub>` | **Test Analytics & Profile** — `init` / `test` (ingest JUnit) / `signal` (slow + flaky) / `coverage` (mutant survival) / `plan` (LLM test-impact) / `gaps` |
 
 `arc auto` is **one pass**: review once, drive each finding to `close` in its own
 fix↔verify walk, escalate the ones it can't close, commit. There is **no
 internal re-review loop** — not satisfied? run `arc auto` again. `--max-turns` is
 the per-finding fix↔verify budget, not a round count.
+
+**New in 1.1 — `arc fix` tests the code it changes.** After a fix edits code, a
+test phase runs automatically (default on): it computes the affected test set
+deterministically (guppy reverse-dependency closure — no grep), plans which new
+tests to add, writes each as a compilable test, and **gates every candidate**. A
+test that compiles + passes **lands** alongside the fix; one that fails is **not**
+pushed into your tree — it's filed as a `coverage_gap` ticket (with the real
+compiler/runner output) that `arc tap gaps` surfaces. Turn it off with
+`[test] generate = false` in `.arc/config.toml`. To make JUnit a side-effect of
+your normal test run so `arc tap` can read your signal, run `arc tap init` once.
 
 The manual pipeline is the same thing unbundled:
 `arc review` → `arc fix <id|path>` → `arc verify` → `arc close`.
