@@ -7,11 +7,14 @@ forth until they converge or you step in. State lives in
 
 Single Rust binary. macOS (Apple Silicon) + Linux x86_64.
 
-> **v1.1.0 — released.** arc is free, runs entirely locally, and reviews +
-> fixes its own codebase every release. **New in 1.1:** `arc fix` now
-> generates + gates tests for the code it changes, and `arc tap` records
-> and reads back your test signal (slow / flaky / coverage-as-mutant-survival).
-> Hit a rough edge? Please [open an issue](#questions--bugs).
+> **Two tracks.** **v1.1.0** is the public release (`latest`): free, runs
+> entirely on your machine. **v1.2.0-preview.1** is a prerelease for design
+> partners: reviews and landings go through a PR, a review service and a merge
+> machine you host yourself. [What differs and how to install each](#install).
+>
+> **Documentation:** <https://arc-site.hucao1.workers.dev/docs/> (written for
+> the 1.2 preview). The rest of this README describes **1.1.0** unless a
+> section says otherwise. Hit a rough edge? Please [open an issue](#questions--bugs).
 
 **Free.** Use it for whatever you want. Source is closed; binaries are
 free downloads. See [LICENSE](LICENSE).
@@ -75,21 +78,46 @@ whether you're converging. (More in
 
 ## Install
 
-### macOS (Apple Silicon)
+| | **1.1.0** — `latest` | **1.2 preview** — `v1.2.0-preview.1` |
+|---|---|---|
+| For | anyone | design partners |
+| How it runs | the CLI alone, on your machine: review → fix → verify → close, locally | the CLI **plus a self-hosted server suite** (review service, merge machine, web UI, chat bridge, deployer, nightly releaser): `arc review` opens the PR, reviewers file findings, the author answers them, LGTM grants a pass, and the merge machine lands the PR when your `.github/workflows/merge.yml` shows no new failure |
+| Local `arc auto` / `arc verify` / `arc close` | yes | **paused** — they run nothing and exit non-zero |
+| VS Code extension | yes | not shipped in this preview |
+| Docs | this README + [the 1.1.0 guide](https://github.com/leocaolab/getarc/blob/9a4ff4d/GUIDE.md) | [the website](https://arc-site.hucao1.workers.dev/docs/) |
+
+### 1.1.0 (latest)
 
 ```bash
+# macOS (Apple Silicon)
 curl -L https://github.com/leocaolab/getarc/releases/latest/download/arc-darwin-arm64.tar.gz | tar xz
 sudo mv arc /usr/local/bin/
 arc --version       # → arc 1.1.0
-```
 
-### Linux x86_64
-
-```bash
+# Linux x86_64
 curl -L https://github.com/leocaolab/getarc/releases/latest/download/arc-linux-x64.tar.gz | tar xz
 sudo mv arc /usr/local/bin/
-arc --version       # → arc 1.1.0
 ```
+
+### 1.2 preview (design partners)
+
+`latest` still points at 1.1.0, so install from the tag:
+
+```bash
+# macOS (Apple Silicon)
+curl -fsSL https://github.com/leocaolab/getarc/releases/download/v1.2.0-preview.1/arc-darwin-arm64.tar.gz | tar -xz && sudo mv arc /usr/local/bin/
+
+# Linux x86_64 (glibc 2.39+, OpenSSL 3)
+curl -fsSL https://github.com/leocaolab/getarc/releases/download/v1.2.0-preview.1/arc-linux-x64.tar.gz | tar -xz && sudo mv arc /usr/local/bin/
+
+arc --version       # → 1.2.0-dev (<commit> …)
+```
+
+The server suite (`arc-suite-*.tar.gz` on [the same release](https://github.com/leocaolab/getarc/releases/tag/v1.2.0-preview.1))
+is self-hosted; during the preview **an arc engineer installs it with you**.
+`arc local-review`, `arc fix` and `arc install-hook` need it; `arc rot`,
+`arc workflow`, `arc tap` and `arc affected` work on their own. Setup and every
+command: [the docs](https://arc-site.hucao1.workers.dev/docs/start/install/).
 
 ### Intel Mac / other targets
 
@@ -99,7 +127,7 @@ you need a native Intel-Mac (or other-target) binary, open an issue.
 
 ---
 
-## Quick start
+## Quick start (1.1.0)
 
 In a git repo you want to review:
 
@@ -117,9 +145,27 @@ arc auto                              # or all of the above in ONE pass: review 
 Config is two files: `arc init` writes `<repo>/.arc/config.toml`
 (role → provider mapping, safe to commit — no secrets); your providers +
 API keys live in `~/.tars/config.toml`, which is never committed. See the
-[user guide](GUIDE.md#6-configuration).
+[1.1.0 guide](https://github.com/leocaolab/getarc/blob/9a4ff4d/GUIDE.md#6-configuration).
 
 Full operations manual + every flag: `arc <cmd> --help`.
+
+## Quick start (1.2 preview)
+
+The commands changed: `arc review` now opens the PR, and the old per-file
+review is `arc local-review`.
+
+```bash
+arc init                              # pick Critic + Fixer providers (from ~/.tars/config.toml)
+arc rot                               # whole-repo structural rot — needs no server
+arc review                            # push, open/reuse the PR, hand it to the review service
+arc local-review                      # optional: per-file review of your tree, sent as a reply on the PR; never edits
+arc fix                               # the Fixer answers the PR's findings, each fix on its own arc/fix-<id> branch; never merges
+```
+
+Once the reviewers say LGTM, the merge machine lands the PR. Label it
+`arc-hold` to keep it from landing. The whole loop, `merge.yml`, deploys and
+connecting Claude Code / Codex / agy:
+<https://arc-site.hucao1.workers.dev/docs/>.
 
 ---
 
@@ -168,9 +214,9 @@ it acts on `suggestion` findings, not just `new` ones.
 
 ---
 
-## What you also get in the tarball
+## What you also get in the tarball (1.1.0)
 
-Each release tarball ships:
+Each 1.1.0 release ships:
 
 - `arc` — the CLI binary
 - `arc-vscode.vsix` — the [VS Code extension](#vs-code-extension)
@@ -178,9 +224,9 @@ Each release tarball ships:
 
 ---
 
-## VS Code extension
+## VS Code extension (1.1.0)
 
-**This is the best way to use arc.** The extension (v0.2.27) turns the
+Not shipped in the 1.2 preview. **On 1.1.0, this is the best way to use arc.** The extension (v0.2.27) turns the
 findings board into a live panel inside your editor — read the debate,
 jump to code, apply verdicts without leaving VS Code.
 
@@ -225,7 +271,9 @@ The extension ships as a free `.vsix` in every release — see § above.
 
 ---
 
-## Integrations
+## Integrations (1.1.0)
+
+The Claude Code skill below runs `arc auto`, which is paused in the 1.2 preview.
 
 - **VS Code extension** — a free `.vsix`, bundled in every release
   tarball (and downloadable on its own). See
@@ -254,7 +302,10 @@ local OpenAI-compatible endpoints).
 
 ---
 
-## What arc actually does
+## What arc actually does (1.1.0)
+
+In the 1.2 preview the landing path moved onto a PR, a review service and a
+self-hosted merge machine — see [the docs](https://arc-site.hucao1.workers.dev/docs/guides/commands/).
 
 **Neural-symbolic.** Pure-LLM code review is slow and hallucinates;
 pure-symbolic (linters) misses semantics. arc runs deterministic
