@@ -68,9 +68,8 @@ stop; say so.
 
 **2 `binary`.** `arc` missing or lacking route verbs → `fetch_arc.py --stage-dir <scratch>`
 first (installs nothing), show the person the version and `missing_verbs`.
-- Which release: getarc's *latest* is the public one. A design partner uses the
-  prerelease tag they were given — `--tag v1.2.0-preview.1` — which `latest` never
-  returns. The release also carries `arc-suite-<platform>.tar.gz` (the server suite, an
+- Which release: getarc's *latest* (the default) is the one this route is written for.
+  Pass `--tag` only when the person names another release. The release also carries `arc-suite-<platform>.tar.gz` (the server suite, an
   operator's — this skill does not install it) and `arc-skills.tar.gz` (this plugin).
 - `missing_verbs` empty → ask where to install. Suggest `~/.local/bin` (no sudo); if
   that directory is not on their PATH, say which shell profile line adds it — editing
