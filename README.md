@@ -7,10 +7,11 @@ forth until they converge or you step in. State lives in
 
 Single Rust binary. macOS (Apple Silicon) + Linux x86_64.
 
-> **Two tracks.** **v1.1.0** is the public release (`latest`): free, runs
-> entirely on your machine. **v1.2.0-preview.1** is a prerelease for design
-> partners: reviews and landings go through a PR, a review service and a merge
-> machine you host yourself. [What differs and how to install each](#install).
+> **Two tracks.** **v1.2.0-preview.1** is `latest`: reviews and landings go
+> through a PR, a review service and a merge machine you host yourself (during
+> the preview an arc engineer sets the server suite up with you). **v1.1.0** is
+> the older release that runs entirely on your machine.
+> [What differs and how to install each](#install).
 >
 > **Documentation:** <https://arc-site.hucao1.workers.dev/docs/> (written for
 > the 1.2 preview). The rest of this README describes **1.1.0** unless a
@@ -78,30 +79,30 @@ whether you're converging. (More in
 
 ## Install
 
-| | **1.1.0** — `latest` | **1.2 preview** — `v1.2.0-preview.1` |
+| | **1.1.0** — `v1.1.0` | **1.2 preview** — `latest` (`v1.2.0-preview.1`) |
 |---|---|---|
-| For | anyone | design partners |
+| For | a local-only setup, no server | anyone; design partners get the server suite set up with them |
 | How it runs | the CLI alone, on your machine: review → fix → verify → close, locally | the CLI **plus a self-hosted server suite** (review service, merge machine, web UI, chat bridge, deployer, nightly releaser): `arc review` opens the PR, reviewers file findings, the author answers them, LGTM grants a pass, and the merge machine lands the PR when your `.github/workflows/merge.yml` shows no new failure |
 | Local `arc auto` / `arc verify` / `arc close` | yes | **paused** — they run nothing and exit non-zero |
 | VS Code extension | yes | not shipped in this preview |
 | Docs | this README + [the 1.1.0 guide](https://github.com/leocaolab/getarc/blob/9a4ff4d/GUIDE.md) | [the website](https://arc-site.hucao1.workers.dev/docs/) |
 
-### 1.1.0 (latest)
+### 1.1.0
 
 ```bash
 # macOS (Apple Silicon)
-curl -L https://github.com/leocaolab/getarc/releases/latest/download/arc-darwin-arm64.tar.gz | tar xz
+curl -L https://github.com/leocaolab/getarc/releases/download/v1.1.0/arc-darwin-arm64.tar.gz | tar xz
 sudo mv arc /usr/local/bin/
 arc --version       # → arc 1.1.0
 
 # Linux x86_64
-curl -L https://github.com/leocaolab/getarc/releases/latest/download/arc-linux-x64.tar.gz | tar xz
+curl -L https://github.com/leocaolab/getarc/releases/download/v1.1.0/arc-linux-x64.tar.gz | tar xz
 sudo mv arc /usr/local/bin/
 ```
 
-### 1.2 preview (design partners)
+### 1.2 preview (`latest`)
 
-`latest` still points at 1.1.0, so install from the tag:
+`latest` is `v1.2.0-preview.1`; the tag pins it:
 
 ```bash
 # macOS (Apple Silicon)
@@ -132,8 +133,7 @@ The skill ([`skills/arc-setup`](skills/arc-setup/SKILL.md)) probes what is alrea
 there and walks the stages in order — the binary, LLM providers in tars, `arc init`
 roles, an optional merge gate and coding-agent hooks, a smoke test — asking before
 anything global or outward, and stopping with the real error when a stage fails. It
-follows the 1.2 route: a design partner gives it the preview tag; on `latest`
-(1.1.0) it stops at the binary stage and says which verbs are missing.
+installs `latest` (the 1.2 preview) unless you name another tag.
 
 ### Intel Mac / other targets
 
@@ -262,7 +262,7 @@ Prefer to grab just the extension? Download it standalone from the
 release:
 
 ```bash
-curl -LO https://github.com/leocaolab/getarc/releases/latest/download/arc-vscode.vsix
+curl -LO https://github.com/leocaolab/getarc/releases/download/v1.1.0/arc-vscode.vsix
 code --install-extension arc-vscode.vsix
 ```
 
