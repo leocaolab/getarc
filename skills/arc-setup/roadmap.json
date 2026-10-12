@@ -1,0 +1,117 @@
+{
+  "about": "The install route. probe.py reads it and reports, per stage, which criterion holds and which does not; SKILL.md walks it in order. Every stage is judged from the world (files, binaries, git) each time, so a stopped install resumes by probing again.",
+  "required_verbs": ["init", "review", "local-review", "fix", "rot", "workflow", "reset"],
+  "release_page": "https://github.com/leocaolab/getarc/releases",
+  "assets": {
+    "Darwin arm64": "arc-darwin-arm64.tar.gz",
+    "Linux x86_64": "arc-linux-x64.tar.gz"
+  },
+  "stages": [
+    {
+      "id": "prereq",
+      "title": "Prerequisites",
+      "optional": false,
+      "verify": "git rev-parse --show-toplevel",
+      "criteria": [
+        {"id": "git_repo", "level": "required", "says": "the directory is inside a git work tree"},
+        {"id": "platform", "level": "required", "says": "the machine is one getarc ships a binary for (macOS arm64, Linux x86_64)"},
+        {"id": "python_toml", "level": "advice", "says": "python3 is 3.11+ (tomllib), so the TOML checks below can read config files"}
+      ],
+      "sources": ["docs/user-guide/install.md", "crates/apps/cli/src/cli/dispatch.rs (require_git_repo)"]
+    },
+    {
+      "id": "binary",
+      "title": "The arc binary",
+      "optional": false,
+      "verify": "arc --version",
+      "criteria": [
+        {"id": "arc_on_path", "level": "required", "says": "`arc` runs and prints a version"},
+        {"id": "arc_has_verbs", "level": "required", "says": "the installed arc has every verb this route uses (`arc <verb> --help` succeeds)"}
+      ],
+      "sources": ["docs/user-guide/install.md", "https://github.com/leocaolab/getarc/releases"]
+    },
+    {
+      "id": "tars",
+      "title": "LLM providers in tars",
+      "optional": false,
+      "asks": ["Which model providers do you have access to (an API key, or a signed-in Claude Code / Codex / agy CLI)?"],
+      "verify": "probe.py --stage tars",
+      "criteria": [
+        {"id": "tars_config_present", "level": "required", "says": "<tars home>/config.toml exists"},
+        {"id": "tars_config_parses", "level": "required", "says": "it parses as TOML and has at least one [providers.<id>] with a known type"},
+        {"id": "tars_loads_in_arc", "level": "required", "says": "arc itself reads it and lists its provider ids (`arc init` in a throwaway repo — tars refuses an unknown key here)"},
+        {"id": "provider_auth_ready", "level": "advice", "says": "every env-var credential a provider names is set in this shell, and every CLI provider's executable is on PATH"}
+      ],
+      "sources": ["docs/user-guide/configuration.md (~/.tars/config.toml)", "tars-internal crates/tars-config/src/providers.rs"]
+    },
+    {
+      "id": "roles",
+      "title": "arc init: .arc/config.toml [roles]",
+      "optional": false,
+      "asks": ["Which tars provider reviews (critic) and which fixes (fixer)? The fixer should be a different model family."],
+      "verify": "probe.py --stage roles",
+      "criteria": [
+        {"id": "arc_config_present", "level": "required", "says": ".arc/config.toml exists"},
+        {"id": "no_providers_section", "level": "required", "says": "it has no [providers] section (arc refuses one)"},
+        {"id": "roles_resolve", "level": "required", "says": "every [roles] value names a provider id in tars, and a critic resolves (critic_l4 / critic / default)"},
+        {"id": "fixer_explicit", "level": "required", "says": "fixer is written out (it never falls back to default)"},
+        {"id": "fixer_family_differs", "level": "advice", "says": "fixer and critic are different model families"},
+        {"id": "fixer_can_edit", "level": "advice", "says": "a claude_cli fixer has tools = \"default\"; a codex_cli fixer has sandbox = \"workspace-write\""}
+      ],
+      "sources": ["crates/apps/cli/src/cli/init.rs", "crates/infra/llm/src/roles/mod.rs", "crates/review/agents/src/role.rs (FIXER_MUST_BE_EXPLICIT)", "docs/user-guide/configuration.md", "docs/user-guide/coding-agents.md"]
+    },
+    {
+      "id": "merge_gate",
+      "title": "Merge gate: .github/workflows/merge.yml",
+      "optional": true,
+      "asks": ["Will a merge machine land this repo's PRs (merge gate), and if so which checks must pass?"],
+      "verify": "arc workflow .github/workflows/merge.yml --job <job> --list",
+      "criteria": [
+        {"id": "merge_yml_present", "level": "required", "says": ".github/workflows/merge.yml exists"},
+        {"id": "merge_yml_dispatch_only", "level": "required", "says": "its trigger is workflow_dispatch only, so GitHub never runs it"},
+        {"id": "merge_yml_lists", "level": "required", "says": "`arc workflow … --job <job> --list` exits 0 for every job"}
+      ],
+      "sources": ["docs/user-guide/merge-gate.md", "crates/infra/workflow/src/workflow/plan.rs"]
+    },
+    {
+      "id": "release",
+      "title": "Deploy: [release] + .arc/delivery.toml",
+      "optional": true,
+      "asks": ["Does this repo deploy from a merge machine? If so, which workflow job is the deploy?"],
+      "verify": "arc workflow <deploy workflow> --job <job> --list",
+      "criteria": [
+        {"id": "release_declared", "level": "required", "says": "[release] in .arc/config.toml names a workflow (and job)"},
+        {"id": "release_job_lists", "level": "required", "says": "`arc workflow <file> --job <job> --list` exits 0"},
+        {"id": "release_has_concurrency", "level": "required", "says": "the deploy workflow declares a concurrency: group"},
+        {"id": "delivery_one_build", "level": "required", "says": ".arc/delivery.toml has exactly one [builds.*] naming the same workflow and job"}
+      ],
+      "sources": ["docs/user-guide/release.md", "docs/user-guide/configuration.md (.arc/delivery.toml)"]
+    },
+    {
+      "id": "agents",
+      "title": "Coding agents: Fixer CLI and bridge hooks",
+      "optional": true,
+      "asks": ["Which coding agent do you use (Claude Code, Codex CLI, agy)? Do you have an arc-bridge server address from an operator?"],
+      "verify": "arc bridge inbox",
+      "criteria": [
+        {"id": "fixer_cli_present", "level": "advice", "says": "the fixer provider's agent CLI (claude / codex / agy) is on PATH"},
+        {"id": "bridge_client", "level": "required", "says": "~/.arc/client.toml names a board (`web = …`) — only with an operator's bridge server"},
+        {"id": "bridge_hooks", "level": "required", "says": "the agent's settings run `arc bridge hook …`"}
+      ],
+      "sources": ["docs/user-guide/coding-agents.md"]
+    },
+    {
+      "id": "smoke",
+      "title": "Smoke test",
+      "optional": false,
+      "verify": "arc rot --no-judge",
+      "criteria": [
+        {"id": "rot_offline_runs", "level": "required", "says": "`arc rot --no-judge` exits 0 here (binary, repo and [review] exclude all read)"},
+        {"id": "origin_remote", "level": "info", "says": "the repo has an origin remote (`arc review` pushes to it)"},
+        {"id": "gh_authed", "level": "info", "says": "`gh auth status` succeeds (`arc review` opens the PR through gh)"},
+        {"id": "review_service_here", "level": "info", "says": "this machine's ~/.arc/machine.toml serves this repo as a tenant, so `arc local-review` / `arc fix` can run here"}
+      ],
+      "sources": ["crates/apps/cli/src/cli/local_review_dispatch.rs", "crates/infra/fs/src/tenants.rs", "crates/review/cli/src/bootstrap/record.rs", "crates/review/cli/src/workflow/submit/mod.rs (QUEUE_REMOTE)"]
+    }
+  ]
+}

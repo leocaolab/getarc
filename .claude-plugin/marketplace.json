@@ -11,8 +11,8 @@
     {
       "name": "arc",
       "source": "./",
-      "description": "A.R.C. — an opinionated, self-healing code reviewer for your LLM's code. The skill drives the arc CLI end to end: install the binary, configure providers, review, and auto-fix.",
-      "version": "1.0.0"
+      "description": "A.R.C. — an opinionated, self-healing code reviewer for your LLM's code. Two skills: arc-setup installs and configures arc stage by stage; arc-review drives review and auto-fix.",
+      "version": "1.1.0"
     }
   ]
 }

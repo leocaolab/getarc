@@ -1,0 +1,197 @@
+{
+  "about": "Errors arc (and the tools it calls) really print, each with where the words come from, what it means and the fix. diagnose.py matches `pattern` (a Python regex) against a command's stdout+stderr. A fix that touches a global file (~/.tars, ~/.arc, ~/.claude) or anything remote is asked first.",
+  "issues": [
+    {
+      "id": "not_a_git_repo",
+      "stage": "prereq",
+      "pattern": "not a git repository",
+      "source": "git's own message, surfaced by arc (crates/apps/cli/src/cli/dispatch.rs require_git_repo)",
+      "cause": "arc ran outside a git work tree.",
+      "fix": "cd into the project, or `git init` it if the person agrees."
+    },
+    {
+      "id": "arc_not_found",
+      "stage": "binary",
+      "pattern": "(command not found: arc|arc: command not found|No such file or directory: 'arc')",
+      "source": "the shell",
+      "cause": "arc is not installed, or its directory is not on PATH.",
+      "fix": "stage `binary`: install from getarc, or add the directory holding arc to PATH."
+    },
+    {
+      "id": "verb_missing",
+      "stage": "binary",
+      "pattern": "unrecognized subcommand '([a-z-]+)'",
+      "source": "clap, when the installed arc predates the verb",
+      "cause": "the installed arc is older than this route: the verb was added later (getarc's newest release may predate it).",
+      "fix": "compare `arc --version` with the release page; if getarc has nothing newer, stop and say so — do not fake the verb with another."
+    },
+    {
+      "id": "release_asset_missing",
+      "stage": "binary",
+      "pattern": "HTTPError: HTTP Error 404",
+      "source": "scripts/fetch_arc.py (GitHub's download URL for a tag or asset that does not exist)",
+      "cause": "the tag is not published on getarc (yet), or it has no asset for this platform.",
+      "fix": "check the tag with the person and the release page; do not fall back to another tag without saying so."
+    },
+    {
+      "id": "tars_no_providers",
+      "stage": "tars",
+      "pattern": "no providers found in your tars registry",
+      "source": "crates/apps/cli/src/cli/init.rs:51",
+      "cause": "the tars config has no [providers.<id>] (or arc read a different tars home than you think).",
+      "fix": "stage `tars`: define one provider in <tars home>/config.toml (ask before writing that global file); pass the same --tars_home to every arc call."
+    },
+    {
+      "id": "tars_load_failed",
+      "stage": "tars",
+      "pattern": "load tars config ",
+      "source": "crates/infra/llm/src/assemble/llm_error.rs:11",
+      "cause": "the tars config file could not be read or parsed; the rest of the line is tars's own reason (an unknown key in a provider table is refused: tars-config providers.rs deny_unknown_fields).",
+      "fix": "show the person the rest of the line; fix the named key in the tars config with their consent."
+    },
+    {
+      "id": "credential_env_unset",
+      "stage": "tars",
+      "pattern": "missing credential: env var `([A-Za-z0-9_]+)` is not set",
+      "source": "tars-internal crates/tars-provider/src/auth.rs:170; docs/user-guide/troubleshooting.md",
+      "cause": "the provider reads its key from an environment variable that is not set in the shell arc runs in.",
+      "fix": "the person exports it themselves (shell profile or `source .env`). Never ask for the key's value, never write it to .arc/."
+    },
+    {
+      "id": "init_needs_tty",
+      "stage": "roles",
+      "pattern": "arc init needs an interactive terminal",
+      "source": "crates/apps/cli/src/cli/init.rs:43 and :48",
+      "cause": "expected when an agent runs `arc init`: stdin is not a terminal, so arc left .arc/config.toml.example instead of asking.",
+      "fix": "ask the person for the critic and fixer provider ids, copy the example to .arc/config.toml and fill [roles] with them (the example's own instruction)."
+    },
+    {
+      "id": "init_config_exists",
+      "stage": "roles",
+      "pattern": "already exists\\. Re-run `arc init --force`",
+      "source": "crates/apps/cli/src/cli/init.rs:36",
+      "cause": ".arc/config.toml is already there; arc init does not overwrite it.",
+      "fix": "probe the stage: if [roles] already resolve, the stage is done. Overwrite only if the person asks."
+    },
+    {
+      "id": "providers_section",
+      "stage": "roles",
+      "pattern": "has a `\\[providers\\]` section",
+      "source": "crates/infra/types/src/config/parse.rs:27; docs/user-guide/troubleshooting.md",
+      "cause": "an old-shape .arc/config.toml still defines providers; arc reads providers only from tars.",
+      "fix": "move each [providers.<id>] to the tars config (ask first — global file), then delete the section from .arc/config.toml."
+    },
+    {
+      "id": "role_missing",
+      "stage": "roles",
+      "pattern": "No provider for role \"([a-z0-9_]+)\"",
+      "source": "crates/infra/llm/src/roles/mod.rs:81; docs/user-guide/troubleshooting.md",
+      "cause": "[roles] has neither that role nor `default`.",
+      "fix": "add `<role> = \"<tars provider id>\"` (or `default`) under [roles]."
+    },
+    {
+      "id": "fixer_not_explicit",
+      "stage": "roles",
+      "pattern": "Role \"fixer\" must be declared explicitly",
+      "source": "crates/infra/llm/src/roles/mod.rs:96; crates/review/agents/src/role.rs:31",
+      "cause": "the fixer never falls back to `default`.",
+      "fix": "add `fixer = \"<tars provider id>\"`, a different model family from the critic."
+    },
+    {
+      "id": "provider_not_in_tars",
+      "stage": "roles",
+      "pattern": "provider \"([^\"]+)\" not in config\\. Configured: \\[",
+      "source": "crates/infra/llm/src/assemble/llm_error.rs:18",
+      "cause": "a [roles] value names an id the tars config does not define (often: arc read another tars home).",
+      "fix": "use one of the listed ids, or define that provider in tars; pass the same --tars_home everywhere."
+    },
+    {
+      "id": "fixer_build_failed",
+      "stage": "agents",
+      "pattern": "fixer pipeline: failed to build provider '([^']+)' from config at",
+      "source": "crates/review/cli/src/workflow/fix/agents.rs:90; docs/user-guide/coding-agents.md",
+      "cause": "the fixer's id is not in the tars config, or that entry does not parse; the rest of the line is tars's words.",
+      "fix": "fix the tars entry the line names."
+    },
+    {
+      "id": "workflow_expression",
+      "stage": "merge_gate",
+      "pattern": "expressions are not evaluated here",
+      "source": "crates/infra/workflow/src/workflow/plan.rs:363; docs/user-guide/merge-gate.md",
+      "cause": "a step holds `${{ … }}`; arc runs no expressions, and a merge gate with one refuses every PR.",
+      "fix": "rewrite with shell variables (`$NODE_ENV`, an `env:` value) and re-run `arc workflow … --list`."
+    },
+    {
+      "id": "workflow_unknown_action",
+      "stage": "merge_gate",
+      "pattern": "no implementation for `uses: ([^`]+)`",
+      "source": "crates/infra/workflow/src/workflow/plan.rs:361; docs/user-guide/merge-gate.md",
+      "cause": "a `uses:` arc does not read (only checkout, setup-node/python/go and dtolnay/rust-toolchain are read, as machine checks).",
+      "fix": "replace it with plain `run:` steps; the tool it installed must already be on the merge machine."
+    },
+    {
+      "id": "workflow_no_job",
+      "stage": "merge_gate",
+      "pattern": "no job named (\\S+); the file defines:",
+      "source": "crates/infra/workflow/src/workflow/plan.rs:348",
+      "cause": "--job names a job the file does not have.",
+      "fix": "use one of the jobs the line lists."
+    },
+    {
+      "id": "no_origin",
+      "stage": "smoke",
+      "pattern": "it has no origin remote",
+      "source": "crates/infra/types/src/tenant/mod.rs:63",
+      "cause": "arc names the repo from `origin`; this clone has none.",
+      "fix": "the person adds the GitHub remote (creating a remote repo is an outward action — ask)."
+    },
+    {
+      "id": "not_a_tenant",
+      "stage": "smoke",
+      "pattern": "is not a tenant in .*machine\\.toml",
+      "source": "crates/infra/fs/src/tenants.rs:70",
+      "cause": "`arc local-review` / `arc fix` work through a review service that serves this repo from this machine's ~/.arc/machine.toml. Nothing serves it here. The review service is not publicly released.",
+      "fix": "not fixable by the install: report it. Registering a tenant is the operator's (`arc-server tenant add`), on a machine running arc's services."
+    },
+    {
+      "id": "hook_no_review",
+      "stage": "smoke",
+      "pattern": "post-commit-gate (\\S+): could not decide, so no review — (.*)",
+      "source": "crates/apps/cli/src/cli/local_review_dispatch.rs:148 (the post-commit hook prints it to the terminal and .arc/critic.log since #3412); docs/user-guide/coding-agents.md",
+      "cause": "the post-commit hook asked whether to review this commit and could not decide, so it reviewed nothing. The reason follows the dash — most often the branch has no PR yet (`review.db holds no PR from <branch>: run `arc review` first`) or no review service serves the repo here (`… is not a tenant in …machine.toml`).",
+      "fix": "read the reason after the dash and follow its own row (no_pr_on_record / not_a_tenant). The commit itself succeeded; nothing to undo."
+    },
+    {
+      "id": "no_pr_on_record",
+      "stage": "smoke",
+      "pattern": "review\\.db holds no PR from (\\S+): run `arc review` first",
+      "source": "crates/review/cli/src/bootstrap/record.rs:40",
+      "cause": "local-review / fix work on the branch's PR, and this branch has none on record.",
+      "fix": "`arc review` opens it — an outward action (push + PR): ask first."
+    },
+    {
+      "id": "review_service_silent",
+      "stage": "smoke",
+      "pattern": "the review service did not take it in",
+      "source": "crates/review/cli/src/bootstrap/record.rs:52",
+      "cause": "the request was queued but no review service took it within the wait.",
+      "fix": "report it with the row and request id; the service is the operator's."
+    },
+    {
+      "id": "detached_head",
+      "stage": "smoke",
+      "pattern": "the checkout is on no branch",
+      "source": "crates/review/cli/src/bootstrap/record.rs:36",
+      "cause": "HEAD is detached; a PR belongs to a branch.",
+      "fix": "check out a branch (ask before creating one)."
+    },
+    {
+      "id": "bridge_unconfigured",
+      "stage": "agents",
+      "pattern": "no arc-bridge server is configured",
+      "source": "crates/bridge/cli/src/workflow/revive/mod.rs:78 (and collect.rs / history.rs / talk.rs); docs/user-guide/coding-agents.md",
+      "cause": "~/.arc/client.toml names no board. The bridge server is an operator's, not publicly released.",
+      "fix": "only with an address from the operator: write `web = \"http://<host>:<port>\"` to ~/.arc/client.toml (ask first — global file)."
+    }
+  ]
+}

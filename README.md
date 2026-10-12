@@ -119,6 +119,22 @@ is self-hosted; during the preview **an arc engineer installs it with you**.
 `arc workflow`, `arc tap` and `arc affected` work on their own. Setup and every
 command: [the docs](https://arc-site.hucao1.workers.dev/docs/start/install/).
 
+### Or let your coding agent set it up
+
+Paste this into Claude Code, Codex or another coding agent, in the repository you
+want arc on:
+
+```text
+Set up A.R.C. (arc) in this repository with the arc-setup skill. If you're in Claude Code, run `claude plugin marketplace add leocaolab/getarc`, then `claude plugin install arc@getarc`. If you're in another agent, run `npx skills add leocaolab/getarc --skill arc-setup` and select your agent. Use one installation method. You can read the skill directly at https://github.com/leocaolab/getarc/blob/main/skills/arc-setup/SKILL.md (raw: https://raw.githubusercontent.com/leocaolab/getarc/main/skills/arc-setup/SKILL.md). Then use the arc-setup skill to install and configure arc here.
+```
+
+The skill ([`skills/arc-setup`](skills/arc-setup/SKILL.md)) probes what is already
+there and walks the stages in order — the binary, LLM providers in tars, `arc init`
+roles, an optional merge gate and coding-agent hooks, a smoke test — asking before
+anything global or outward, and stopping with the real error when a stage fails. It
+follows the 1.2 route: a design partner gives it the preview tag; on `latest`
+(1.1.0) it stops at the binary stage and says which verbs are missing.
+
 ### Intel Mac / other targets
 
 The arc engine source isn't public, so there's no from-source build. On
