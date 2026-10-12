@@ -108,7 +108,7 @@ sudo mv arc /usr/local/bin/
 # macOS (Apple Silicon)
 curl -fsSL https://github.com/leocaolab/getarc/releases/download/v1.2.0-preview.1/arc-darwin-arm64.tar.gz | tar -xz && sudo mv arc /usr/local/bin/
 
-# Linux x86_64 (glibc 2.39+, OpenSSL 3)
+# Linux x86_64 (static — any distro)
 curl -fsSL https://github.com/leocaolab/getarc/releases/download/v1.2.0-preview.1/arc-linux-x64.tar.gz | tar -xz && sudo mv arc /usr/local/bin/
 
 arc --version       # → 1.2.0-dev (<commit> …)
