@@ -1,0 +1,469 @@
+name: Comment Hygiene (WHY, once, and true)
+description: >
+  Judge comment/doc TEXT against the code it sits on. Three clauses, in
+  severity order: (1) a comment must be TRUE — what it asserts must be what the
+  code does; (2) a WHY is written ONCE, on the entity that owns it — a second
+  copy elsewhere is a copy, not documentation; (3) say WHY, not HOW — over
+  three layers: module `//!` = one-line pitch + invariants; function `///` =
+  the caller's contract (Side Effects / Errors), not a step list; inline `//` =
+  miserly, only to justify the non-obvious.
+  RISK APPETITE: lean toward flagging. A comment finding is a suggestion a
+  human accepts or drops in seconds — it cannot break a build or change
+  behavior — so when a comment is borderline, report it and say what you would
+  cut. Silence is the expensive answer here, not noise. The EXEMPT-lists are
+  narrow and enumerated for exactly this reason: they name the few comments
+  that are load-bearing (`[arc:intentional-handle]`, failure-mode contracts,
+  `NON-VACUOUS:` test notes), and nothing outside them earns the benefit of the
+  doubt. Judge the SITE, not the spelling of a token — emphasis caps are not a
+  smell by themselves. One comment matches ONE rule, the most specific. Cap 30
+  issues per response — a batch size, not a per-file ceiling.
+
+# applicability — comment hygiene is universal; it judges doc/comment TEXT
+# against adjacent code, not language syntax.
+language: [rust, python, typescript, javascript, go, java]
+
+rules:
+  - name: comment-contradicts-code
+    status: stable
+    description: |
+      PRIORITY: CRITICAL — outranks every other rule here. A false claim is
+      flagged even when the comment is otherwise perfect.
+
+      ANTI-PATTERN: a comment whose factual claim is contradicted by the code
+      it documents. Not verbose, not narration, not history — simply FALSE.
+      The tells, each verifiable without taste:
+        - the doc claims an operation is AVOIDED and the body performs it
+          ("avoiding the JSON round-trip (entity → JSON → Finding)" over a body
+          that calls `to_json(..)` then `from_object(..)`)
+        - the doc and an inline comment INSIDE the same function disagree
+        - a stated bound / default / unit differs from the literal in the code
+          ("defaults to 30s" over `Duration::from_secs(60)`)
+        - the doc names a return/error case the signature cannot produce
+        - "always" / "never" / "cannot" asserted about a path the code takes
+        - a rationale that no longer applies ("keeps `block_on` out of the hot
+          loop" at a single call site with no loop)
+
+      JUDGE: read the comment's assertion, then read the code for exactly that
+      assertion. Cite BOTH lines in the finding — the claim and the code that
+      refutes it. If you cannot point at the refuting line, this is NOT this
+      rule; do not guess.
+
+      EXEMPT — never flag: a claim about a caller's or callee's behavior you
+      cannot see in this file; an aspirational note explicitly marked
+      `TODO` / `ASPIRATIONAL`; a comment describing the INTENDED contract with
+      a named, live bug reference for the deviation.
+
+      BOUNDARY: stale-but-harmless proper nouns are
+      `refactor-history-narration`; this OWNS a claim the adjacent code
+      refutes.
+
+      FIX: make the comment true, or delete it. Never "soften" it — a hedged
+      lie is still a lie.
+
+  - name: duplicated-why
+    status: stable
+    description: |
+      ANTI-PATTERN: the same rationale/invariant written in two or more places.
+      A WHY has exactly one owner — the entity it constrains. Every further
+      copy is a fork that drifts silently: someone edits one, the others become
+      `comment-contradicts-code`. Examples of the tell:
+        - a test's `///` restating the invariant its subject function's `///`
+          already states ("`None` → no block at all, mirrors X and Y")
+        - a field comment repeating the struct doc's paragraph
+        - the same hazard explained at the call site AND the definition
+        - a `# Errors` section repeated as an inline comment at the site
+
+      JUDGE: delete the comment and ask — is any information lost that is not
+      recoverable from the OWNING entity's doc (the function/type the comment
+      is about)? If nothing is lost, it is a copy. Name the owner.
+
+      EXEMPT — never flag: a one-line pointer that REFERS to the owner rather
+      than restating it ("see `render_dependents` for why empty ⇒ no block") —
+      but only when the owner is in ANOTHER file; a pointer to a doc a few
+      lines up in the same item is itself noise, and IS this rule;
+      a `NON-VACUOUS:` note on a test (that is information about the TEST —
+      which code deletion makes it RED — and lives nowhere else); a short
+      present-tense "shared by X and Y" boundary note at the OWNER.
+
+      BOUNDARY: type-echo is `redundant-signature-restatement`; pure length is
+      `over-verbose-comment`; this OWNS the same fact in N places.
+
+      FIX: keep it on the owning entity; at the copy site delete it, or leave a
+      one-line reference.
+
+  - name: what-narration
+    status: stable
+    description: |
+      ANTI-PATTERN: an inline `//` that translates the adjacent code into
+      English, adding no information the reader can't get from the code and
+      its names. The token is one example of the smell, never its definition:
+        - `// Open the unified context` above `WorkflowContext::open(...)`
+        - `// Read the wall clock once` above `let now = ...`
+        - `// Convert X to Y for the pipeline` above the map
+        - step-number preambles `// 1. … // 2. …` narrating a flat sequence
+
+      JUDGE — the deletion test, applied to STRUCTURE not comprehension:
+      delete the comment, then ask whether a competent reader would now want to
+      CHANGE THE CODE — move this line earlier/later, add a missing `if`,
+      "simplify" a guard, thread a type differently. If yes, the comment
+      carries a hidden constraint (ordering, concurrency, an upstream contract,
+      a deliberate omission) and is a WHY: keep it. If deleting it only costs
+      the reader a few seconds of reading the code or an API doc, it is a WHAT:
+      flag it. Inclusion bar: its absence would mislead someone into editing.
+      "Tells the reader something" is NOT the bar — almost any sentence does.
+
+      EXEMPT — never flag: an `[arc:intentional-handle]` block; a comment
+      naming a bug/spec/external constraint the code works around
+      (`// truncated to 7 chars to match git's short SHA`); a section banner
+      (`── D10: the OUTER loop ──`) that structures a long function.
+
+      NOT exempt just for stating a reason. A sentence of the form "X so that
+      Y" is only spared when Y is a constraint the names cannot carry
+      (ordering, concurrency, an upstream contract, a deliberate omission). A
+      reason a competent reader derives from the function names alone —
+      "// the incremental writes need a row to land in" above `record_run(..)`
+      — is a WHAT wearing a because-clause. Flag it.
+
+      BOUNDARY: the refactor-history flavor is `refactor-history-narration`;
+      the function-doc step list is `doc-narrates-steps`; teaching a language
+      pattern is `explains-known-idiom`. This OWNS inline `//` restatement.
+
+      FIX: delete it; if the line truly needs a signpost, the code wants a
+      better-named helper, not a comment.
+
+  - name: doc-narrates-steps
+    status: stable
+    description: |
+      ANTI-PATTERN: a function `///` doc that walks the body's internal 1-2-3
+      instead of stating the caller's contract. The body is right below; the
+      doc is for the CALLER, who needs behavior, not choreography. Example:
+        - `/// 1. Open ctx 2. Split args 3. Run map 4. Report`
+        - a doc that re-lists the sequence the (clean) body already reads as
+
+      JUDGE: does the doc tell a caller what they must know WITHOUT reading
+      the body — its Side Effects (writes DB? files? network?) and
+      Errors/Panics (when does it `Err`/panic?) — or does it narrate the
+      implementation? Narration → flag.
+
+      EXEMPT — never flag: a `# Side Effects` / `# Errors` / `# Panics`
+      contract section (that IS the required content); a one-line verb-phrase
+      summary; an algorithm note on genuinely non-obvious logic the signature
+      can't convey (a convergence rule, a `distinct_batch_fp` note).
+
+      BOUNDARY: `redundant-signature-restatement` owns "doc just re-says the
+      types"; `internal-vocabulary-in-public-doc` owns "doc uses words the
+      caller can't reach"; this rule OWNS "doc narrates the steps".
+
+      FIX: replace the step list with a one-line verb summary + `# Side
+      Effects` + `# Errors` (omit a section if empty).
+
+  - name: internal-vocabulary-in-public-doc
+    status: stable
+    description: |
+      ANTI-PATTERN: vocabulary the reader cannot reach — private modules,
+      internal pipeline stages, migration phases, test harnesses, and planning
+      labels. The nouns may all still resolve (so this is NOT a dead reference);
+      the defect is AUDIENCE. On a PUBLIC item it reads as an implementer's note
+      pasted onto a product surface; a PLANNING LABEL is unreachable to
+      everyone, anywhere. Examples:
+        - "the entity-native replacement for the fix loop's `findings_index` →
+          `threads_json` hydration (Phase 2.4)"
+        - "(the hermetic test / cassette-replay seam)" on a public resolver
+        - "as of Block 3 / M2, this feeds the S1 stage"
+        - a public doc whose only content is which private helper it delegates to
+
+      JUDGE: could a caller who has ONLY the public API act on this sentence?
+      If understanding it requires reading private code or knowing a project
+      phase/milestone/test-harness name, flag it.
+
+      EXEMPT — never flag: a doc on a `pub(crate)` / private item where the
+      vocabulary is CODE the implementer can go read (a private module, a helper,
+      a type); a named EXTERNAL spec/RFC/CVE/bug id; a public doc that references
+      another PUBLIC item.
+
+      NOT exempt anywhere, public or private, inline or doc: a PLANNING LABEL —
+      a milestone, phase, block, work-item or doc-section code (`M4`, `Block 3`,
+      `Phase 2.4`, `D8`, `F6`, `05 §6`, `Doc 19 §10`, `v0.7`, `runtime2`). The
+      private-item exemption rests on the reader being able to go READ the thing
+      named; a planning label names nothing in the tree, so nobody — caller or
+      implementer — can decode it, and the plan it came from may not exist.
+      A section reference is only spared when it names a live FILE the reader can
+      open (`docs/design/x.md §3`), never a bare code.
+
+      BOUNDARY: a noun that no longer resolves anywhere is
+      `refactor-history-narration`; the step list is `doc-narrates-steps`;
+      this OWNS live-but-unreachable vocabulary, and every planning label.
+
+      FIX: restate in the caller's terms (what it loads / returns / costs);
+      move the internal note to a `//` inside the body if an implementer needs it.
+
+  - name: redundant-signature-restatement
+    status: stable
+    description: |
+      ANTI-PATTERN: a doc/param comment that re-states the types or names the
+      signature already carries, adding nothing. Examples:
+        - `/// Takes a ReviewRequest and a reporter, returns a Result` over
+          `fn run(req: ReviewRequest, reporter: MultiReporter) -> Result<…>`
+        - `/// the run_id` on `run_id: RunId`
+
+      JUDGE: strip the comment — is any information lost that the signature or
+      field name didn't already give? If not, flag.
+
+      EXEMPT — never flag: a field/param comment that adds a UNIT, RANGE,
+      invariant, default, or domain meaning the type can't carry
+      (`/// seconds; None ⇒ no budget`, `/// git HEAD; None when rev-parse
+      fails ⇒ recorded as None`).
+
+      BOUNDARY: step-narration is `doc-narrates-steps`; this OWNS type-echo.
+
+      FIX: delete, or replace with the unit/range/invariant the type omits.
+
+  - name: missing-verb-first-summary
+    status: stable
+    description: |
+      ANTI-PATTERN: an item `///` whose first sentence is not a short,
+      third-person-verb-first summary. The first sentence is extracted alone
+      into the API index, so a doc that opens with framing, a caveat, or a
+      noun phrase produces an index entry that says nothing. Examples:
+        - `/// This function is used to check whether the entity holds …`
+        - `/// The L4-only open working set — the auto walk's board read (F3).`
+        - `/// Path to the tars TOML: `$ARC_TARS_CONFIG` wins; otherwise …`
+        - a doc whose first sentence is a parenthetical or a "Note:"
+
+      JUDGE: read ONLY the first sentence. Does it start with a verb and say
+      what the item does? If it needs the following sentences to make sense as
+      an index entry, flag it.
+
+      EXEMPT — never flag: a module `//!` (that shape is
+      `module-doc-not-elevator-pitch`); a field/variant doc (a noun phrase is
+      correct there); an item with no doc at all (absence is not this rule).
+
+      BOUNDARY: `doc-narrates-steps` owns the body of the doc; this OWNS the
+      shape of its FIRST sentence only.
+
+      FIX: lead with `Loads …` / `Returns …` / `Checks …`; push the framing to
+      the second sentence.
+
+  - name: explains-known-idiom
+    status: stable
+    description: |
+      ANTI-PATTERN: a comment that TEACHES the reader a standard language or
+      framework practice they already know. It does not restate the adjacent
+      code, so `what-narration` does not see it — it names a pattern and
+      explains why the pattern is good. Examples of the tell:
+        - "Resolved once at this composition root and injected down" over an
+          ordinary dependency injection
+        - "bridging once here keeps `block_on` out of the hot loop" over a
+          top-level `block_on`
+        - "so no flag has to be threaded through every call site"
+        - "`Arc` so the handle can be shared across tasks"
+        - "cloned here to satisfy the borrow checker"
+        - "not cached because it is never called in a hot path"
+
+      JUDGE: would a competent practitioner of THIS language, reading only the
+      code, already know this? If yes, flag it. Then apply the deletion test:
+      it stays only if its absence would make someone RESTRUCTURE the code —
+      "they might not know the pattern" is not that.
+
+      EXEMPT — never flag: a note explaining why the OBVIOUS idiom was NOT used
+      here (that is a real constraint); a project-specific helper whose name
+      does not carry its own contract (it may deserve one line AT ITS
+      DEFINITION, not at every call site); a measured performance note with a
+      number; a comment naming a language bug/version constraint.
+
+      BOUNDARY: restating the adjacent code is `what-narration`; the same
+      lesson repeated at N sites is `duplicated-why`; this OWNS teaching a
+      pattern the language's practitioners already have.
+
+      FIX: delete it. If the idiom genuinely needs explaining, its home is the
+      helper's own doc, once.
+
+  - name: contrast-with-sibling-implementation
+    status: stable
+    description: |
+      ANTI-PATTERN: a comment that defines this code by how it DIFFERS from
+      another live part of the system, rather than by what it is. The reader
+      has to load the sibling into their head to parse a sentence about THIS
+      code. Examples of the tell:
+        - "mints its OWN run id rather than adopting `WorkflowContext`'s UUID"
+        - "written at source, never batched at the end"
+        - "the store location is not an env toggle — it rides on `store_dir`"
+        - "the same flat shape as `review` / `verify`"
+        - a doc whose subject is a NEGATION: "no phase structs, no `Preflight`"
+
+      JUDGE: can the sentence be rewritten in the positive — stating what this
+      code does — with nothing lost? If yes, the contrast was decoration: flag
+      it and GIVE the positive form. Keep it only when negation is strictly
+      required.
+
+      EXEMPT — never flag: a negation about a FAILURE MODE — "an unresolved
+      HEAD fails the run, it is not skipped", "a crashed unit is not an `Err`".
+      That is the error contract, and deleting it invites a
+      `unwrap_or_default()` or a swallowed branch; rewrite it positively if you
+      can, but never drop it. Also exempt: a documented deviation a caller must
+      handle differently from the sibling ("unlike `get`, this does not create").
+
+      BOUNDARY: comparison against a PAST version is
+      `refactor-history-narration`; this OWNS comparison against a LIVE sibling.
+
+      FIX: state it positively. Keep the negation only for failure modes.
+
+  - name: refactor-history-narration
+    status: stable
+    description: |
+      ANTI-PATTERN: the codebase documents the PRESENT tense. Flag past-tense
+      migrations, deleted structures, and narration of the change itself.
+      Examples of the tell:
+        - "no phase structs, no `Preflight`, no `Prepared`/`ReviewEnv`"
+        - "dissects the god-args"; "the retired `begin_run`"
+        - "collapsed from the drive_parallel path"; "(supersedes the wrong one)"
+        - "used to read the stale snapshot; now reads the board"
+        - subjective markers: "god-struct", "disgusting", "finally"
+
+      JUDGE: does the sentence describe the CURRENT contract/role, or a past
+      version / the act of changing it? If it only makes sense to someone who
+      saw the diff, flag it.
+
+      EXTRA-STRONG signal (provably-stale dead reference): the narrative pins
+      an identifier / module / path that no longer resolves anywhere in the
+      tree — e.g. "Moved from `arc_llm::llm_client`" in a file whose type is
+      now `RoleClient`. Every dead proper noun is history that already rotted
+      into a lie — flag with high confidence.
+
+      EXEMPT — never flag: a comment naming a still-LIVE migration/compat
+      constraint the reader must respect NOW ("kept for DBs adopted before
+      migration 0002") — a date or version word does NOT by itself make a
+      comment history; a hazard stated in the past tense because that is when
+      it bit, where the invariant it guards is CURRENT ("keyed by rowid: a
+      per-review label collides and collisions overwrite silently"); a
+      `BOUNDARY:` cross-reference between two live rules; a published CHANGELOG
+      / migration-guide FILE or a `# Changed in vN` entry in external-facing
+      API docs (history IS their job).
+
+      BOUNDARY: a claim the code refutes is `comment-contradicts-code`; a
+      comparison against a LIVE sibling is
+      `contrast-with-sibling-implementation`; this OWNS the temporal baggage.
+
+      FIX: rewrite in the present tense (what it IS + why), or delete.
+
+  - name: module-doc-not-elevator-pitch
+    status: stable
+    description: |
+      ANTI-PATTERN: a module `//!` whose first sentence isn't a one-line "what
+      this file's job is", and/or that lists every fn/type or draws a
+      pseudocode flow diagram of `run`. The module doc is the index entry +
+      the guardrail, not a table of contents. Examples:
+        - a `//!` reproducing the 7-step body of `run()` as a diagram
+        - "[`run`] is the WHOLE composition, flat — no phase structs…"
+        - a bullet list inventorying the module's public functions
+        - restating what each CLI flag does
+
+      JUDGE: after the first sentence, does the doc give the module's ROLE in
+      the architecture + the INVARIANTS a maintainer must not break, or does
+      it duplicate the code below? Duplication → flag. Missing one-line pitch
+      → flag.
+
+      EXEMPT — never flag: a `# Core Concepts` section (defining the module's
+      jargon — Corpus, blackboard, etc.); `# Invariants` /
+      architecture-constraint sections; a short "shared by X and Y" boundary
+      note. These are the module doc's REQUIRED content, not narration.
+
+      BOUNDARY: the per-fn step list is `doc-narrates-steps`; the per-item
+      first sentence is `missing-verb-first-summary`; this OWNS the
+      module-header shape.
+
+      FIX: one-line elevator pitch + `# Invariants` (the do-not-cross lines) +
+      `# Core Concepts` if there's jargon. Delete the diagram and the inventory.
+
+  - name: over-verbose-comment
+    status: stable
+    description: |
+      ANTI-PATTERN: a comment that is correctly WHY-oriented (the other rules
+      pass) but says it as an ESSAY — hedging, re-statement, exhaustive
+      enumeration of cases that share one reason — where one or two tight
+      sentences carry the SAME information.
+
+      JUDGE: information density, never line count. Try to cut it in half; is
+      anything lost? If nothing is lost, flag it and say what to cut. Length is
+      NOT evidence: a genuinely subtle algorithm, a concurrency ordering, or a
+      list of distinct hazards can be worth a hundred lines, and a doc longer
+      than the body it documents is routinely CORRECT (a small orchestration
+      function whose whole product is its contract). If the paragraphs are all
+      load-bearing, the answer may be to make the CODE self-evident — never to
+      write a shorter essay that drops information.
+
+      EXEMPT — never flag: genuinely dense content that needs the words — a
+      subtle invariant, a non-obvious algorithm, a real hazard with several
+      distinct cases; a `# Core Concepts` / `# Invariants` section.
+
+      BOUNDARY: the WHAT-types are the other rules; a second copy of the same
+      why is `duplicated-why`; this OWNS pure LENGTH of a legit comment.
+
+      FIX: cut to the essential sentence(s); push the rest into a better-named
+      helper or type.
+
+  - name: commented-out-code
+    status: stable
+    description: |
+      ANTI-PATTERN: a block of commented-out code left in the tree. Version
+      control already holds it; in the file it is a fork nobody compiles,
+      nobody tests, and everybody hesitates over ("is this coming back?").
+      Examples:
+        - `// let x = old_path(a, b);` above the new call
+        - a commented-out `#[test]` / config block / import list
+        - a disabled branch preserved "just in case"
+
+      JUDGE: is the comment SYNTAX of this language rather than prose — an
+      assignment, call, block, attribute, or import? Flag it. One commented
+      line used as an EXAMPLE inside an explanatory sentence is prose.
+
+      EXEMPT — never flag: a doc example / doctest (`/// let x = f();`); a
+      commented config line in a template or `.example` file whose job is to
+      show the available knobs; a single line commented out WITH a live reason
+      and a tracking reference ("disabled until #412 lands — re-enable with…").
+
+      BOUNDARY: leftover debugging OUTPUT is `debug-residue`; this OWNS
+      code-shaped comments.
+
+      FIX: delete it. If it may return, that is what the commit history is for.
+
+  - name: debug-residue
+    status: stable
+    description: |
+      ANTI-PATTERN: scaffolding from a debugging session left in committed
+      code — an ad-hoc `print` / `println!` / `console.log` / `dbg!` on a path
+      that has a real logger, a temporary `eprintln!("HERE")`, a hardcoded
+      short-circuit added to reproduce a bug.
+
+      JUDGE: is this output the program's PRODUCT (CLI output, a report) or a
+      developer's trace? A trace on a library path, or any marker-style message
+      ("HERE", "xxx", "test123"), is residue.
+
+      EXEMPT — never flag: a CLI's intentional user-facing output; a real
+      logging call (`tracing::debug!` / `log.debug`) — a level, not residue; a
+      print inside an example, test fixture, or debugging tool whose job is to
+      print.
+
+      BOUNDARY: code-shaped COMMENTS are `commented-out-code`; this OWNS live
+      debugging statements. (Kept in this rubric so the residue pair lives in
+      one place, though the site is code rather than comment text.)
+
+      FIX: delete, or convert to a real logger call at the right level.
+
+  - name: todo-without-owner
+    status: stable
+    description: |
+      ANTI-PATTERN: a bare `// TODO` / `// FIXME` / `// XXX` with no owner and
+      no issue/tracking reference — an orphan debt no one can be held to. A
+      prose debt marker counts ("temporary until the pipeline is migrated").
+
+      JUDGE: is there a `TODO(owner)` or an issue/bug/doc reference? If
+      neither, flag.
+
+      EXEMPT — never flag: `TODO(name): …`, or `TODO: … (see #123 / docs/…)`;
+      a comment that is a present-tense limitation note, not a debt marker
+      ("advisory-only until the precision bar is measured").
+
+      BOUNDARY: standalone.
+
+      FIX: add an owner `TODO(hucao): …` or an issue link, or do the thing.

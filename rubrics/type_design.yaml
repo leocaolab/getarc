@@ -1,0 +1,778 @@
+name: Type Design (new types only)
+description: |
+  判一段改动里「新加的类型」(struct / enum / trait / type 别名 / 错误类型)——
+  它有没有必要、名字对不对、住对地方没有、形状是不是 total。这是判据的原文:
+  `type-naming` 与 `name-check` 两个 skill 只引用这里,不另写一份。
+
+  为读的人优化,不为写的人优化:一个新类型要能用一句外行听得懂的话说清它是什么;
+  说不清,就是没必要。说得清了,再看已有的类型装不装得下;装不下,才起名。
+
+  只审新加的:搬家、改缩进、改路径(同名同种类在同一段改动里被删过)不算新类型;
+  main 上已有的坏名字不是先例,也不在这里审。每个新类型逐条过下面的规则,
+  一条规则只问一个问题,答「是」就是一条 finding;给出原文行、答案和依据。
+  能删的写「删」和怎么删;要改名的给 1–2 个候选名,各说一句它的角色(名字由维护者定)。
+
+  规则按六组排:词性(按种类) → 说得清 → 要不要 → 住对地方 → 形状三条(透明度 / total / 规范化) → 弱类型字段。
+  `applies_to: type_design`:只由新类型评审者(b/2442)加载,不进每个文件的 L4 评审。
+
+language: [rust]
+
+# `type_design` scope: loaded ONLY by the new-type reviewer, never pulled into the
+# per-file L4 set (`rubric_set_for`), the L5 judge, or the structural pass.
+applies_to: type_design
+
+rules:
+  # ── 一、词性:按种类各有规矩 ─────────────────────────────────────────
+
+  - name: data-type-named-by-verb
+    status: stable
+    severity: warning
+    summary: struct / enum / 非错误类型的名字不是名词(动词、过去分词、进行时)
+    gate_question: 这个 struct / enum / 别名(不是错误类型)的名字是名词或名词短语吗?
+    description: |
+      ANTI-PATTERN:装数据的类型(struct、enum、type 别名,错误类型除外)名字是动词、过去分词或
+      进行时(`Said` / `Looked` / `Handed` / `Answered` / `Entering` / `Watched` / `Told` / `Mailed`)。
+      读起来像一个动作,读者要猜「谁做了什么、结果放在哪」。
+
+      类型名一律是名词或名词短语(Google 的约定,enum 也一样);形容词、分词只用在 enum 的**变体**上 ——
+      变体说的是一个状态或一个结局,类型名说的是「这是什么东西」。
+
+      JUDGE:只看类型名本身。名词 / 名词短语(`State`、`Delivery`、`WatchOutcome`、`ReviewReplyRequest`)= 过;
+      动词 / 分词 / 进行时 = 判负。
+
+      EXEMPT:trait(见 `trait-not-a-capability-or-doer`);enum 的变体(错误 enum 的变体见
+      `error-variant-not-named-by-its-cause`)。
+
+      FIX:改成说它是什么的名词(`Watched` → `WatchOutcome`,`Told` → `LetterOutcome`);
+      常常先该问它要不要存在(`Handed`、`Said` 最后都被删了)。
+    why: |
+      2026-10-07 #3121 的评审:一个 PR 冒出十几个分词名类型,维护者逐个问「是什么」,问不清的全删了。
+      动作名的数据类型让读者猜主语和结果在哪,是「为写的人优化」。
+    example_bad: |
+      enum Watched { Queued, DeadLettered }
+      struct Said { findings: Vec<Finding>, events: Vec<Event> }
+    example_good: |
+      enum WatchOutcome { Queued, DeadLettered }
+      // `Said` 删掉:直接组装已有的 `ReviewReplyRequest`
+
+  - name: variant-tense-mismatches-its-role
+    status: stable
+    severity: warning
+    summary: enum 变体的时态和它的角色不符(状态 / 事件 / 错误原因)
+    gate_question: 这个 enum 的变体按它的角色用对了词性吗 —— 状态用形容词/过去分词,事件用过去式,错误变体说原因?
+    description: |
+      ANTI-PATTERN:状态机三样东西时态混用。
+        - 状态(State):形容词或过去分词,表示已经达成的事实 —— `Open`、`Closed`、`Escalated`、`Fixed`。
+        - 命令(Command):祈使动词,表示想要干什么 —— 写成函数 `admit()`、`escalate()`,不是变体。
+        - 事件(Event):刚刚发生了什么,过去式 —— `FindingEscalated`、`CommentAdded`;arc 的 `EventKind`
+          是 `Found`、`Reopened`、`Fixed`。
+        - 错误变体:说原因 —— `BridgeOff`、`NoPrNumber`。
+
+      JUDGE:先认出这个 enum 是状态、事件还是错误(看名字和读者),再逐个变体看词性是否一致。
+      一个状态 enum 里出现祈使动词(`Close`)、一个事件 enum 里出现形容词,判负。
+
+      EXEMPT:集装箱 enum 的变体直接用成员的名词(`ReviewRequest::Update(ReviewUpdateRequest)`)。
+
+      FIX:按角色改变体;命令改成函数。
+    why: 维护者点名认可的一条:状态 / 命令 / 事件时态混用,会导致逻辑极其混乱 —— 读者分不清这是已经发生的事还是要做的事。
+    example_bad: |
+      enum FindingState { Open, Close, Escalate }
+    example_good: |
+      enum FindingState { Open, Closed, Escalated }
+      fn escalate(finding: &Finding) -> Command { /* … */ }
+
+  - name: error-variant-not-named-by-its-cause
+    status: stable
+    severity: warning
+    summary: 错误 enum 的变体没说死因,或把 Err 一边做成像实体的类型
+    gate_question: 这个错误是一个 `XxxError` enum(一种操作的失败都装在里面),且每个变体都说出了一种死因(`NotDelivered`)吗?
+    description: |
+      `XxxError` 是一个 enum —— 一个袋子,装一种操作所有可能的失败;袋子里的每个变体是一种死因,
+      按死因起名:`Not` + 分词 / 名词(`NotDelivered`、`NotMoved`、`NotAPrNumber`),或说死因的名词短语
+      (`UnreadableBranchName`、`AuthorNotFound`、`RateLimitExceeded`)。袋子只有一个变体也对
+      (`LexError::UnterminatedBlockComment`):名字是这种操作的,变体是这次的死因。
+
+      ANTI-PATTERN:
+        - 变体说遗体不说死因:`Error(String)`、`Failed`、`Other(String)`、`Io`(没说读什么、写什么)——
+          读的人还要去翻实现才知道错在哪。
+        - 把 `Result` 的 Err 一边做成一个像实体的类型(`RefusedPr`)。
+
+      JUDGE:逐个变体看:说得出一种死因吗?说不出、或 Err 一边读起来像一个东西而不是一种失败,判负。
+      `XxxError` 这个 enum 名本身不判。
+
+      FIX:按死因给变体重起名;若只是转发一个下层错误,见 `error-shape-ignores-its-callers`(直接返回它)。
+    why: |
+      维护者:「error可以是vered. NotDelieved」「Error 是个 bag,NotDelivered 是其中一个」(2026-10-10);
+      对 `RefusedPr`:「就是 either 的错误那边」(docs/design/pr-concept-brainstorm.md §3.7)。
+      死因名一眼说清错在哪,遗体名还要读者去翻实现。
+    example_bad: |
+      #[derive(thiserror::Error, Debug)]
+      pub enum PrParseError {
+          #[error("bad pr: {0}")]
+          Failed(String),
+      }
+    example_good: |
+      #[derive(thiserror::Error, Debug)]
+      pub enum PrParseError {
+          #[error("{0:?} is not a PR number")]
+          NotAPrNumber(String),
+      }
+
+  - name: trait-not-a-capability-or-doer
+    status: stable
+    severity: warning
+    summary: trait 名不是能力形容词或执行者名词,或和实现它的 struct 同名
+    gate_question: 这个 trait 的名字是能力形容词或执行者名词(`Reviewer`、`Runner`、`Clock`),且不和实现它的类型同名吗?
+    description: |
+      ANTI-PATTERN:trait 名是一个动作(`Review`、`DoFetch`)、一个数据名词(`ReviewData`),
+      或和实现它的 struct 同名(同名不同物)。trait 的方法是动词。
+
+      JUDGE:读 trait 名,问「实现它的东西**是**一个 X 吗 / **能** X 吗」—— `impl Reviewer for ClaudeCritic`
+      读得通 = 过。
+
+      EXEMPT:Rust 标准库风格的动词 trait(`Read`、`Write`、`Display`)只在它确实是一种通用能力时。
+
+      FIX:改成执行者名词或能力形容词;若它根本不该是 trait,见 `action-disguised-as-type`。
+    why: trait 说的是「谁能做什么」;名字是动作或数据,读者分不清它是能力还是一样东西。
+    example_bad: |
+      pub trait Review { fn run(&self, task: Task) -> Findings; }
+    example_good: |
+      pub trait Reviewer { fn review(&self, task: Task) -> Findings; }
+
+  - name: alias-restates-its-structure
+    status: stable
+    severity: warning
+    summary: type 别名的名字复述结构或是动作,不说它的角色
+    gate_question: 这个 `type` 别名的名字是说得出它角色的名词,而不是复述右边的结构或一个动作吗?
+    description: |
+      ANTI-PATTERN:别名可以有,但名字是分词(`type Looked = …`)或在复述结构
+      (`type FindingVec = Vec<Finding>`)。底层从 `Vec` 换成 `HashSet`,名字不该跟着改。
+
+      JUDGE:遮住右边,只读名字 —— 能说出「这是这一轮的什么」吗?能 = 过。
+
+      FIX:按角色起名(`type ReviewFindings = …`、`type EventBuffer = …`);
+      若别名只是给一个已有类型换个名字、没有新角色,删掉直接用原类型。
+    why: 别名的价值就是给一串结构起个角色名;复述结构等于没起。
+    example_bad: |
+      type Looked = Arc<Mutex<Vec<ReviewBatches>>>;
+      type Answered = Arc<Mutex<Vec<(FindingId, EventKind)>>>;
+    example_good: |
+      /// 这一轮评审收上来的 findings。
+      type ReviewFindings = Arc<Mutex<Vec<ReviewBatches>>>;
+      /// 这次 update 的 events,填满前的缓冲。
+      type EventBuffer = Arc<Mutex<Vec<(FindingId, EventKind)>>>;
+
+  - name: type-name-names-format-or-mechanism
+    status: stable
+    severity: warning
+    summary: 类型名写的是格式或机制(Json / Toml / Vec / Map / Dto)而不是它是什么
+    gate_question: 这个类型名里有没有格式或机制词(`Json`、`Toml`、`Vec`、`Map`、`Dto`、`Arc`),而类型本身和那个格式 / 机制无关?
+    description: |
+      ANTI-PATTERN:类型名写的是读进来的格式或底层结构(`FixAnswerJson`、`PrMap`、`EventVec`)。
+      序列化是入口的事,类型说的是它在业务上是什么;底层结构谁都看得见。字段名同理:说意图不说机制
+      (`open_prs` 不是 `pr_map`)。
+
+      JUDGE:把名字里的格式 / 机制词删掉,看结构体本身还和那个词有没有关系。没关系 = 判负。
+
+      EXEMPT:类型**就是**那个格式的适配器表示(一个 serde 线上 DTO 住在适配器里、名字说它是哪个协议的
+      哪种消息)——但仍不写 `Dto` 这种空词。
+
+      FIX:去掉格式词,用它的业务角色(`FixAnswerJson` → `FixAnswer`)。
+    why: |
+      维护者对 `FixAnswerJson`:「你看看这个名字,怎么能过name check?」「下面和json有啥关系?」
+      → 「FixAnswer 好了,哪里是json了」。
+    example_bad: |
+      #[derive(serde::Deserialize)]
+      pub struct FixAnswerJson { pub finding: FindingId, pub kind: Kind }
+    example_good: |
+      #[derive(serde::Deserialize)]
+      pub struct FixAnswer { pub finding: FindingId, pub kind: Kind }
+
+  - name: junk-or-coined-word-in-type-name
+    status: stable
+    severity: warning
+    summary: 类型名用了垃圾词(Manager/Helper/Util/Data/Info)、自创隐喻,或蓝精灵命名
+    gate_question: 这个类型名里有垃圾词(`Manager`/`Helper`/`Util`/`Data`/`Info`)、只有作者懂的自创隐喻,或重复了模块路径已经说过的词吗?
+    description: |
+      ANTI-PATTERN:
+        - 垃圾词:`Manager`、`Helper`、`Util`、`Data`、`Info` —— 说明没想清它的单一职责;
+          `PrInfo` 什么也没说,不如说清它是哪一刻的 PR(`Snapshot`)。
+        - 自创隐喻:`MergeLane`、`LaneExit`、`Railway` —— 本质是队列就叫 `Queue`,是一道检查就叫
+          `Gate` / `Check`;先用行业通用词,再用维护者和设计文档里已有的词。
+        - 蓝精灵命名:模块路径已经说了的,类型名再说一遍(`infra::pr::InfraPrRef`)。
+        - 为省字的缩写:通用的(`Id`、`Pr`、`Sha`、`Db`)可以,其余写全。
+
+      JUDGE:逐词看名字。任一条命中 = 判负。`Context` / `Ctx` 不一刀切:一次运行的环境确实是个概念;
+      它成了什么都往里塞的袋子时,判 `parameter-bag-type`。
+
+      FIX:重起一个说清角色的名词;候选交维护者。
+    why: 维护者对 `Seen` 的原话是「Seen? ?????」,对 `OpenPr` 是「为什么叫做 OpenPr」—— 读的人要问,就是名字没说清。main 上已有的这类名字(`PrInfo`、`EventData`)不是先例,是待改的债。
+    example_bad: |
+      // in infra::pr
+      pub struct InfraPrInfo { /* … */ }
+      pub struct MergeLane { pending: VecDeque<Pr> }
+    example_good: |
+      // in infra::pr
+      pub struct Snapshot { /* … */ }
+      pub struct MergeQueue { pending: VecDeque<Pr> }
+
+  - name: metaphor-word-in-place-of-the-fields-term
+    status: experimental
+    severity: warning
+    summary: 名字用了日常比喻词(世界、场所、问/答、说、死、平息、摘录),而本行业对这件事有通用词
+    gate_question: 只看这个名字、不看定义,一个写过操作系统或分布式系统的工程师能说出它是什么吗 —— 本行业对这件事有通用词的话,它用的就是那个词(或设计文档里定义过的词)吗?
+    description: |
+      ANTI-PATTERN:名字是正常的英文名词,形式上过了词性、垃圾词、撞名每一条,却是一个日常或文学比喻,
+      读的人要先猜出比喻、再翻回行业词:
+        - 哲学宏大化:`World`(越过核心边界的类型 → `boundary`;测试里核心 + 替身 + 时钟 → `Harness`)、
+          `Place`(隔离级别 → `Isolation`)、`Excerpt<T>`(有上限的列表 → `BoundedList<T>`)。
+        - 对话拟人化:`Ask` / `Answer` / `Answer::Ended`(提交一次执行 / 回复 → `Submit` / `Reply`,和已有的
+          `ReplyTo` 成对)、`Act::Say`(替身发出一条上报 → `Emit`)、`Refuser`(→ 已有的 `DenialSource` / `Guard`)。
+        - 口语造词:`Death`(进程怎么结束 → `RuntimeExit`;`ExitStatus` / `Termination` 和 std 撞名)、
+          `UnaskedStop`(→ `SpuriousStop`,取自 spurious wakeup)、`settle`(排空到静止 → `run_until_idle` / `drain`)。
+        - 在用的地方读不通:`CallEnd { end: End }` 写出来是 `w.end(call).end`(→ `CallResult { outcome: Outcome }`)。
+      和 `junk-or-coined-word-in-type-name` 的区别:那条抓垃圾词和自己造的词(`MergeLane`);这条抓的词
+      本身体面、人人认识,但它在这里是比喻,而这件事在行业里另有名字。
+
+      JUDGE:逐个名字(类型、变体、字段;name-check 里连同新模块名、公开函数名、测试夹具名)问三件事:
+        1. 它是比喻吗(把它换成字面意思,说的还是这件事吗)?
+        2. 这件事在操作系统 / 网络 / 分布式系统 / 编译器里的通用词是什么?设计文档定义过的词算通用词。
+        3. 放进一行真实调用里念出来,通顺吗,有没有叠词?
+      1 是比喻且 2 有通用词而没用,或 3 读不通 = 判负。说得出不用通用词的理由(和 std 或仓里的另一个东西撞名、
+      通用词在这个仓里已经指别的东西,如 `Runtime`)= 过,把理由写进 finding。
+      成对的概念用成对的词(`ReplyTo` ↔ `Reply`、`BoundedText` ↔ `BoundedList`);只改一半也判负。
+
+      FIX:换成那个通用词;候选交维护者。改了就整套改(`Ask` 和 `Answer` 一起)。
+    why: |
+      2026-10-28 jigbox core-ng(b/339):`World`、`Place`、`Ask`/`Answer`、`End`、`Death`、`settle`、`Excerpt`、
+      `Say`、`UnaskedStop` 过了第一组每一条和九层审查,维护者一个词一个词问出来 ——「World呢」「为什么不是runtime?」
+      「我担心就是answer这种过于抽象啊的」「你去看看所有大而不当，过于抽象，计算机行业的人也无法一下理解的词」。
+      名字规则只查形式,不查词汇;日常词对写的人顺口,读的人多一次翻译。
+      复盘:jigbox `docs/retro/2026-10-28-everyday-metaphors-in-place-of-the-fields-terms.md`。
+    example_bad: |
+      mod world;
+      pub enum Place { Process, Interp }
+      pub enum Effect { Answer { to: ReplyTo, answer: Answer } }
+      pub enum Answer { Ended(CallEnd) }
+      pub struct CallEnd { pub end: End }
+      pub enum Death { Exited { code: i32 }, Signaled { signal: i32 } }
+    example_good: |
+      mod boundary;
+      pub enum Isolation { Process, Subinterpreter }
+      pub enum Effect { Reply { to: ReplyTo, reply: Reply } }
+      pub enum Reply { Ran(CallResult), Unrun(UnrunCause) }
+      pub struct CallResult { pub outcome: Outcome }
+      pub enum RuntimeExit { Code(i32), Signal(i32) }
+
+  - name: type-name-collides-or-is-generic
+    status: stable
+    severity: warning
+    summary: 类型名和仓里另一个不同的东西同名、太空泛,或同一个名字换了意思
+    gate_question: "`git grep -nwE '(struct|enum|trait|type) <Name>'` 下,这个名字是独一无二(或同名的几个都只带模块路径用)、说得出「谁的、什么的」,且没有沿用旧名装新东西吗?"
+    description: |
+      ANTI-PATTERN:
+        - 同名不同物:`type Looked`(别名)和 `review_agents::review::look::Looked`(struct)是两个东西却同名;
+          trait 和实现它的 struct 同名也算。
+        - 太空泛:`Answers` 仓里已有 3 个不同的类型;`Record` 也有 3 个 —— 说不出谁的、什么的。
+        - 同一个名字前后换了意思:`FixInput` 在 base 里是 enum,改动后变成 `Vec<…>` 的别名 ——
+          名字没变,东西变了,旧读者会被误导。
+
+      JUDGE:对新名字跑 `git grep -nwE '(struct|enum|trait|type) <Name>' -- 'crates/*.rs'`;
+      和 base 对比同名定义。命中另一个不同的定义、或名字是一个不带角色的泛词、或同名换了种类 / 意思 = 判负。
+
+      EXEMPT:同名的几个定义,每一个的调用方都带模块路径写(`review::Outcome`、`build::Outcome`),
+      或它只在定义它的文件里用 —— 模块路径已经说出「谁的」,不判负;这是 `junk-or-coined-word-in-type-name`
+      禁止蓝精灵命名的另一面。只要有一处 `use …::Outcome;` 裸导入、或被 `pub use` 转出到上层模块,
+      读的人就看不出是哪一个,照样判负。同名换了种类 / 意思不在例外里。
+
+      FIX:换一个带角色的名词;候选交维护者。
+    why: 同名让读者把两个东西当成一个;泛词让 grep 失效;换意思的旧名误导所有记得旧意思的人。
+    example_bad: |
+      // 仓里已有 3 个 `Answers`
+      pub struct Answers(Vec<(FindingId, Kind)>);
+    example_good: |
+      /// 作者对这一轮 findings 的回答。
+      pub struct AuthorAnswers(Vec<FixAnswer>);
+
+  # ── 二、说得清它是什么 ───────────────────────────────────────────────
+
+  - name: type-not-sayable-in-one-sentence
+    status: stable
+    severity: error
+    summary: 一句外行听得懂的话说不清它装的是什么、谁产出、谁读
+    gate_question: 能用一句外行听得懂的话说出这个类型装的是什么、谁产出它、谁读它吗?
+    description: |
+      ANTI-PATTERN:说这个类型是什么,要用「A、B、以及 C」把几样东西拼起来,一句话说不完;
+      或者只能说出它的结构(「一个装着三个 Vec 的 struct」),说不出它在业务上是什么。
+
+      JUDGE:写下那一句话:「<名字> 是 <业务上的什么>,由 <谁> 产出,给 <谁> 读」。
+      写不出来,或要用并列把几样东西串起来 = 判负。作用域越大,这句话越要精确:跨 crate 的 `pub`
+      类型要一眼说清。
+
+      FIX:说不清 = 没必要 —— 先看它是不是参数袋(`parameter-bag-type`)或已有类型装得下
+      (`existing-type-already-fits`),删掉;真是一个概念,按那句话起名。
+    why: 「说不清,就是没必要」—— type-naming 的第一关。#3121 里问不清的类型全删了,删完代码更短、更清楚。
+    example_bad: |
+      /// 分好块的 finding、作者欠回答的全部 finding、每条的最后一句。
+      struct Handed { chunks: Vec<Chunk>, owed: Vec<Finding>, last: HashMap<FindingId, Text> }
+    example_good: |
+      /// 看板上一个开着的 PR 的一行。
+      struct OpenChange { pr: Pr, title: Text, head: CommitSha }
+
+  # ── 三、要不要 ──────────────────────────────────────────────────────
+
+  - name: action-disguised-as-type
+    status: stable
+    severity: error
+    summary: 一件事(动作)被做成了类型 —— struct 只装动作的参数,或 trait 只为「以后可能换实现」
+    gate_question: 这个 struct / trait 是不是一个被包成类型的函数 —— struct 只装它唯一那个方法要的参数,或 trait 现在只有一个实现?
+    description: |
+      ANTI-PATTERN:动作是函数,不是类型 —— 不要把纯函数伪装成类型。
+        - 一个 struct 只装着调用方手里本来就有的参数,唯一的方法就是那个动作。
+        - 一个 trait 现在只有一个实现,存在只为「以后可能有第二个实现」。
+
+      JUDGE:列出这个类型的方法和实现。struct 只有一个「做事」的方法、字段全是那个方法的参数 = 判负;
+      trait 现在少于两个实现、或不作为值传来传去 = 判负。
+
+      EXEMPT:trait **现在**就有两个以上实现、且要作为值传来传去(driver)。
+
+      FIX:写成一个函数(`push_request(repo, request)`);将来要换实现,调用方收一个函数参数,仍然不要类型。
+    why: |
+      维护者对 `OriginRef { repo, remote }` + `trait ReviewService`:「OriginRef 干嘛的?」「为什么我门需要它」
+      「一个函数不行吗?」「不要吧函数混为type」。
+    example_bad: |
+      pub struct OriginRef { repo: RepoRoot, remote: RemoteName }
+      impl OriginRef { pub fn push(&self, request: &ReviewRequest) -> Result<(), GitError> { /* … */ } }
+      pub trait ReviewService { fn push(&self, request: &ReviewRequest) -> Result<(), GitError>; }
+    example_good: |
+      pub fn push_request(repo: &RepoRoot, request: &ReviewRequest) -> Result<(), GitError> { /* … */ }
+
+  - name: parameter-bag-type
+    status: stable
+    severity: error
+    summary: 类型只是把几样不相干的东西捆在一起,为了凑参数原样转给一个函数
+    gate_question: 这个 struct 是不是只为把几样东西原样转给一个函数而存在的参数袋?
+    description: |
+      ANTI-PATTERN:三样东西拼在一起、一句话说不完,只在一处构造、原样交给一个函数(或一个 `Run`)
+      再拆开用。参数袋是「装配混进了步骤」的症状:本该在一处装配的东西被打包运到了下一步。
+
+      JUDGE:找它的构造点和读者。只在一处构造、只被一个函数拆开读、字段之间没有共同的业务意义 = 判负。
+      `Context` / `Ctx` 成了什么都往里塞的袋子,同样判负。
+
+      EXEMPT:几样东西**总是**一起出现、在多处一起流转、拆开会超参数上限 —— 写出这个理由才留。
+
+      FIX:删掉,把已有的那个类型交出去,零散的单独传(`Handed` → 把已有的 `Assembled` 交给 `fix()`,
+      `last` 单独传);装配只在入口做一次。
+    why: 参数袋给一次函数调用起了个名字,却没有对应的概念;读者要追到构造点才知道里面装的是什么。
+    example_bad: |
+      struct Handed { chunks: Vec<Chunk>, owed: Vec<Finding>, last: HashMap<FindingId, Text> }
+      fn fix(handed: Handed) { /* 拆开 handed.chunks / handed.owed / handed.last */ }
+    example_good: |
+      fn fix(assembled: &Assembled, last: &HashMap<FindingId, Text>) { /* … */ }
+
+  - name: outcome-enum-is-a-disguised-result
+    status: stable
+    severity: error
+    summary: 一个「结局」enum 里一半是成功、一半是为什么没成 —— 改装的 Result
+    gate_question: 这个 enum 的变体里是不是同时有成功和失败?
+    description: |
+      ANTI-PATTERN:成功和失败混在一个 enum 里(`WatchOutcome { Queued, DeadLettered, Malformed, Unfetched }`,
+      `Queued` / `DeadLettered` 是成功、其余是失败)。调用方没法用 `?`,每个读者都要自己分哪些算失败。
+
+      JUDGE:逐个变体问「这是成了还是没成」。两类都有 = 判负。
+
+      FIX:写成 `Result<成功的那个, 说死因的错误>`;成功只有一种就是 `Result<(), E>`。
+    why: 维护者对 `RefusedPr`:「就是 either 的错误那边」。`Result` 已经是成功/失败的和类型,再造一个是第二种写法。
+    example_bad: |
+      enum WatchOutcome { Queued, DeadLettered, Malformed, Unfetched }
+    example_good: |
+      fn take(…) -> Result<(), WatchError>;
+      #[derive(thiserror::Error, Debug)]
+      enum WatchError { #[error("fetching {at}")] Unfetched { at: RefName, #[source] source: GitError } }
+
+  - name: existing-type-already-fits
+    status: stable
+    severity: error
+    summary: 仓里已有类型装得下这份数据,或新 enum 的变体是已有 enum 的子集
+    gate_question: 仓里有没有一个已有类型(或它的一部分、或某个已有 enum)已经装得下这份数据?
+    description: |
+      ANTI-PATTERN:同一份数据,仓里已经有一个类型,或它就是某个已有类型的一部分 / 填满之前的样子。
+        - 字段就是某个已有类型的几个字段(`Entering { reviewer, name, fingerprint }` —— `reviewer`、`name`
+          就是 `Route` 的两个字段)。
+        - 内容就是某个已有请求 / 回复(`Said` 就是 `ReviewReplyRequest`)。
+        - 新 enum 的变体是某个已有 enum 变体的子集(`FixDecision { Fixed, Wontfix }` ⊂ `event::Kind`)。
+        - 同一个读列函数 / 小类型在几个模块各抄一份(一个概念几个名字)。
+
+      JUDGE:按字段名和变体名 grep 仓里已有的类型。找到一个装得下的 = 判负,写出那个已有类型的路径。
+
+      FIX:删掉,用已有的类型;子集的约束交给已经管着它的那一处(`accept` 的交替规则),入口不重写。
+      要命名缓冲,按角色起别名(`type EventBuffer`),不造新概念。
+    why: |
+      维护者对 `FixDecision`:「这不是就是finding state吗?」「为什么你还创造一个new enum」。
+      一个概念两个类型,迟早漂开。
+    example_bad: |
+      enum FixDecision { Fixed, Wontfix }
+      struct FixAnswer { finding: FindingId, decision: FixDecision }
+    example_good: |
+      struct FixAnswer { finding: FindingId, kind: event::Kind }
+
+  - name: type-only-read-to-print
+    status: stable
+    severity: error
+    summary: 类型唯一的读者只是把它打印 / 写成日志 —— 没有真正的读者
+    gate_question: 生产代码里除了把它打印、拼成 JSON 输出、或逐变体翻译成一行日志,还有谁读这个类型?
+    description: |
+      ANTI-PATTERN:
+        - 只为输出 / 显示存在:`AbandonEnvelope`(`--json` 输出),只在一处拼一次就打印。
+        - 只为日志存在:产出方把「刚才发生了什么」装进一个结局 enum,用 `Vec` 带出函数,在很远的地方
+          (`journal.rs`)拆开、逐个变体翻译成 `tracing::info!` / `warn!`。
+
+      JUDGE:grep 这个类型在**生产代码**里的每个读者。答不出一个按它做事的读者(代码、另一个进程)= 判负。
+      测试在读不算读者 —— 测试该断言看得见的状态(库里的行、远端的 ref、文件)或日志原文。
+
+      EXEMPT:还有别的读者按它做事(handler 的 RPC 返回值 `Taken`,本地 driver 也读)—— 留,只把日志挪回源头。
+
+      FIX:输出在那一处用 `json!({…})` 或格式化字符串直接拼;日志在发生的那一刻当场写,
+      函数只交回调用方真要用的东西(`Result<(), 整体失败>` 或一个计数)。
+    why: |
+      维护者对 `AbandonEnvelope`:「谁用它?如果就是显示一下,为什么要type?」「就是一个josn好」;
+      对日志结局 enum:「不是仅仅 error,log trace 也有这个毛病」。说的人不是做的人,还得为了「说」造一个类型。
+    example_bad: |
+      enum WatchOutcome { Queued(RefName), Malformed(String) }
+      fn watch(…) -> Vec<WatchOutcome>;
+      // journal.rs
+      for o in outcomes { match o { WatchOutcome::Queued(r) => info!(%r, "queued"), /* … */ } }
+    example_good: |
+      fn take(…) -> Result<(), WatchError> {
+          // …
+          tracing::info!(%at, "queued");
+          Ok(())
+      }
+
+  - name: error-variant-without-a-real-failure
+    status: stable
+    severity: error
+    summary: 错误变体不是一种真会发生的失败 —— 不会发生、只重述下层库、在拦一个本该造不出的值,或「不是我的」
+    gate_question: 这个错误的每个变体都是真会发生、不是重述下层库、不是在拦一个本该造不出的值、也不是「不是我的」吗?
+    description: |
+      ANTI-PATTERN:错误类型三问,任一为「是」,那个变体(常常是整个类型)该删:
+        1. 不会发生:编码我们自己的类型失败(`Encode(serde_json::Error)`)。
+        2. 只重述下层库:手工判「是不是数组」、逐项数第几、抄原文,只为把 serde 的话重新组织一遍
+           (`NotFixAnswers { NotAnArray, Item { at, raw, why } }`)。
+        3. 在拦一个本该造不出的值:`Both` / `Neither` / `Missing` 变体在拦另一个不 total 的类型
+           (`NotAnAnswer { Both, Neither }` 拦 `{ fixed: Option, wontfix: Option }`)。
+           「格式不对」(`NotARef` / `NotAnOid` / `Malformed`)出现在内层 = 有适配器把 `String` 原样交了出来。
+        4. 「不是我的」不算错误,是 `Option`(`Elsewhere` → `filter_map` 跳过)。
+
+      JUDGE:逐个变体过四问。看到 `Both` / `Neither` / `Missing` / `Malformed`,先回头查是哪个类型不 total、
+      哪个适配器没解析。
+
+      FIX:把那个类型改 total(见 `type-not-total`),错误整个删掉;库的错误原话直接带上来(`#[source]`);
+      「不是我的」改 `Option`;解析只在适配器入口做一次。
+    why: 维护者对 `NotAnAnswer`:「这是什么屁话」;对 `NotFixAnswers`:「这个也是狗屁不同」。错误变体拦的是类型设计的漏洞,修类型,不修错误。
+    example_bad: |
+      struct FixAnswer { fixed: Option<Text>, wontfix: Option<Text> }
+      enum NotAnAnswer { Both, Neither }
+    example_good: |
+      enum FixAnswer { Fixed(Text), Wontfix(Text) }
+      // NotAnAnswer 删掉:非法值造不出来
+
+  - name: error-shape-ignores-its-callers
+    status: stable
+    severity: error
+    summary: 错误拆成了没人按它分支的 enum 变体,或只为转发一个错误再包一层
+    gate_question: 调用方有没有一处生产代码按这个错误的变体分头处理(重试 / 拒收 / 跳过)?没有的话,各变体是不是各自带着不同的事实、并且写进了它自己的错误信息?两者都没有才是判负。
+    description: |
+      ANTI-PATTERN:错误的形状不跟着调用方走 —— 变体之间没有任何区别。
+        - 所有生产调用方都只把它打印成一行日志或往上抛,变体之间却没有任何区别:
+          它们带的是同一个事实,或只是同一事实的不同措辞(`Invalid(String)` / `Malformed(String)` 都只带一段原文)。
+        - 只转发一个下层错误,却包了一层只有一个 `#[error(transparent)]` 变体的 enum(`SendError { Git(GitError) }`)。
+        - 只有测试在 match 的变体 —— 留着不算理由。
+        - 汇总错误却只有一个来源。
+
+      JUDGE(按顺序,命中即停):
+        1. grep 每个变体在生产代码里的 match。有一处按变体分支 = 不报。
+        2. 没有分支:看各变体带的事实。事实是**不同的**(哪个参数、用户给的原值、哪个字段、哪种线型…),
+           且写进了**该变体自己的** `#[error("…")]`(用了 `{0}` / `{field}`)= 不报。
+        3. 以上都不是(变体只差措辞、事实相同、或事实没写进错误信息)= 判负。
+
+      EXEMPT(不报,豁免 2):
+        `#[error(transparent)]` 变体只转发下层错误、不带自己的事实,不算「带着事实」,照常判负(见上面的 `SendError`)。
+        反例 A —— 调用方只转成 Python 异常,从不分支,但四个变体各带不同的参数与原值,message 写出来了:
+          #[derive(thiserror::Error, Debug)]
+          pub enum CompressionSettingsError {
+              #[error("min_size {0} is out of range")]           MinSizeOutOfRange(i64),
+              #[error("gzip level {0} is out of range")]         GzipLevelOutOfRange(i64),
+              #[error("brotli quality {0} is out of range")]     BrotliQualityOutOfRange(i64),
+              #[error("no compression codec is enabled")]        NoCodec,
+          }
+        反例 B —— 调用方只用 `?` 往上抛,从不分支,但三个变体各带不同的字段与线型,message 写出来了:
+          #[derive(thiserror::Error, Debug)]
+          pub enum DecodeError {
+              #[error("malformed varint")]                                        MalformedVarint,
+              #[error("field {field} is truncated")]                              Truncated { field: u64 },
+              #[error("field {field} has unsupported wire type {wire_type}")]     UnsupportedWireType { field: u64, wire_type: u8 },
+          }
+        两个反例都不报:每个变体的死因、涉及的参数 / 字段 / 原值都在它自己的错误信息里说清楚了。
+
+      REPORT(该报,正例):变体之间只是同一事实的不同措辞,调用方只打印 —— 拆开没有任何信息量:
+          #[derive(thiserror::Error, Debug)]
+          pub enum ConfigError {
+              #[error("config is invalid: {0}")]   Invalid(String),
+              #[error("config is malformed: {0}")] Malformed(String),
+          }
+        判负。FIX:两个变体合并成一个 —— 这里只剩一种失败,可以是一个字段全有类型的 struct,
+        `#[error("config rejected: {raw:?}")] struct ConfigError { raw: String }`(`raw` 是用户给的原文,是数据,不是种类)。
+
+      FIX:变体只差措辞就合并成一个变体;只转发一个错误就直接返回它。**不要**把几种不同的失败收成
+      「一句话 + `#[source]`」的 struct —— 那是把种类写进了字符串(见 `error-kind-in-a-string`)。
+      各变体带着不同的事实(豁免 2)就保持 enum,哪怕今天没有调用方 match:判的是它是什么,不是谁在读它。
+      只剩一种失败时,可以是字段全有类型的 struct(下面的 `ReadError`)。
+    why: |
+      维护者对 `NotASubmittedRef`:「为什么需要这个?你是需要match,还是error report?」;对 `SendError`:「一样。」
+      2026-10-16 维护者决定:`CompressionSettingsError`、`DecodeError` 保留。变体各自带着不同的事实、
+      事实写进了错误信息 —— 调用方不按变体分支,错误信息也靠这些事实把话说清楚(准则第 1 条:带出原始输入),
+      拆开的意义在这里。只有变体之间没有区别、或只是同一事实的不同措辞时,才报。
+      2026-10-17:这条的旧 FIX(「变体只差措辞就合并成一个 struct;一句话 + #[source]」)被照着把 pyre 的 TlsError /
+      TpcError / BenchFailure 等收成 `reason: String` + `Option<Box<dyn Error>>`。维护者:「noway Error is a strcut.
+      just impossbile」,随后定为:种类有类型就行,一种失败可以是全类型 struct,种类不许进字符串
+      (arc docs/retro/2026-10-17-errors-collapsed-into-strings.md)。
+    example_bad: |
+      #[derive(thiserror::Error, Debug)]
+      enum SendError {
+          #[error(transparent)] Git(#[from] GitError),
+          #[error(transparent)] Encode(#[from] serde_json::Error),
+      }
+    example_good: |
+      fn send(…) -> Result<(), GitError>;
+      // 或调用方只打印时:
+      #[derive(thiserror::Error, Debug)]
+      #[error("reading {at}")]
+      struct ReadError { at: RefName, #[source] source: GitError }
+
+  - name: error-kind-in-a-string
+    status: stable
+    severity: error
+    summary: 错误的种类写在了 String 字段里,或底层错误被擦成了 Box<dyn Error>
+    gate_question: 这个错误类型里,「是哪一种失败」是由类型(enum 的变体)说的,还是由一个 String 字段说的?它的 source 保留了底层错误的类型吗?
+    description: |
+      ANTI-PATTERN:错误类型(`derive(thiserror::Error)` / `impl Error`)用字符串表达失败的种类:
+        - 字段 `reason` / `what` / `kind` / `cause: String` 之类装着「是哪种失败」的一句话;
+        - 不同的失败共用一个 struct,区别只在构造时 `format!` 出来的文字(`not_spawned()` / `panicked()` 构造器);
+        - `source: Option<Box<dyn Error + Send + Sync>>` 把底层错误的类型擦掉,调用方只能 downcast。
+      后果:调用方和测试要分辨失败只能解析文字或 downcast;错误信息的措辞一改,依赖它的地方就静默失效。
+
+      JUDGE:
+        1. 列出这个类型能表达的失败种类。只有一种 → 看字段:全是有类型的事实(`SocketCall`、`SocketAddr`、`io::Error`、
+           用户给的原值 `raw: String`)= 不报;有一个字段在描述「是哪种失败」= 判负。
+        2. 不止一种,却是一个 struct = 判负。
+        3. source 是 `Box<dyn Error>` 而底层错误的类型在构造处是已知的 = 判负。
+
+      EXEMPT:单值 newtype / unit(`InvalidStatus(u16)`、`BodyStreamAlreadyTaken`);字段里的 String 是数据(用户给的原文、
+      文件路径、名字),不是种类。
+
+      FIX:一个变体一种失败,各带类型化的事实,`#[source]` 挂具体的底层错误类型;只有一种失败就用字段全有类型的 struct。
+    why: |
+      2026-10-17 维护者:「noway Error is a strcut. just impossbile」,随后定为「种类有类型;一种失败可以是全类型 struct」。
+      起因是 `error-shape-ignores-its-callers` 的旧 FIX 把 pyre 一批错误 enum 收成了 `reason: String` + `Box<dyn Error>`
+      (arc docs/retro/2026-10-17-errors-collapsed-into-strings.md)。准则「错误按领域命名、带类型冒泡」。
+    example_bad: |
+      #[derive(Debug, thiserror::Error)]
+      #[error("thread {thread}: {what}")]
+      pub struct TpcError { thread: String, what: String, #[source] source: Option<std::io::Error> }
+      impl TpcError {
+          pub fn not_spawned(thread: String, source: std::io::Error) -> Self { /* what = format!("could not spawn: {source}") */ }
+          pub fn panicked(thread: String, payload: String) -> Self { /* source = None */ }
+      }
+    example_good: |
+      #[derive(Debug, thiserror::Error)]
+      pub enum TpcError {
+          #[error("could not spawn thread {thread}: {source}")]
+          NotSpawned { thread: String, #[source] source: std::io::Error },
+          #[error("thread {thread} panicked: {payload}")]
+          Panicked { thread: String, payload: String },
+      }
+      // 只有一种失败:字段全有类型
+      #[derive(Debug, thiserror::Error)]
+      #[error("{call} for {addr} failed: {source}")]
+      pub struct ListenerError { pub call: SocketCall, pub addr: SocketAddr, #[source] pub source: std::io::Error }
+
+  # ── 四、住对地方 ────────────────────────────────────────────────────
+
+  - name: type-lives-away-from-its-owner
+    status: stable
+    severity: error
+    summary: 类型住在读它的一方或公共桶里,而不是它所说的那个事实的主人那里
+    gate_question: 这个类型住在它所说的那个事实的主人(那个事实从哪个业务来、由谁维护)那里吗(而不是读它的一方、只有它在造的一方、公共桶,或核心里的适配器类型)?
+    description: |
+      ANTI-PATTERN:类型按谁在用放,不按谁拥有放。
+        - 住在读它的一方:`GithubAccount`(GitHub 上的一个账号)住在 `apps/web/src/review/write.rs`,
+          主人是 `infra_github`。
+        - 住在「很多包都 import」的公共桶里(`common` / `types` / `shared`)。
+        - 适配器类型进了核心:数据库行、线上 DTO、CLI 报告出现在纯核心里,而不是住在各自的适配器、边界上转换一次。
+        - 「两个业务都在用」于是合成一个 —— 多半是借用或 `type X = String`,各自一个类型,边界转换一次。
+
+      - 「只有它在用」「只有它在构造」于是搬过去:只有 web 读 `GithubAccount`、甚至只有 web 把
+          `signed_in_as` 的 `Result` 包成它,都不等于 web 拥有它 —— 它说的是 GitHub 上的账号,
+          和 GitHub 自己说的为什么答不上来。带 `#[derive(Serialize)]` 不让它变成读者的 DTO。
+
+      JUDGE:先用一句话说出这个类型陈述的是**谁的事实**(哪个业务产生它、维护它的生命周期),再看它住在哪。
+      不数调用方,不数构造点:读它的只有一方、构造它的只有一方,都不是搬去那一方的理由。
+      反证:假设明天第二个应用也要用它 —— 它得去依赖今天那个唯一的读者(另一个应用)吗?是,就住错了。
+      住处不是那个事实的主人 = 判负,写出主人该在哪。
+      看似需要一个新公共包来安放的,先问它为什么存在 —— 常常是结构问题的症状,消掉原因。
+
+      FIX:搬到主人那里,读它的一方去依赖主人;适配器类型留在适配器,边界上转换。
+    why: 维护者 2026-10-08:「GithubAccount 应该在gihtub里面啊。不是revieww」;2026-11-10 七层审查以「只有 web 在用」建议把它搬去 apps_web,维护者:「GithubAccount 是只有web用他,不等于web拥有他」「然后你第二个应用用他你怎么办,你来依赖web?」。类型住错地方,依赖方向就反了,公共桶越长越大。
+    example_bad: |
+      // apps/web/src/review/write.rs
+      pub struct GithubAccount { pub login: String, pub id: u64 }
+    example_good: |
+      // crates/infra/github/src/account.rs
+      pub struct GithubAccount { pub login: GithubLogin, pub id: GithubUserId }
+
+  - name: type-visibility-wider-than-its-use
+    status: stable
+    severity: warning
+    summary: 只在一个模块里用的类型被做成了 pub
+    gate_question: 这个类型的可见性是它实际被用到的最窄范围吗(只在一个模块里用就不 `pub`)?
+    description: |
+      ANTI-PATTERN:私有优先 —— 只在一个模块里用的类型被标成 `pub`,或 `pub` 到整个 crate 外却只有本 crate 读。
+
+      JUDGE:grep 它在定义模块之外的使用。没有 = 应私有;只在本 crate = `pub(crate)`。可见性比使用宽 = 判负。
+
+      FIX:收窄到实际使用的范围;要跨出去时,它是一个契约,才公开并住在主人的类型模块里。
+    why: 公开一个类型就是承诺了一个契约,别人会开始依赖它;没人需要的契约只会让重构更难。
+    example_bad: |
+      // only used inside this module
+      pub struct ChunkCursor { at: usize }
+    example_good: |
+      struct ChunkCursor { at: usize }
+
+  # ── 五、形状三条:透明度和不变量匹配 / total / 一个事实一种表示 ─────────
+
+  - name: transparency-mismatches-invariant
+    status: stable
+    severity: error
+    summary: 有不变量却字段公开(谁都能造非法值),或没有不变量却做成不透明(多余的仪式)
+    gate_question: 这个类型有要守的内部不变量吗 —— 有就字段私有、经构造函数;没有就字段公开?它的透明度和答案一致吗?
+    description: |
+      ANTI-PATTERN:
+        - 有不变量却透明:字段 `pub`,谁都能绕过校验造出非法值(非空、已排序、合法格式)。
+        - 没有不变量却不透明:只是给几样东西起个名,却字段私有 + `new` + 一排 getter,多余的仪式。
+
+      JUDGE:写出它的不变量(「`sha` 是 40 位十六进制」)。写得出却有 `pub` 字段 = 判负;
+      写不出却字段私有、只有透传的 getter = 判负。
+
+      FIX:有不变量 → 字段私有,`parse` / `new` 返回 `Result`,入口解析一次;没有 → 字段公开。
+    why: 透明度是类型对读者的承诺:不透明说「这里有规矩」,透明说「这只是个名字」。说错了,前者让非法值溜进来,后者让读者白找规矩。
+    example_bad: |
+      /// 一个 40 位十六进制的 commit id。
+      pub struct CommitSha { pub hex: String }
+    example_good: |
+      pub struct CommitSha(String);
+      impl CommitSha { pub fn parse(s: &str) -> Result<Self, NotACommitSha> { /* … */ } }
+
+  - name: type-not-total
+    status: stable
+    severity: error
+    summary: 构造得出非法值 —— 靠校验而不是结构,或 Option 组合出「都有 / 都没有」
+    gate_question: 这个类型的每一个可构造的值都是合法的吗(结构优先于校验)?
+    description: |
+      ANTI-PATTERN:构造出来就可能非法。
+        - 两个互斥的 `Option` 字段(造得出「两个都写 / 都没写」)—— 本该是两变体 enum。
+        - 两个总是一起 `Some` / 一起 `None` 的 `Option` 字段(造得出「只写了一个」)—— 本该是一个 `Option<结构体>`。
+        - `String` + 校验,而结构就能表达(`[u8; 20]` 胜过 `String` + 校验)。
+        - `bool` + 一个只在 `true` 时有意义的字段。
+        - 一个字段全是 `Option` 的「大而全」struct,不同组合代表不同情形。
+        - 先建一半、后补字段(`slug: String::new()`「稍后 stamp」)。
+
+      JUDGE:试造一个非法值 —— 能造出来 = 判负,写出那个值。看到别处有 `Both` / `Neither` / `Missing` 错误变体,
+      回头查的就是这个。
+
+      FIX:用和类型表达互斥情形,用领域类型代替原始类型 + 校验;构造完即可用。
+    why: total 的类型让非法状态不可表示,下游不用防御;不 total 的类型逼出一串拦截错误(`NotAnAnswer`)。
+    example_bad: |
+      struct FixAnswer { fixed: Option<Text>, wontfix: Option<Text> }
+      struct Session { title: Option<String>, title_source: Option<TitleSource> }
+    example_good: |
+      enum FixAnswer { Fixed(Text), Wontfix(Text) }
+      struct Session { title: Option<Title> }
+      struct Title { text: String, source: TitleSource }
+
+  - name: sum-type-misses-family-member
+    status: stable
+    severity: error
+    summary: 一个家族的 enum 只装了部分成员,或兄弟类型命名不对称,或用一个全 Option 的大 struct 代替「每成员一个 struct + 装全家的 enum」
+    gate_question: 这个类型所属的家族,是否每个成员都有自己的 struct、名字对称,且有一个装下**全部**成员的 enum?
+    description: |
+      ANTI-PATTERN:和类型没覆盖整个家族。
+        - 一个 enum 只装了家族里的一部分(`AuthorRequest { Update, Close }` 漏了 reply)。
+        - 兄弟类型命名不对称(`ReviewRequest` 实指 update,另两个叫 `ReviewReplyRequest` / `ReviewCloseRequest`)。
+        - 不按「谁在干什么」切开,做成一个大而全、字段全是 `Option` 的 request。
+        - 变体把成员字段平铺进去,而不是只放成员自己的 struct(成员就不能有自己的 `impl`、不能单独当参数传)。
+
+      正面形状:每个成员一个 struct + 一个装全家的 enum(集装箱)。外层 enum 用在需要「几种都行」的地方
+      (单一入口 `match` 分发、同一条队列、一种线上格式);处理具体业务时拆箱,收成员自己的类型。
+
+      JUDGE:列出这个家族在业务上的全部成员,对照 enum 的变体与兄弟名字。缺成员、名字不对称、
+      或成员只存在于 Option 组合里 = 判负。
+
+      FIX:补齐成员 struct,名字对称,加一个覆盖全家的 enum;只对一种成员成立的逻辑收成员 struct。
+    why: 维护者:「AuthorRequest 这个就是因为我们没有设计 ReviewUpdateRquest.所以不能根据类型来判断」「这个不完备」。家族不完备,新加一种成员时编译器不会逼每个 `match` 处理它。
+    example_bad: |
+      enum AuthorRequest { Update(ReviewRequest), Close(ReviewCloseRequest) }
+    example_good: |
+      pub enum ReviewRequest {
+          Update(ReviewUpdateRequest),
+          Reply(ReviewReplyRequest),
+          Close(ReviewCloseRequest),
+      }
+
+  - name: two-representations-of-one-fact
+    status: stable
+    severity: error
+    summary: 同一个事实有两种写法(None 与空列表),或存了一个能从别的字段算出的冗余字段
+    gate_question: 这个类型里,相等的值只有一种表示、每个事实只存一份(没有能从别的字段算出的字段)吗?
+    description: |
+      ANTI-PATTERN:不规范化。
+        - 两种写法表示同一件事:`Option<Vec<T>>` 里 `None` 和 `Some(vec![])` 都表示「没有」。
+        - 冗余字段:一个字段能从另一个字段算出(`SubmittedRef { at, dead }`,`dead` 由 `at` 算得),
+          存下来就会和源头漂开。
+
+      JUDGE:对每个字段问「它能从别的字段算出来吗」;对每个 `Option` / 集合问「空和缺是不是同一个意思」。
+      任一为是 = 判负。
+
+      FIX:只留一种表示(`Vec<T>`,空即没有);派生值写成方法按需计算。
+    why: 一个事实两种写法,每个读者都要两种都处理,漏一种就是 bug;冗余字段是第二个写者,迟早不一致。
+    example_bad: |
+      struct Plan { actions: Option<Vec<Action>> }
+      struct SubmittedRef { at: RefName, dead: bool }
+    example_good: |
+      struct Plan { actions: Vec<Action> }
+      struct SubmittedRef { at: RefName }
+      impl SubmittedRef { fn is_dead(&self) -> bool { self.at.is_under(DEAD_PREFIX) } }
+
+  # ── 六、弱类型字段 ──────────────────────────────────────────────────
+
+  - name: weak-typed-field
+    status: stable
+    severity: warning
+    summary: 字段是 String / PathBuf / &str / 整数,而仓里已有对应的领域类型
+    gate_question: 这个 `String` / `PathBuf` / `&str` / 整数字段,仓里有对应的领域类型(`BranchName`、`RepoRoot`、`CommitSha`、`RequestId`、`Text`……)吗?
+    description: |
+      ANTI-PATTERN:新类型的字段用原始类型装一个领域值,而仓里已经有那个领域类型 —— 每个读者都得重新校验,
+      或者干脆不校验。
+
+      JUDGE:对每个 `String` / `PathBuf` / `&str` / `&Path` / 整数字段,按字段名 grep 仓里的领域类型
+      (`BranchName`、`RepoRoot`、`RepoPath`、`CommitSha`、`RequestId`、`FindingId`、`Pr`、`Text`……)。
+      有 = 判负,写出那个类型。
+
+      EXEMPT:本来就该是原样文本的(读不懂的原文、给人看的消息、外部进程的原始输出)。
+
+      FIX:换成领域类型,在入口解析一次;仓里没有而它确实是一个领域值,在主人那里定义一个(parse, don't validate)。
+    why: 原始类型字段把校验推给每个读者;领域类型在边界解析一次,内层信任类型。
+    example_bad: |
+      pub struct Snapshot { pub branch: String, pub head: String, pub repo: PathBuf }
+    example_good: |
+      pub struct Snapshot { pub branch: BranchName, pub head: CommitSha, pub repo: RepoRoot }

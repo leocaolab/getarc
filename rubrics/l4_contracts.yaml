@@ -1,0 +1,527 @@
+name: L4 Correctness & Contracts
+description: >
+  Contract violations at specific call sites. Function bodies visible.
+  Each rule names a DISTINCT anti-pattern (a semantic hazard), not a
+  syntactic token — the token is one example, the LLM judges whether a
+  site instantiates the hazard. A single site matches the ONE most-
+  specific rule, not several; the error-handling rules below draw crisp
+  mutually-exclusive boundaries so one error smell → one finding.
+  Cap 10 issues.
+
+rules:
+  - name: swallowed-exception
+    status: stable
+    description: |
+      ANTI-PATTERN: a failure is made INVISIBLE. An error or absence is
+      caught and then discarded, so control continues as if nothing went
+      wrong and NOTHING about the failure reaches the caller — not a
+      raised error, not a return value that stands in for it. The caller
+      cannot tell a real result from a buried failure. The token is only
+      an example of the hazard, never its definition:
+        - Rust: `let _ = fallible();`, `.ok()` / `.unwrap_or(sentinel)`
+          that drops a typed `Err`, a `match`/`if let` error arm returning
+          a sentinel with no propagation
+        - Python: `except ...: pass`, `except ...: return None`
+        - JS/TS/Java/C++: a `catch` whose body neither rethrows, logs, nor
+          returns a value carrying the failure
+        - Go: assigning an error to `_`
+
+      OWNS this failure mode ONLY: the error is dropped ENTIRELY. Draw the
+      boundary against its cousins — do NOT also flag them here:
+        - Failure IS returned to the caller, but as a generic sentinel
+          value that conflates distinct failures (or failure vs. empty) →
+          `missing-error-classification`.
+        - The catch CLAUSE is simply too broad (a catch-all sweeping in
+          signals/bugs it can't handle) → `over-broad-exception-handler`.
+        - Error IS propagated/constructed but its message lacks the causing
+          inputs → `incomplete-error-context`.
+        - A typed error is flattened to a string at a boundary →
+          `untyped-error-origin`.
+        - The skip is past corruption of the system's OWN persisted data in
+          a loop → `silent-continue-past-corrupt-own-data`.
+      A single site should match the ONE rule that most precisely names its
+      defect, not carpet-bomb all of them.
+
+      DETERMINISTIC pre-triage (do NOT re-derive it — that re-derivation is
+      what balloons review thinking). `<detector_hits>` carries `[SWH]` for
+      a Rust match/if-let or Python except handler that ends in a sentinel
+      (None/default/empty/0/false) and does NOT propagate, and `[DR]` for
+      `let _ = <call>` / `except: pass`. The detector has ALREADY EXEMPTed
+      any arm that re-raises / returns Err / uses `?` / panics. So:
+        - For an SWH/DR hit: CONFIRM it genuinely buries the error (the
+          caller can't tell failure from a real value) and that no
+          `[arc:intentional-handle]` documents it; then judge severity +
+          axis + evidence below. Do NOT re-litigate the EXEMPT cases.
+        - You may still flag a swallow the detector missed — a language it
+          has no driver for yet, or a shape outside match/if-let/except
+          (e.g. a `catch` in an undriven language). Same test: error/absence
+          handler ending in a sentinel, no propagation, no documented reason.
+
+      For every flagged finding, set `evidence` to a STRUCTURED tag string
+      so the fix stage can skip its own triage:
+
+        `kind=<ErrorTypeName>; axis=<transient|permanent|boundary>;
+         action=<re_raise|wrap_and_raise|log_and_swallow|bare_pass>;
+         confidence=<high|medium|low>`
+
+      Use `severity` to express uncertainty:
+        - `error`   = clear bare-swallow (no-op / sentinel-no-docstring),
+                      high confidence, no caller info needed
+        - `warning` = log-and-return-sentinel (callers MIGHT want this; fix
+                      stage will check via Grep)
+        - `info`    = pattern looks suspicious but you can't decide without
+                      caller context — defer to fix stage
+
+      Type axis quick reference (language-neutral):
+        transient: timeout / connection-refused / rate-limit / 5xx HTTP
+                   (TimeoutError, IOException, context.DeadlineExceeded,
+                    tokio::time::error::Elapsed, etc.)
+        permanent: bad input / missing key / type mismatch / static-path
+                   not-found (ValueError, NullPointerException, KeyError,
+                   AttributeError, ParseError, FileNotFoundError on a
+                   compile-time path)
+        boundary:  subprocess / network / FS / DB — triage further by cause
+    severity: error
+
+  - name: over-broad-exception-handler
+    status: stable
+    description: |
+      ANTI-PATTERN: the SCOPE of what a handler catches is wider than what
+      it can meaningfully decide about, so it sweeps in errors — and often
+      non-error control signals (shutdown, interrupt, OOM, programming bugs)
+      — that it has no business intercepting. The defect is the WIDTH of the
+      net, independent of what the body then does with it; even a correct
+      body is wrong behind an over-broad catch. Token examples, not the
+      definition:
+        - Python `except:` / `except BaseException:` (catches
+          KeyboardInterrupt/SystemExit, breaking interpreter shutdown)
+        - Java/Kotlin `catch (Exception e)` / `catch (Throwable t)`
+          (catches OOM, ThreadDeath, programming bugs)
+        - C++ `catch (...)`
+        - Go `recover()` outside a known unwind site
+        - JS/TS `catch { }` (omitted binding) or `catch (e: any)` with no
+          narrowing
+        - Rust `Result::ok()` / `let _ = ...?;` at a layer that has no
+          reason to discard typed errors
+
+      OWNS this failure mode ONLY: the catch clause's category is too broad.
+      Boundary against cousins:
+        - The net is appropriately narrow but the body DISCARDS the error →
+          `swallowed-exception`.
+        - EXEMPT when the over-broad clause is immediately followed by a
+          re-raise/re-throw (cleanup-then-propagate): catching wide only to
+          run cleanup and keep unwinding is valid. Likewise EXEMPT a
+          top-level request / loop boundary that catches broadly, logs WITH
+          the throwable (not just its message), and then rethrows or fails
+          the unit — the documented "catch-log-with-cause-then-propagate"
+          shape at the outermost frame.
+
+      For flagged findings use the same `evidence` tag shape as
+      `swallowed-exception`:
+        `kind=<broad|catch_all|recover_no_scope>; axis=mixed;
+         action=<re_raise|...>; confidence=<high|medium|low>`
+    severity: error
+
+  - name: missing-error-classification
+    status: stable
+    description: |
+      ANTI-PATTERN: a handler SURFACES a failure to its caller, but as a
+      single generic sentinel VALUE (empty string, null/None/nil, false,
+      default-zero, empty collection) that CONFLATES distinct failure modes
+      with each other and/or with a legitimate empty result. The failure is
+      visible but UNCLASSIFIED — the caller receives a value and cannot tell
+      which fault occurred, or fault from "no result". Classic offender:
+      `""` returned for BOTH "tool missing" AND "no diff". Language-neutral;
+      typically fires on I/O / network / subprocess / LLM calls.
+
+      BEFORE flagging, check:
+        (1) Categorize the error type (transient / permanent / boundary).
+        (2) Does the function return a sentinel that flattens distinct
+            failure modes to the same value?
+
+      OWNS this failure mode ONLY: an error caught and RETURNED to the
+      caller as a mode-flattening sentinel value. Boundary against cousins:
+        - The error is dropped ENTIRELY, no value carries it →
+          `swallowed-exception`.
+        - A typed error is flattened to a STRING (type erased) →
+          `untyped-error-origin`.
+        - The sentinel is a config-lookup default on a missing key →
+          `silent-default-on-config-miss`.
+
+      EXEMPT — do NOT flag when:
+        - The function raises/returns a typed error instead of collapsing to
+          a sentinel.
+        - A doc-comment documents the sentinel semantics explicitly (e.g.
+          "returns '' iff no diff; raises GitError on configuration failure").
+        - The sentinel is genuinely the right value for ALL failure modes
+          this handler catches (only ONE mode, no conflation).
+
+      For flagged findings, `evidence` tag:
+        `kind=<ErrorType>; axis=<...>; action=sentinel_collapse;
+         confidence=<...>; sentinels=<list of values returned>`
+
+      The structured tags let fix-stage produce targeted patches without
+      re-running the triage.
+    severity: error
+
+  - name: pure-function-mutates-input
+    status: stable
+    description: >
+      ANTI-PATTERN: a function whose contract presents it as pure — it
+      advertises no side effects and returns a value — instead WRITES to a
+      caller-owned argument (a passed-in map, list, struct, buffer, or
+      reference), so a caller who relies on its inputs surviving the call
+      gets silent aliasing corruption. A pure reducer must return new values
+      and leave inputs intact. The hazard is the hidden mutation of borrowed
+      state, not any one syntax: signature/naming cues (`Mut`/`mut`,
+      `_inplace`, `mutate_`) or a doc-comment that PROMISES the mutation make
+      it a documented in-place API and EXEMPT. Language-neutral: surfaces in
+      Python as arg-mutation, in Java as `List.add` on a passed list, in
+      immutable-by-default languages as `Mutex<RefCell<...>>` smuggling.
+    severity: error
+
+  - name: missing-invariant-assertion
+    status: stable
+    description: >
+      ANTI-PATTERN: code states an invariant (in a doc-comment, a name, or
+      an evident type intent) that some argument or intermediate must
+      satisfy, but never ENFORCES it at runtime or in the type — so
+      adversarial or malformed input slips past and the invariant breaks
+      silently downstream, far from the missing check. The hazard is the
+      unchecked assumption, not a missing `assert` keyword specifically: a
+      validating guard that returns/raises a typed error, a narrowing type,
+      or a parse-don't-validate constructor all satisfy it. Language-neutral.
+    severity: warning
+
+  - name: shadow-state-in-module
+    status: stable
+    description: >
+      ANTI-PATTERN: module/file-level MUTABLE state (a top-level mutable
+      map, list, counter, registry, static) written during normal
+      execution. Hidden shared state destroys testability — tests cannot
+      reset it between cases and parallel tests collide on it — and couples
+      callers through an invisible channel. The hazard is the mutable global
+      written at runtime, whatever the syntax (a Python module global, a
+      Java non-final `static` field — shared by every instance and thread,
+      so racy without synchronization AND impossible to reset between
+      parallel tests — a Rust `static mut` / `lazy_static` cell mutated
+      after init). EXEMPT: genuinely immutable module constants, and write-
+      once-at-init caches expressed through a proper memoization primitive
+      (`functools.cache`, `OnceCell` / `lazy_static`, `ConcurrentHashMap`,
+      `sync.Map`) — a bare mutable global is the smell, not caching itself.
+      Language-neutral.
+    severity: error
+
+  - name: untyped-error-origin
+    status: stable
+    description: >
+      ANTI-PATTERN: an error crosses a module boundary with its TYPE erased,
+      forcing every caller into catch-all / `if err != nil` / `.contains()`
+      string-grep branching instead of matching a named variant. Two forms
+      of the same hazard: (a) an EXISTING typed error is stringified at the
+      boundary (`.map_err(|e| e.to_string())`, `Agent(err.to_string())`,
+      `raise RuntimeError(str(e))`) — the type existed and was flattened; or
+      (b) a boundary ORIGINATES a generic error where a named one is owed
+      (`raise Exception(...)`, `throw new Error("...")`, `errors.New("...")`
+      as a one-off, `Box<dyn Error>` from a leaf). A module-boundary
+      function owns a named typed error per failure mode it originates,
+      carried typed (`#[from]` / `#[error(transparent)]`, an exception
+      subclass, a sentinel-error var). OWNS the TYPE dimension only.
+      Boundary: if the type is adequate but the message lacks the causing
+      inputs → `incomplete-error-context`; if the error is dropped entirely
+      → `swallowed-exception`. Language-neutral.
+    severity: warning
+
+  - name: boolean-trap-parameter
+    status: stable
+    description: >
+      ANTI-PATTERN: a call site passes bare boolean (or other opaque
+      positional) flags that encode hidden mode/state, so the call reads as
+      unlabeled bits — `fn(true, false, true)` — and a reader cannot tell
+      what each position means without opening the callee. Use a named enum
+      / sum type / options struct so the call site reads as configuration,
+      not bit-flags. The hazard is the UNLABELED flag at the call site: a
+      single self-evident boolean whose meaning the parameter name makes
+      obvious is fine; the smell sharpens with each additional positional
+      bool. Language-neutral.
+    severity: info
+
+  - name: incomplete-error-context
+    status: stable
+    description: >
+      ANTI-PATTERN: a site CONSTRUCTS and raises/returns a fresh error whose
+      message carries only a static string and NONE of the runtime inputs
+      that caused it (record id, file path, key, request params) — so an
+      operator reading it in a log at 3 AM cannot reproduce or even locate
+      the failing record. Propagation and typing may be perfectly fine; the
+      defect is the missing DATA in a hand-built error (`raise X("failed")`,
+      `errors.New("not found")`, `throw new IllegalStateException("bad")`).
+      OWNS the missing-context dimension only. Boundary: only fires where the
+      site BUILDS the error — a bare `?` / rethrow that re-propagates
+      someone else's error constructs nothing and is EXEMPT; if the error's
+      TYPE is generic/stringly → `untyped-error-origin`. Language-neutral.
+    severity: info
+
+  - name: silent-default-on-config-miss
+    status: stable
+    description: >
+      ANTI-PATTERN: a configuration/environment lookup substitutes a silent
+      default when the key is ABSENT, in a case where a missing key is a
+      real config fault the operator must be told about — not a sensible
+      fallback. The absence is swallowed into a plausible-looking value and
+      the system runs mis-configured. Token examples: `config.get("key",
+      default)`, `os.Getenv("X")` used as "" on miss, `props.getProperty(k,
+      "...")`. Prefer raising a typed `ConfigError` naming the missing key +
+      the file it was expected in. OWNS config-lookup defaults specifically.
+      Boundary: a general error-to-sentinel collapse →
+      `missing-error-classification`; a genuinely optional setting WITH a
+      documented, safe default is EXEMPT. Language-neutral.
+    severity: warning
+
+  - name: read-path-realtime-etl
+    status: stable
+    description: >
+      ANTI-PATTERN (CQRS inversion — computing what should be stored): a
+      read-heavy query deserializes + filters + assembles a large stored
+      blob to derive a view on EVERY call, doing on the hot read path the
+      projection work that belongs at write time. The projection should be a
+      write-time materialized index the query reads with a lightweight
+      indexed lookup, not real-time ETL per request. The hazard is
+      re-deriving a storable projection on every read, independent of the
+      storage engine (a SQL blob, a document store, a big JSON column).
+      Store- and language-neutral.
+    severity: warning
+
+  - name: domain-rule-in-persistence-layer
+    status: stable
+    description: >
+      ANTI-PATTERN: a persistence unit (DAO / Repository / query module)
+      hardcodes a BUSINESS predicate — which states count as
+      closed/active/billable, a `CLOSURE_STATUSES` set — and filters by it.
+      Persistence's job is to store/fetch a snapshot; deciding which states
+      satisfy a domain rule is a Domain/UseCase concern, and burying it in
+      the DAO scatters the rule and freezes it below the layer that owns it.
+      Hoist the predicate: the DAO returns the rows, the caller applies
+      policy. The hazard is domain policy embedded in the storage layer,
+      whatever the language or query API. Distinct from
+      `policy-mechanism-coupling-in-dao` (a tunable CONSTANT + clock buried
+      in the DAO); this is a business PREDICATE buried in the DAO.
+      Language-neutral.
+    severity: error
+
+  - name: silent-continue-past-corrupt-own-data
+    status: stable
+    description: >
+      ANTI-PATTERN (data-integrity axis of `swallowed-exception`): a loop
+      `continue`s / `skip`s / early-`return`s past a parse or corruption
+      failure of the system's OWN persisted data — its sqlite rows, its JSON
+      blobs, its own RPC payloads — treating a BROKEN INTERNAL INVARIANT
+      (serializer bug / schema drift / DB corruption) as if it were benign
+      external noise. Fail fast instead: propagate / panic / return Err with
+      the offending record id. Tolerate ONLY with an explicit justification
+      AND a loud error-level probe + dead-letter/metric — never a silent
+      skip, never a quiet debug log. OWNS "skipping corruption of self-owned
+      records"; a dropped error that is NOT about our own persisted data →
+      `swallowed-exception`. Language-neutral — any loop iterating self-owned
+      records.
+    severity: error
+
+  - name: policy-mechanism-coupling-in-dao
+    status: stable
+    description: >
+      ANTI-PATTERN: a persistence unit hardcodes a POLICY constant (TTL
+      days, retention window) and/or reads ambient `now`, computing the
+      cutoff internally — fusing mechanism (how to query/delete) with policy
+      (the TTL) and the clock. Inject both: expose `clear_expired(conn,
+      cutoff_ts)` and let an upper layer compute the cutoff from policy plus
+      a supplied clock. This also removes time-dependent unit-test
+      flakiness. Distinct from `domain-rule-in-persistence-layer` (a
+      business PREDICATE buried in the DAO); this is a tunable CONSTANT +
+      ambient clock buried in the DAO. Store- and language-neutral.
+    severity: warning
+
+  - name: upsert-rewrites-unread-column
+    status: stable
+    description: >
+      ANTI-PATTERN (read-modify-write clobbers an unread field): a
+      persistence write rewrites a column that the preceding read never
+      fetched, so a field this operation does not manage is silently reset
+      to a default/NULL — a latent state-loss bug that a test checking only
+      the managed field will not catch. Canonical form is `INSERT ... ON
+      CONFLICT DO UPDATE SET col = excluded.col` or any UPDATE that lists
+      every column, but the hazard is general: any write that persists more
+      fields than the read loaded. Fix by reading every column you write
+      (carry the whole row through a typed value) or by SETting only the
+      columns you actually computed. Store-neutral (SQL, document store, KV
+      blob). Language-neutral.
+    severity: error
+
+  - name: latched-state-outlives-its-cause
+    status: stable
+    description: >
+      ANTI-PATTERN: a latched guard flag (disabled_at, circuit-open, banned,
+      quarantined) is SET while a condition holds, but the path that
+      falsifies the condition resets the CAUSE (counter / streak / error
+      rate) WITHOUT clearing the FLAG — so the latch desyncs from its
+      justification and only an unrelated path (a timer, a manual reset) can
+      recover it. Whatever clears the cause must also clear the latch, or the
+      latch must be DERIVED from the cause rather than stored. The hazard is
+      a stored flag whose invalidation is incomplete. Store- and
+      language-neutral.
+    severity: warning
+
+  - name: derived-write-not-atomic-with-base
+    status: stable
+    description: >
+      ANTI-PATTERN: a write updates a base row and then its derived/index
+      tables (materialized view, search index, counter cache) in SEPARATE
+      auto-committed statements on a bare connection rather than one
+      transaction, so a failure after the base commit but before the derived
+      writes leaves the index permanently torn from its source — silently
+      serving stale/missing rows. Base + every derived table it feeds must
+      commit or roll back together (one `transaction()` /
+      `unchecked_transaction()` / equivalent). The hazard is a multi-part
+      write that is not atomic. DISTINCT from
+      `canonical-source-mutated-projection-not-rebuilt` (that FORGETS the
+      projection write entirely; this one DOES write both, but not in one
+      unit). Store- and language-neutral.
+    severity: error
+
+  - name: shared-store-dual-version-authority
+    status: stable
+    description: >
+      ANTI-PATTERN: two independent code paths (a Rust crate + a Python
+      module, two services, an old + new binary) each migrate / version-gate
+      the SAME persistent store with its OWN hardcoded SCHEMA_VERSION /
+      migration ladder. The instant one side bumps, a store it migrates is
+      rejected by the other's forward-version guard — bricking the tool for
+      whoever is behind. A test of either side alone passes; only running
+      both against one store reveals it. Require ONE migration authority, or
+      provably-lockstep ladders changed in the same commit WITH a cross-path
+      test that exercises both on one store. The hazard is split versioning
+      authority over one shared store — inherently cross-language /
+      cross-process (not tied to any single one of the reviewed languages).
+    severity: error
+
+  - name: canonical-source-mutated-projection-not-rebuilt
+    status: stable
+    description: >
+      ANTI-PATTERN: an operation mutates a run's/entity's canonical source
+      of truth (rebinds it, clears it, swaps the backing file) but does NOT
+      recompute the derived projections built from it (search index,
+      materialized view, counter cache, denormalized columns), so the
+      projections keep serving ghost rows from the OLD source — a
+      consistency bug a single-table test never sees. Every code path that
+      changes the source must rebuild every projection of it, in the same
+      transaction — or the projection must be derived on read, not stored.
+      DISTINCT from `derived-write-not-atomic-with-base`: that writes BOTH
+      but not atomically; this one FORGETS the projection entirely. Store-
+      and language-neutral.
+    severity: error
+
+  - name: consumer-guesses-producer-fact
+    status: stable
+    description: >
+      ANTI-PATTERN: a consumer infers a fact its producer already knew —
+      from the SHAPE of a value (`None` returned ⇒ "the function mutated its
+      first argument in place"), from substrings of source code or of an
+      annotation string (`"TreeNode" in hint`, `"neighbors" in source` ⇒
+      "this parameter is a graph"), from a field's presence, or from a
+      filename — instead of the producer stating it in the data it hands
+      over. The guess is wrong whenever the heuristic's assumption fails (a
+      forgotten `return` reported as "you returned your input"; a comment
+      mentioning `neighbors` turning a list into a graph), and the producer
+      cannot correct it because it never knew it was being guessed. FLAG a
+      decision whose input is a heuristic over a value's shape or text when
+      the producer of that value (a pipeline, a schema, a problem
+      definition) is in the same system and knows the answer. FIX: the
+      producer emits the fact (`paramKinds`, `mutatesInPlace`, a `kind`
+      tag) and the consumer reads it; a missing fact is an error, not a
+      guess. EXEMPT parsing genuinely foreign input whose producer is outside
+      the system. Language-neutral.
+    severity: warning
+
+  - name: in-band-marker-in-wire-value
+    status: stable
+    description: >
+      ANTI-PATTERN: a serializer encodes its OWN metadata — "this was
+      truncated", "this is a cycle", "this is a set / deque / float", "this
+      was NaN" — as a value of the same shape as user data: the string
+      `"..."` or `"...(too long)"`, the string `"Infinity"`, an object
+      `{"__type__": "set", "items": [...]}`, `{"__float__": "nan"}`. User
+      data can produce the identical value (a string that is literally
+      `"Infinity"`, a dict with a `__type__` key), and the decoder then
+      reports user data as metadata or the reverse. FLAG an encoding whose
+      markers live in the same namespace as the payload; quote a user value
+      that collides. FIX: an envelope that cannot collide — every value
+      tagged (`{"t": "str"|"set"|"float"|..., "v": ...}`), or metadata carried
+      beside the payload (`truncated: true`, a separate `cycles` list), never
+      inside it. Language-neutral (any serializer at a process or language
+      boundary).
+    severity: error
+
+  - name: cross-language-encoding-not-total
+    status: stable
+    description: >
+      ANTI-PATTERN: one language writes a value that the reader in another
+      language cannot read back as the same value — Python `json.dumps`
+      emitting `NaN` / `Infinity` (not JSON; `JSON.parse` throws), integers
+      beyond 2^53 losing precision in JavaScript, `default=str` turning
+      objects into strings the reader then takes for user strings, `bytes`
+      or `datetime` with no agreed encoding — and the reader falls back to
+      treating the raw text as the value. FLAG a cross-language encoding
+      where some value the writer can produce is not decoded to the same
+      value by the reader; name that value. FIX: make the codec total for the
+      writer's whole domain (explicit tags for non-finite floats and big
+      integers, `allow_nan=False` plus a tagged form), and test it by
+      round-tripping writer-produced values through the real reader. EXEMPT
+      encodings whose writer provably never produces the unreadable values
+      (the type rules them out). Language-neutral.
+    severity: error
+
+  - name: identity-dedup-over-unequal-copies
+    status: stable
+    description: >
+      ANTI-PATTERN: several records that share an id / key are merged by
+      keeping one of them — first seen wins, last write wins, a `Map.set` in
+      a loop — when the copies are NOT guaranteed equal (snapshots of the
+      same object taken at different moments, the same node seen from two
+      frames). Which copy survives depends on traversal order, and the
+      others' differences vanish without a trace. FLAG a merge by identity
+      where the code cannot point to the invariant that makes same-key copies
+      equal. FIX: either make the copies equal by construction (one snapshot
+      per id per moment), or choose deliberately (the latest by a stated
+      order) and say why. Language-neutral.
+    severity: warning
+
+  - name: aggregate-over-truncated-page
+    status: stable
+    description: >
+      ANTI-PATTERN: a statistic — a count, a rate, a "have all of them
+      passed", a "has the user ever" — is computed over the result of a
+      query that carries a `limit` / page size / `take(n)`, and presented as
+      if it covered everything. Past the limit the number is silently wrong
+      (a pass rate over the latest 50 submissions shown as the pass rate).
+      FLAG an aggregate whose input is a bounded query result when the
+      aggregate's meaning is unbounded. FIX: aggregate in the store (a count
+      / aggregation query), maintain a counter where the facts are written,
+      or name and show the window ("in your last 50"). Language- and
+      store-neutral.
+    severity: warning
+
+  - name: committed-generated-copy-without-drift-gate
+    status: stable
+    description: >
+      ANTI-PATTERN: a file or directory that is a COPY of another source in
+      the same repository — synced by a script (`pnpm x:sync`, a `cp` in a
+      Makefile), vendored for a runtime that cannot reach the original — is
+      committed, and nothing in the merge gate checks that the copy still
+      equals its source. Tests run against the source stay green while
+      production loads the stale copy; the list of copied files often
+      exists a second and third time (in the sync script and in the loader).
+      FLAG a committed copy whose sync is manual and unchecked; name the
+      source, the copy, and the sync step. FIX: generate the copy at build
+      time and ignore it in git, or add a test that compares the two byte
+      for byte; keep the file list in one manifest that both the sync and
+      the loader read. Language-neutral.
+    severity: warning

@@ -1,0 +1,234 @@
+name: Effect and State Discipline
+description: >
+  The «effect & state discipline» lens — resource, concurrency and cancellation
+  hazards, reframed through the Haskell north-star (bracket / bounded effect
+  graph / async-exception propagation). Universal across the imperative
+  languages arc reviews (Python / Go / Java / JS / TS / C / C++); several rules
+  are INERT in RAII / GC-scope languages (Rust `Drop`, Haskell `bracket`) and
+  say so. Rules are `experimental` until they earn a measured delta over a
+  bare critic (see docs/features/rubric-management) — candidates, not yet
+  promoted; `shared-mutable-state-in-decision-layer` went in `stable`, adopted
+  by the maintainer from a real review (pyre b/542, 2026-10-19).
+
+rules:
+  # ── 1. RESOURCE OWNED BUT NOT RELEASED (sharpened: ownership vs release) ──
+  - name: resource-owned-but-not-released
+    status: experimental
+    severity: error
+    why: >
+      A unit borrows an exclusive / finite resource (lock, file, socket, DB
+      connection, subprocess, HTTP client) but does not guarantee its release
+      on every exit path. Haskell's `bracket` in imperative clothing.
+    description: |
+      ANTI-PATTERN: a unit (function / class) ACQUIRES more releasable resources
+      than it RELEASES. Count OWNERSHIP vs RELEASE — the discriminator is not
+      "is there a `with`/`finally` somewhere" but "does EVERY resource this unit
+      owns reach a release on every path". Two shapes, both fire:
+        (a) NO cleanup scope at all — `lock.acquire()` / `open(f)` /
+            `conn = connect()` / `Popen(...)` with no `with`/`finally`/`defer`
+            and an error / early-return path that skips the release.
+        (b) CLEANUP THAT DOESN'T RELEASE — the subtle one LLMs write: a
+            cleanup EXISTS but does not cover every owned resource, OR the
+            mechanism used does not actually release. Real examples:
+              - `with sqlite3.connect(...) as conn:` — sqlite3's context
+                manager COMMITS/ROLLS BACK but never CLOSES the connection;
+                the conn leaks despite the `with`.
+              - a class whose `__init__` creates a subprocess AND two
+                `httpx.Client`s, whose `stop()`/`__exit__` only kills the
+                subprocess — the two clients are never `.close()`d. Owns 3,
+                releases 1.
+      The tell is an OWNERSHIP/RELEASE mismatch: enumerate what the unit
+      acquires, then what it releases; a shortfall on any path is the finding.
+      BOUNDED-UNIVERSALITY: INERT in RAII / GC-scope languages — Rust's `Drop`
+      (a `MutexGuard` / `File` releases at scope end) and Haskell's `bracket`
+      guarantee release at the type level. DO NOT fire in Rust.
+      EXEMPT: ownership is RETURNED to the caller to release; a process-lifetime
+      singleton (a global pool held for the process's life).
+    gate_question: >
+      Enumerate the releasable resources this unit OWNS (lock/file/socket/conn/
+      process/client) and the releases it performs. Does every owned resource
+      reach a release on every path — INCLUDING async cleanup (`aclose`) and
+      resources a present `with`/context-manager does NOT actually close? A
+      shortfall → fire. (RAII/GC-scope language such as Rust → do NOT fire.)
+    example_bad: |
+      # owns 3 resources, releases 1 — the two httpx clients leak
+      def __init__(self):
+          self._process = subprocess.Popen(...)
+          self._client = httpx.Client()
+          self._async_client = httpx.AsyncClient()
+      def stop(self):
+          self._process.terminate()          # only the subprocess
+      # and: with sqlite3.connect(p) as conn:  ← commits, never closes conn
+    example_good: |
+      def stop(self):
+          self._process.terminate()
+          self._client.close()               # every owned resource released
+      async def aclose(self):
+          self.stop(); await self._async_client.aclose()
+
+  # ── 2. UNBOUNDED CONCURRENCY FAN-OUT ──
+  - name: unbounded-concurrency-fan-out
+    status: experimental
+    severity: error
+    why: Spawning one concurrent task per item with no bounded pool starves resources under load.
+    description: |
+      ANTI-PATTERN: spawning a concurrent task PER ITEM of an unbounded source
+      (a loop doing `asyncio.create_task` / `Thread(...)` / `executor.submit` /
+      `go` / `spawn` per element, or one task per inbound request) with NO
+      bounded pool / semaphore / bounded channel, so load fans out to resource
+      exhaustion (OOM, fd / thread explosion). Tokens are examples only — the
+      hazard is unbounded concurrent spawn.
+      EXEMPT (do NOT fire): a VISIBLE limiter — a semaphore, a fixed-size
+      worker/thread pool (`ThreadPoolExecutor(max_workers=N)`), a bounded
+      channel/queue, an `errgroup`/`Semaphore`-limited group.
+    gate_question: >
+      Does this spawn one concurrent task per item of an unbounded source with
+      no visible bounded pool / semaphore? If yes → fire.
+    example_bad: |
+      # one unbounded background thread per request
+      @app.get("/stream")
+      def stream(req):
+          threading.Thread(target=generate, daemon=True).start()
+    example_good: |
+      with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+          futures = [pool.submit(work, item) for item in batch]
+
+  # ── 3. CANCELLATION SIGNAL SWALLOWED ──
+  - name: cancellation-signal-swallowed
+    status: experimental
+    severity: error
+    why: A swallowed cancellation signal makes graceful shutdown / timeout hang.
+    description: |
+      ANTI-PATTERN: a cancellation / interrupt signal is CAUGHT and SWALLOWED
+      instead of propagated — a `catch`/`except` that eats `CancelledError`
+      (Python asyncio), a cancelled `context` (Go), an `AbortSignal` (JS),
+      `InterruptedException` (Java) — and neither re-raises nor honours the
+      cancellation, so shutdown / timeout deadlocks.
+      EXEMPT: the handler does cleanup and THEN re-raises / re-propagates
+      (`except CancelledError: cleanup(); raise`), OR it is a top-level handler
+      that HONOURS the signal by stopping the work (a graceful-shutdown handler).
+    gate_question: >
+      Is a cancellation/interrupt signal caught and dropped without being
+      re-propagated or honoured (the work keeps going)? If yes → fire.
+    example_bad: |
+      try: await task
+      except asyncio.CancelledError: pass      # swallowed — shutdown hangs
+    example_good: |
+      except asyncio.CancelledError:
+          await cleanup(); raise               # honoured, then propagated
+
+  # ── 4. EXCEPTION LOGGED AND RETHROWN ──
+  - name: exception-logged-and-rethrown
+    status: experimental
+    severity: warning
+    why: >
+      Logging AND rethrowing in one handler duplicates the stack trace at every
+      layer and mixes a side effect into a layer that admits it can't handle.
+    description: |
+      ANTI-PATTERN: the SAME catch/except block BOTH logs the error AND
+      re-throws/re-raises it. If this layer rethrows it has admitted it cannot
+      handle the error; producing a side effect (a log line) here duplicates the
+      trace up the stack and muddies which layer owns the failure. Effect
+      purity: do not emit an effect in a layer that punts.
+      EXEMPT: the log ADDS context the upper layers lack (an input value, a
+      correlation id, a resource name) — genuine enrichment, not a bare
+      restatement. Logging then RETURNING a handled value (not rethrowing) is
+      also fine — that layer handled it.
+    gate_question: >
+      Does one catch/except block both log the error and rethrow it, with no
+      added context? If yes → fire (low severity).
+
+  # ── 5. PURE LOGIC TRAPPED IN AN EFFECTFUL SCOPE (separate fetch from decide) ──
+  - name: pure-logic-in-effectful-scope
+    status: experimental
+    severity: warning
+    why: >
+      Functional-core discipline: a pure decision does not belong inside an
+      effectful scope. Wrapping a compare / predicate in an async runtime / lock
+      / transaction forces every reader (and every LLM edit) to reason about that
+      machinery to touch an `==`, and makes the logic untestable without mocking
+      the whole scope. Separate FETCH (effectful) from DECIDE (pure).
+    description: |
+      ANTI-PATTERN: a PURE sub-computation — an equality/comparison, a
+      predicate, a partition, arithmetic — is COMPUTED INSIDE a high-power
+      effectful scope (an `async` / `await` / `block_on` body, a spawned task,
+      a held lock, a DB transaction) when it consumes only already-materialized
+      values and needs NONE of that scope's power: no `await` on ITS OWN inputs,
+      no I/O, no shared state. The tell: you could cut the compare/predicate out
+      and run it on plain in-memory values with the runtime / lock / tx deleted.
+      Remedy: the effectful scope FETCHES (materializes the data), then hands it
+      to a SYNC PURE function that DECIDES — the decision leaves the runtime and
+      becomes unit-testable with in-memory values.
+      This is a UNIVERSAL judgment — apply it to EVERY unit, not just flagged
+      ones; there is no cheap signal for it, the reading of the body IS the test.
+      EXEMPT (do NOT fire): the computation genuinely uses the scope's power — it
+      awaits on its own input, interleaves with the I/O, or reads the shared
+      state the lock guards; then it belongs inside.
+    gate_question: >
+      Inside the async / block_on / spawned / locked / transaction scope, is
+      there a pure sub-computation (compare, predicate, partition, arithmetic)
+      that touches no await / I/O / shared-state and uses only already-fetched
+      values? If yes → lift it to a sync pure fn (the scope fetches, the fn
+      decides). If it truly needs the await result inline → do NOT fire.
+    example_bad: |
+      // a pure hash-compare trapped inside the async runtime + db loop
+      let (kept, skipped) = rt.block_on(async {
+          for unit in items {
+              let stored = store::hash_of(db, &unit.path).await?;          // FETCH (needs await)
+              if stored.as_deref() == Some(hash(&unit.content).as_str()) { // DECIDE (pure!)
+                  skipped.push(unit)
+              } else { kept.push(unit) }
+          }
+          (kept, skipped)
+      });
+    example_good: |
+      // the scope only fetches; the pure decision is a sync fn, testable alone
+      let with_hashes = rt.block_on(async {
+          let mut v = Vec::new();
+          for unit in items { v.push((unit, store::hash_of(db, &unit.path).await?)); }
+          v
+      });
+      let (kept, skipped) = partition_changed(with_hashes);  // pure — no runtime
+
+  # ── 6. SHARED MUTABLE STATE PARKED IN A DECISION LAYER (the mirror of 5) ──
+  # Source: pyre b/542 (2026-10-19) — `Gate` / `KeyedGate` (a lock around a Vec)
+  # defined in the pure `plan/` layer, built and shared only by `io/`.
+  - name: shared-mutable-state-in-decision-layer
+    status: stable
+    severity: warning
+    why: >
+      A decision layer is pure so that its answers depend on its inputs alone.
+      Cross-thread shared mutable state is STATE, not a decision — what it holds
+      depends on interleaving — so a layer that defines it is no longer pure,
+      whatever it imports. It belongs to the layer that shares it.
+    description: |
+      ANTI-PATTERN: a layer that presents itself as pure decision (a `plan` /
+      `policy` / `core` / `decide` module: no IO, no clock, no threads) still
+      DEFINES state shared and mutated across threads — a lock around a
+      collection (`Mutex<Vec<…>>`), an atomic, a concurrent map — typically a
+      "gate" / "registry" / "limiter" type that only the effectful layer builds
+      and shares. "Pure" means more than no IO, no clock, no spawn: it also
+      means no shared mutable state. Move the type to its user (the IO /
+      runtime layer that shares it); the decision layer keeps only the pure
+      part — given the current values, admit or refuse — as a function over
+      plain values, called by the owner under its own lock.
+      The mirror of `pure-logic-in-effectful-scope` (a decision trapped inside
+      an effectful scope); this is effectful state parked inside the decision
+      layer.
+      EXEMPT (do NOT fire): immutable shared data (`Arc<Config>`, a table, a
+      `const`); single-threaded state the decision layer owns and threads
+      through by value or `&mut` (an accumulator passed in and returned).
+    gate_question: >
+      Does a module that presents itself as pure decision define a lock, an
+      atomic or a concurrent collection that is shared across threads? If yes →
+      fire: move the type to the layer that shares it, keep the decision as a
+      pure function over plain values.
+    example_bad: |
+      // plan/gate.rs — the "pure decisions" layer
+      pub struct Gate { held: Mutex<Vec<Key>> }    // only io/ builds and shares it
+      impl Gate { pub fn try_enter(&self, k: Key) -> bool { .. } }
+    example_good: |
+      // plan/gate.rs keeps the decision, over plain values
+      pub fn admits(held: &[Key], k: &Key) -> bool { !held.contains(k) }
+      // io/gate.rs owns the shared state and asks the decision under its lock
+      struct Gate { held: Mutex<Vec<Key>> }

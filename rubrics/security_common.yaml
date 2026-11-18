@@ -1,0 +1,125 @@
+name: Security Common Rules
+description: Common security rules for code review
+
+# ── AUDIT NOTE: this rubric is intentionally LANGUAGE-AGNOSTIC ──
+# No `language:` key ⇒ it applies to every one of arc's 8 target languages.
+# Each rule is confirmed UNIVERSAL, with two boundedness caveats flagged inline:
+#   - no-shell-injection: the hazard is universal, but the prior wording was
+#     Python-token-anchored (`shell=True`); reframed with cross-language tokens.
+#   - no-eval-exec: only meaningful in languages with runtime eval
+#     (Python/JS/Ruby/PHP); INERT on Rust/Go/Java/C — a bounded-universality rule.
+# validate-external-input is the UMBRELLA hazard; no-sql / no-shell / no-eval are
+# its specific injection consequences. It also overlaps (as the language-agnostic
+# parent) rust_best_practices::{no-unwrap-in-library, unchecked-arithmetic-on-input,
+# parse-dont-validate-weak-param}, which name the Rust-specific consequences.
+
+rules:
+  # WHY: a secret in source is exposed to everyone with repo read and lives in
+  #      git history forever, even after it is deleted.
+  # SCOPE: universal.
+  - name: no-hardcoded-secrets
+    status: stable
+    why: "A credential literal in source is exposed to every repo reader and persists in git history forever."
+    description: >
+      Anti-pattern: credential material — API key, token, password, private
+      key, or a connection string with an embedded password — written as a
+      SOURCE LITERAL. Once committed it is readable by everyone with repo
+      access and survives in git history even after deletion. FLAG a
+      high-entropy or credential-shaped literal assigned or passed where a
+      secret is expected, in any language. The fix is to source it from the
+      environment / a secrets manager / an untracked config file. EXEMPT
+      obvious non-secrets: test fixtures and placeholders (`"xxx"`,
+      `"changeme"`, `"your-api-key-here"`), public identifiers (client IDs,
+      public keys), and values already read from env/vault.
+    severity: critical
+
+  # WHY: interpolating untrusted input into a query lets an attacker change the
+  #      query's STRUCTURE, not just the data it carries.
+  # SCOPE: universal (any language with a SQL / string-built NoSQL driver).
+  - name: no-sql-injection
+    status: stable
+    why: "Interpolating untrusted input into a query string lets an attacker rewrite the query structure."
+    description: >
+      Anti-pattern: a database query whose STRUCTURE is built by concatenating
+      or string-formatting untrusted input into the query text
+      (`"... WHERE id = " + user_id`, `f"... '{name}'"`, `%` / `.format` /
+      template interpolation) instead of binding it as a parameter — the input
+      can then alter the query, not merely supply data. FLAG query text
+      assembled from external input in any language or driver (SQL and
+      string-built NoSQL alike). The fix is a parameterized / prepared query,
+      or a query builder that binds values. EXEMPT fully-constant query text
+      and identifiers checked against an allow-list (table / column names,
+      which cannot be bound as parameters).
+    severity: critical
+
+  # WHY: handing unsanitized input to a shell interpreter lets that input BECOME
+  #      commands (`; rm -rf`, `$(...)`, backticks, `&&`).
+  # SCOPE: universal — but the prior wording was Python-token-anchored
+  #        (`shell=True`); the hazard and fix are the same in every language.
+  - name: no-shell-injection
+    status: stable
+    why: "Passing unsanitized input through a shell interpreter lets the input become executable commands."
+    description: >
+      Anti-pattern: handing a command line built from untrusted input to a
+      SHELL interpreter, which then splits / globs / expands it — so the input
+      can inject its own commands. The token differs per language but the
+      hazard is identical:
+        - Python `subprocess(..., shell=True)`, `os.system`, `os.popen`
+        - Node `child_process.exec` / `execSync` (vs `execFile` / `spawn`)
+        - Ruby `system("sh -c ...")`, backticks, `%x{}`
+        - Go `exec.Command("sh", "-c", userStr)`
+        - Java `Runtime.exec("sh -c " + userStr)`
+        - C / C++ `system()` / `popen()`
+      FLAG a shell invocation whose command string incorporates external input.
+      The fix is to bypass the shell: pass an argv ARRAY to a direct exec API
+      so arguments are never re-parsed. EXEMPT a fully constant command with no
+      interpolation, and input constrained to an allow-list.
+    severity: critical
+
+  # WHY: any external value consumed before validation can break invariants
+  #      deeper in — crashes, injection, resource abuse, logic bypass.
+  # SCOPE: universal. This is the UMBRELLA hazard over the three injection rules
+  #        above; it also overlaps rust_best_practices::{no-unwrap-in-library,
+  #        unchecked-arithmetic-on-input, parse-dont-validate-weak-param} as
+  #        their language-agnostic parent.
+  - name: validate-external-input
+    status: stable
+    why: "External input consumed before validation breaks invariants deep in the code — crashes, injection, logic bypass."
+    description: >
+      Anti-pattern: a value crossing a TRUST BOUNDARY — HTTP request, CLI arg,
+      env var, file contents, queue/message payload, deserialized blob — is
+      consumed (indexed, parsed, used in arithmetic, used as a path / query /
+      command, trusted for size or length) BEFORE it is validated or parsed
+      into a constrained type. This is the umbrella hazard whose specific
+      consequences the injection rules above name, and it also covers
+      non-injection breakage (panics on malformed input, unchecked lengths,
+      integer overflow). FLAG external input reaching logic with no validation
+      or parse step at the boundary. The fix (parse-don't-validate): convert to
+      a constrained domain type at the edge, once, so inner code cannot receive
+      an invalid value. EXEMPT input already validated upstream in the same
+      trust domain, and constant / trusted-config values.
+    severity: error
+
+  # WHY: evaluating a string as code with any untrusted content is arbitrary
+  #      code execution (full RCE).
+  # SCOPE: universal AMONG dynamic-eval languages (Python / JS / Ruby / PHP);
+  #        INERT on Rust / Go / Java / C, which have no runtime eval. A
+  #        bounded-universality rule — it simply does not fire on compiled langs.
+  - name: no-eval-exec
+    status: stable
+    why: "Evaluating a string as code with any untrusted content is arbitrary code execution."
+    description: >
+      Anti-pattern: passing a string that contains ANY untrusted content to a
+      DYNAMIC CODE-EVALUATION facility, which executes it as code — full remote
+      code execution. The facility is language-specific but the hazard is one:
+        - Python `eval` / `exec` / `compile` / `__import__`
+        - JS / TS `eval` / `new Function(...)` / `setTimeout("code", ...)`
+        - Ruby `eval` / `instance_eval` / `class_eval`
+        - PHP `eval` / `assert(string)`
+      FLAG such a call whose argument is not a compile-time constant. The fix is
+      to replace dynamic evaluation with data-driven dispatch (a lookup table,
+      `ast.literal_eval` for literals, a real parser). EXEMPT a call on a fully
+      trusted constant with no interpolation. Compiled languages
+      (Rust / Go / Java / C) have no equivalent facility — this rule does not
+      fire there.
+    severity: critical

@@ -1,0 +1,395 @@
+name: TypeScript / JavaScript Best Practices
+description: >
+  TypeScript / JavaScript correctness + idiom rules for L4 review.
+  Function bodies visible. Cap 10 issues. Flag concrete call sites,
+  not stylistic preference. Targets the failure modes the language
+  invites: floating promises, `any` / assertion escapes of the type
+  checker, null/undefined confusion, and swallowed async rejections.
+
+  # AUDIT NOTE (rubric-antipattern pass) — each rule below carries a
+  # `TAG` comment classifying it on the axis that matters for a later
+  # cross-file synthesis pass:
+  #   language-specific  — the hazard depends on a genuine TS/JS idiom
+  #     (promises/await, `any`, `as` casts, non-null `!`, structural
+  #     typing holes, React hooks, numeric enums).
+  #   universal-candidate — the SAME hazard exists in any language;
+  #     this is a TS-spelled DUPLICATE of a rule that belongs in the
+  #     language-agnostic rubrics. The `owner:` names the generic home.
+  # Tags are advisory metadata for the synthesis pass; nothing is moved
+  # or deleted here. Rule ids are unchanged — the names already describe
+  # the anti-pattern, and a rename would ripple into
+  # docs/features-and-cujs.md and a recorded VCR cassette for no gain.
+
+# applicability — rubric_set_for filters on this (ruff-style config, not source)
+language: [typescript, javascript]   # plain JS shares the hazards (floating promise, loose equality, async)
+
+rules:
+  # TAG language-specific — a "floating promise" is a JS/TS async-model
+  # hazard (unhandled rejection + the `void` quirk). No cross-language
+  # duplicate. Overlaps siblings missing-await-in-async-flow /
+  # promise-all-swallows-rejection (same async family, distinct shapes).
+  - name: floating-promise
+    status: stable
+    description: |
+      ANTI-PATTERN: a Promise-returning call is left "floating" in
+      statement position — neither awaited, returned, assigned, nor
+      `.catch()`-handled — so on rejection it becomes an UNHANDLED
+      rejection AND the surrounding logic races ahead before the async
+      work finishes. The bare call is the anchor; the hazard is an
+      un-awaited, un-handled async result.
+      JUDGE: is a promise discarded in statement position with no
+      await / return / .then / .catch on any path? FLAG it. NOTE:
+      `void somePromise()` does NOT fix this — `void` discards the
+      rejection too; require an explicit `.catch` that logs/handles.
+      EXEMPT: a call into a fire-and-forget helper that itself attaches
+      a rejection handler.
+    severity: error
+
+  # TAG language-specific — treating a Promise as its resolved value is
+  # a JS/TS await hazard. Overlaps floating-promise (async family).
+  - name: missing-await-in-async-flow
+    status: stable
+    description: |
+      ANTI-PATTERN: inside an `async` function an awaitable is used as
+      if it were already resolved — its return value (a Promise) is
+      treated as the value, or a later step depends on side effects
+      that have not completed because the `await` is missing. So
+      `if (fetchUser())` tests a truthy Promise, and `arr.push(asyncFn())`
+      stores a pending Promise. The missing `await` is the anchor; the
+      hazard is reading a Promise where the resolved value is required.
+      JUDGE: does the code consume a Promise as its resolved value, or
+      order-depend on an un-awaited effect? FLAG it. EXEMPT:
+      deliberately collecting promises to `await Promise.all([...])`
+      later.
+    severity: error
+
+  # TAG language-specific — `any` is a TS construct; erasing the checker
+  # at a boundary is a TS hazard. Universal cousin (an untyped bag
+  # crossing a boundary): llm_generated_code_smells::untyped-bag-across-boundary,
+  # which already lists `Record<string, unknown>` and now also owns the
+  # index-signature / bare-`object` bag spelling. This rule stays for the
+  # distinct explicit-`any` construct (checker disabled in both directions).
+  - name: any-at-boundary
+    status: stable
+    description: |
+      ANTI-PATTERN: `any` reaches a module boundary — an exported
+      function signature, public field, or returned type — erasing type
+      safety for EVERY caller and letting malformed data flow through
+      unchecked, because `any` disables the checker in both directions.
+      An explicit `any` (or an implicit one from an untyped parameter)
+      is the anchor; the hazard is an un-typed value crossing a public
+      edge.
+      JUDGE: does a value typed `any` (explicit or inferred) cross an
+      exported boundary? FLAG it; prefer `unknown` + narrowing, or a
+      real type. EXEMPT: a localized interop shim for an untyped JS
+      library, annotated with a comment saying so.
+    severity: warning
+
+  # TAG language-specific — `as` type assertions are a TS construct for
+  # overriding the checker. No cross-language duplicate.
+  - name: type-assertion-bypasses-checker
+    status: stable
+    description: |
+      ANTI-PATTERN: a type assertion overrides the compiler with a
+      shape it cannot verify — `x as Foo`, or the double-escape
+      `x as unknown as Foo` — SUPPRESSING a type error instead of
+      PROVING the value has that shape, so a wrong assertion surfaces as
+      a runtime crash. The `as` cast across incompatible types is the
+      anchor; the hazard is an unproven shape claim, especially
+      `as unknown as`.
+      JUDGE: does this assertion widen/reshape across types the compiler
+      cannot reconcile? FLAG it; prefer a type guard or runtime
+      validation. EXEMPT: `as const`; narrowing to a literal the code
+      just checked; well-known DOM casts annotated with a comment.
+    severity: warning
+
+  # TAG language-specific — the non-null assertion `!` is a TS operator.
+  # (Cousin of Java `Optional.get` and Rust `unwrap`; each anchored on
+  # its own language's construct, not a shared rule.)
+  - name: non-null-assertion-on-fallible
+    status: stable
+    description: |
+      ANTI-PATTERN: the non-null assertion `!` is applied to a value
+      that can genuinely be null/undefined — a `Map.get`, an array
+      index, an optional field, a `querySelector` result — telling the
+      compiler "trust me" precisely where it is right to worry, so an
+      actual undefined becomes a runtime "cannot read property of
+      undefined". The `x!` on a nullable is the anchor; the hazard is
+      an unproven non-null claim.
+      JUDGE: does `x`'s type include null/undefined with no prior check
+      ruling it out on this path? FLAG it; prefer an explicit guard or
+      `?.`. EXEMPT: a value provably non-null by a check on the same
+      path.
+    severity: warning
+
+  # TAG language-specific — Promise.all vs allSettled fan-out semantics
+  # are a JS/TS async idiom. Overlaps floating-promise (async family).
+  - name: promise-all-swallows-rejection
+    status: stable
+    description: |
+      ANTI-PATTERN: parallel async work is fanned out with
+      `Promise.all([...])` (or bare parallel awaits) at a layer that
+      must survive partial failure, but with no surrounding try/catch
+      or `.catch` — so a SINGLE rejection both discards the other
+      results AND becomes an unhandled rejection. (Or `Promise.all` is
+      used where `Promise.allSettled` is wanted because partial success
+      is expected.) The unguarded `Promise.all` is the anchor; the
+      hazard is all-or-nothing fan-out at a layer that needs partial
+      results.
+      JUDGE: at a layer that must handle partial failure, is the fan-out
+      unguarded / using all-or-nothing semantics? FLAG it; wrap in
+      try/catch or use `allSettled`. EXEMPT: a caller that wraps the
+      whole thing in try/catch, or genuinely wants all-or-nothing.
+    severity: warning
+
+  # TAG language-specific — `==`/`!=` coercion quirks are a JS type-
+  # coercion hazard specific to the language's equality algorithm.
+  - name: loose-equality
+    status: stable
+    description: |
+      ANTI-PATTERN: coercive equality — `==` / `!=` instead of `===` /
+      `!==` — lets JavaScript's implicit type coercion produce matches
+      no reader expects (`0 == ""`, `null == undefined`, `[] == false`),
+      turning a comparison into a subtle bug. The `==` operator is the
+      anchor; the hazard is coercion silently changing the comparison's
+      meaning.
+      JUDGE: is a loose `==`/`!=` used where operand types differ or
+      coercion could surprise? FLAG it; prefer strict equality. EXEMPT:
+      the idiomatic `x == null` to catch both null and undefined in one
+      check (annotate the intent).
+    severity: warning
+    # DECIDE — ast-grep matches the loose `==` (and `!=`) operator directly;
+    # this is eslint `eqeqeq`, mechanically checkable with zero LLM tokens.
+    transformer: "$A == $B"
+
+  # TAG language-specific (borderline) — TS types the catch binding as
+  # `unknown`/`any`, so property access before narrowing is a TS-flavored
+  # hazard. Universal cousin: l4_contracts::over-broad-exception-handler
+  # (which lists JS/TS `catch (e: any)` with no narrowing).
+  - name: catch-binding-untyped
+    status: stable
+    description: |
+      ANTI-PATTERN: a `catch` binding (typed `unknown` / `any`) is
+      dereferenced without narrowing — reading `e.message` / `e.code`
+      directly — even though anything can be thrown in JS, so a non-Error
+      throw makes this read `undefined` or throw again inside the
+      handler. Property access on an un-narrowed binding is the anchor;
+      the hazard is assuming the caught value is an `Error`.
+      JUDGE: does the handler touch properties of the caught value with
+      no `instanceof Error` (or shape) check first? FLAG it. EXEMPT: an
+      immediate rethrow; logging the raw value without property access.
+    severity: warning
+
+  # TAG language-specific (framework) — React hooks + the exhaustive-deps
+  # rule are a React idiom (narrower than "the language"). No universal
+  # duplicate.
+  - name: react-hook-missing-deps
+    status: stable
+    description: |
+      ANTI-PATTERN: a React `useEffect` / `useCallback` / `useMemo`
+      omits from its dependency array a reactive value its closure
+      reads (props, state, context) — or uses an empty `[]` on an effect
+      that depends on such values — capturing a STALE value and either
+      missing re-runs or acting on outdated data. The reactive value
+      absent from `deps` is the anchor; the hazard is a stale closure.
+      JUDGE: does the hook body reference reactive values not listed in
+      its deps array? FLAG it. EXEMPT: an intentional mount-only effect
+      with an `eslint-disable-next-line react-hooks/exhaustive-deps` and
+      a comment explaining the deliberate omission.
+    severity: warning
+
+  # TAG universal-candidate — owner: llm_generated_code_smells
+  # (no exact rule today; a would-be generic "suppression-without-
+  # justification"). Silencing the type/lint checker with no stated
+  # reason recurs in every language (Rust `#[allow]`, Python `# noqa`,
+  # Go `//nolint`, Java `@SuppressWarnings`); `@ts-ignore` is the TS
+  # spelling.
+  - name: ts-suppression-without-reason
+    status: stable
+    description: |
+      ANTI-PATTERN: the type checker is silenced with no justification —
+      a `// @ts-ignore` or `// @ts-expect-error` carrying no explanation
+      — hiding a real type error the next reader cannot evaluate or
+      safely remove. The bare suppression comment is the TS-spelled
+      anchor; the hazard is an unexplained checker override.
+      JUDGE: is a suppression directive present with no adjacent reason?
+      FLAG it. Prefer `@ts-expect-error` (which fails if the error
+      disappears) over `@ts-ignore`, ALWAYS with a justification.
+      EXEMPT: none — at minimum a reason is required.
+    severity: info
+
+  # NOTE: the former `untyped-index-signature-at-boundary` rule was DELETED as
+  #   a pure TS spelling of `llm_generated_code_smells::untyped-bag-across-boundary`
+  #   (it self-tagged that owner, which EXPLICITLY lists `Record<string,
+  #   unknown>` / `{ [k]: any }` and now folds in the TS index-signature /
+  #   bare-`object` forms + the dynamic-map EXEMPT: i18n table, HTTP header
+  #   bag documented as such). No TS-only coverage is lost.
+
+  # TAG language-specific — numeric-enum reverse-mapping, the
+  # `x: Color = 99` type hole, and const-enum/union alternatives are TS
+  # enum semantics. No universal duplicate.
+  - name: enum-numeric-pitfall
+    status: stable
+    description: |
+      ANTI-PATTERN: a numeric `enum` is used where its type holes bite —
+      any number is assignable (`x: Color = 99` compiles), reverse
+      value-to-name mapping bloats the emit, and the runtime object adds
+      bundle weight — where a `const enum` or a string-literal union
+      (`type T = "a" | "b"`) would be safer and lighter. The numeric
+      enum at a boundary is the anchor; the hazard is a numeric member
+      type that admits out-of-range values.
+      JUDGE: is a numeric enum used at an API boundary that accepts
+      external/untrusted values (so `99` slips through)? FLAG it; prefer
+      a string-literal union or `const enum`. EXEMPT: bitflag enums, and
+      enums with a documented need for numeric values.
+    severity: info
+
+  # TAG language-specific — TS checks a union without a discriminant
+  # structurally, so `{a} | {b}` admits an object with both keys. Universal
+  # cousin: type_design_typescript::type-not-total (new types only); this rule
+  # judges every union in the file, new or old.
+  - name: union-without-discriminant
+    status: stable
+    description: |
+      ANTI-PATTERN: a union whose members are told apart only by WHICH KEYS
+      are present — `{ output: unknown } | { outputText: string }` — with no
+      literal `kind` field and no `?: never` on the other branch. TypeScript
+      accepts an object carrying BOTH keys as a member of such a union, so
+      the "one or the other" the author meant is not what the type admits,
+      and every reader picks a branch by its own `"x" in v` order.
+      JUDGE: are the union's object members distinguished by key presence
+      alone (no shared literal discriminant, no `never` exclusions)? FLAG it,
+      quoting an object literal with both keys that compiles. FIX: add a
+      literal `kind` to each member, or write the other branch's keys as
+      `?: never`. EXEMPT: unions of primitives or of classes, and members
+      that already share a literal discriminant.
+    why: |
+      2026-11 seven-layer review of a Next.js + Pyodide practice app: a test
+      case typed `{output} | {outputText}` compiled with both keys under
+      `tsc --strict`, and the Python runner then preferred `outputText`,
+      reintroducing the "expected string parsed as a number" bug the split
+      was meant to fix.
+    severity: warning
+
+  # TAG language-specific — `as`, a type annotation on `any`, and a generic
+  # type argument on `res.json()` / `snap.data()` are the TS spellings of
+  # trusting an external shape. Cousins: type-assertion-bypasses-checker
+  # (any unproven `as`, wherever the value came from) and
+  # security_common::validate-external-input (untrusted input reaching a
+  # sink). This one owns "a value from outside the process gets a static type
+  # without a runtime decode", even when no `as` is written.
+  - name: boundary-value-typed-without-decode
+    status: stable
+    description: |
+      ANTI-PATTERN: a value that crosses a process or storage boundary —
+      `await res.json()`, a Firestore `snap.data()`, `JSON.parse(...)`,
+      `localStorage.getItem`, a Worker `event.data`, a `postMessage` payload —
+      is given its domain type by assertion (`as Problem`), by annotation on
+      an `any` (`const p: Problem = await res.json()`), or by a generic type
+      argument that checks nothing (`getDoc<Problem>` without a converter
+      that validates). The checker then trusts a shape nobody verified, and a
+      stale document, an old client, or an error page surfaces later as
+      `undefined` deep inside code that "cannot" see it.
+      JUDGE: does a boundary value reach a domain type without passing a
+      runtime decoder (zod `parse` / `safeParse`, a hand-written type guard
+      that checks the fields, a Firestore converter that validates)? FLAG it
+      at the line where the type is first claimed. FIX: one decode function
+      per boundary that returns the domain type or a typed failure carrying
+      the raw value; readers call it instead of `as`. EXEMPT: a value the same
+      module wrote in the same process lifetime and reads back from memory.
+    why: |
+      2026-11 seven-layer review of a Next.js + Firestore app: every document
+      read from the database was `d.data() as Problem` (six sites), a
+      submission record was `as Submission` with every field optional, and a
+      runner-output decoder was itself an `as`; each was a place where stored
+      data of an older shape flowed in unchecked.
+    severity: error
+
+  # TAG language-specific — `fetch` resolves on any HTTP status; only a
+  # network failure rejects. That is a Fetch-API idiom, not a universal one.
+  - name: fetch-without-ok-check
+    status: stable
+    description: |
+      ANTI-PATTERN: the result of `fetch(...)` is consumed (`.json()`,
+      `.text()`, `.arrayBuffer()`, handed to a parser or an `eval`) without
+      checking `res.ok` / `res.status` first. `fetch` resolves on 404 and 500
+      too, so an error page becomes "the data": a JSON parse error far from
+      the cause, or — worse — HTML stored over a good cached copy. A
+      try/catch around the fetch does not help, because nothing throws.
+      JUDGE: on every path from the `fetch` to the body being read, is
+      there a check of `ok` / `status` that sends a non-2xx response to the
+      same failure branch as a network error? If not, FLAG the read.
+      EXEMPT: a wrapper (`authFetch`, a typed client) that already checks
+      `ok` and throws or returns a typed failure — then judge the wrapper.
+    why: |
+      2026-11 seven-layer review: a Web Worker fetched its Python runner and
+      extractor sources without `res.ok`; a breaker test served a 404 and the
+      worker replaced the previous good runner with the error page, so the
+      next run failed with a Python `SyntaxError`. The fallback to the last
+      good copy only fired on network exceptions.
+    severity: error
+
+  # TAG language-specific — a Worker / port / socket `onmessage` handler that
+  # is `async` returns a promise the event loop ignores, so a second message
+  # starts while the first still awaits. JS event-loop hazard.
+  - name: async-message-handler-reentrancy
+    status: stable
+    description: |
+      ANTI-PATTERN: an event or message handler — `self.onmessage`,
+      `port.onmessage`, `addEventListener("message", ...)`, a socket
+      `on("data")` — is an `async` function that `await`s shared state or a
+      single-threaded resource (an interpreter, a DB connection, a
+      file), with no queue or lock serializing it. The dispatcher does not
+      wait for the returned promise: the next message starts its own run
+      while the first is suspended at an `await`, so two runs interleave on
+      the shared resource; and a rejection inside the handler is an
+      unhandled rejection no sender hears about.
+      JUDGE: is the handler async, does it await between reading and
+      writing shared state (or between two uses of a single-threaded
+      resource), and is there nothing chaining messages one after another
+      (a promise chain `queue = queue.then(...)`, a mutex, a job queue)?
+      FLAG it. Also FLAG a handler whose body is not wrapped so that a
+      failure is posted back to the sender. EXEMPT: handlers that only
+      touch per-message state, and resources documented as safe for
+      concurrent use.
+    why: |
+      2026-11 seven-layer review: the Pyodide worker's `self.onmessage` was
+      `async`; a breaker test sent "run cases" and "extract blueprint" at
+      once and observed two `runPythonAsync` calls in flight in one
+      interpreter, which shares module-level state between them.
+    severity: error
+
+  # TAG language-specific (framework) — the React spelling of
+  # effect_state::pure-logic-in-effectful-scope and
+  # fp_lens::core-buried-outward: a domain decision computed inside a
+  # component body, `useMemo`, or an event handler, where only rendering can
+  # reach it.
+  - name: domain-decision-in-component-body
+    status: stable
+    description: |
+      ANTI-PATTERN: a React component computes a DOMAIN decision — which
+      cases count as failed, what the next problem is, whether a draft may be
+      published, how a data structure is laid out — inline in its render
+      body, in a `useMemo` / `useCallback`, or in an event handler, mixed
+      with `setState`, store actions, toasts and fetches. The decision can be
+      tested only by rendering the component, a second page that needs the
+      same answer re-derives it (and the copies drift), and the reader cannot
+      tell the rule from the plumbing.
+      JUDGE: strip the JSX, hooks, setters and IO from the block. Is what
+      remains a decision over plain data that would be meaningful outside
+      this component (a predicate, a selection, a policy, a layout)? If it
+      is longer than a trivial view mapping (formatting a label, choosing a
+      CSS class), FLAG it. FIX: move it to a pure function next to the
+      domain type — data in, decision out, no hook / setter / `Date.now()` in
+      its signature or body — and have the component call it; test it with
+      plain inputs on both sides of each boundary.
+      EXEMPT: pure view mapping; decisions already delegated to a pure
+      function that the component merely calls.
+    why: |
+      2026-11 seven-layer review of a Next.js practice app found the same
+      shape in four groups: "next problem" computed separately in two pages
+      (the copies already disagreed), the publish policy written as control
+      flow inside an admin component, visualization layout decided inside
+      renderer components, and "which cases failed" with three rule sets in
+      three components.
+    severity: warning

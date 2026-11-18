@@ -1,0 +1,185 @@
+name: Python Best Practices
+description: Common Python code quality rules
+
+# applicability — rubric_set_for filters on this (ruff-style config, not source)
+language: [python]
+
+# ── AUDIT NOTE: anti-pattern anchoring + language-specific vs universal ──
+# Each rule carries a `# SCOPE:` tag. `no-mutable-default-args`,
+# `import-time-global-mutation` and `in-process-sandbox-claim` are genuine
+# Python idioms; the rest encode hazards or mandates that are not
+# Python-specific:
+#   - no-bare-except            → universal hazard, already owned by l4_contracts
+#   - manual-path-string-munging → universal hazard (was the style-only `use-pathlib`)
+#   - type-hints-required        → dynamic-language mandate (Python/TS only)
+#   - resource-budget-on-a-bypassable-path → universal hazard, Python spelling
+# Comments are not mandated here: when to write one is comment_hygiene's
+# (default: none; only what the code cannot say).
+
+rules:
+  # WHY: a bare `except:` catches control-flow signals (KeyboardInterrupt,
+  #      SystemExit) and buries every real error, so the caller cannot tell
+  #      failure from success — the classic over-broad swallow.
+  # SCOPE: universal-candidate-duplicating-l4_contracts::over-broad-exception-handler
+  #        (l4 already lists Python `except:` as an example, cross-language;
+  #        also overlaps l4_contracts::swallowed-exception). The bare `except:`
+  #        SYNTAX is Python; the HAZARD is language-agnostic and already owned.
+  - name: no-bare-except
+    status: stable
+    why: "A bare `except:` swallows control-flow signals and hides real errors from the caller."
+    description: >
+      Anti-pattern: an exception handler that catches a category BROADER than
+      the code can meaningfully act on and then does not re-raise, burying
+      errors the handler cannot decide about. In Python the sharpest form is a
+      bare `except:` (equivalently `except BaseException:`), which additionally
+      swallows `KeyboardInterrupt` / `SystemExit` and breaks interpreter
+      shutdown; `except Exception:` with a `pass`/sentinel body is the same
+      hazard one notch narrower. FLAG a handler that catches broadly and
+      neither re-raises nor records enough for the caller to distinguish
+      failure from a real value. EXEMPT a broad catch that is immediately
+      followed by a re-raise (cleanup-then-propagate), or that logs the typed
+      exception with its traceback before deciding.
+    severity: error
+    # DECIDE — ast-grep matches the bare `except:` clause directly; this is
+    # ruff E722, mechanically checkable with zero LLM tokens. (The broader
+    # `except Exception: pass` shape stays LLM-judged — not this pattern.)
+    transformer: "except: $$$"
+
+  # WHY: a mutable default (`def f(x=[])`) is created ONCE when `def` runs and
+  #      shared by every call, so state silently leaks between invocations.
+  # SCOPE: language-specific — a direct consequence of Python evaluating default
+  #        arguments a single time at def-execution, not per call.
+  - name: no-mutable-default-args
+    status: stable
+    why: "A mutable default arg is created once at def time and shared across all calls, leaking state between invocations."
+    description: >
+      Anti-pattern (Python-specific): a function default that is a MUTABLE
+      object — `def f(x=[])`, `def g(d={})`, `def h(s=set())`, or any call that
+      returns a fresh-looking container — is evaluated exactly ONCE when the
+      `def` statement executes, not per call, so every invocation shares and
+      mutates the SAME object and state bleeds between calls. FLAG a mutable
+      literal or mutable-returning call in a default position. The fix is the
+      `None`-sentinel idiom: default to `None`, then build the container inside
+      the body. EXEMPT immutable defaults (`()`, `frozenset()`, numbers,
+      strings, `None`, an enum member) — they cannot accumulate state and are
+      the correct shape.
+    severity: error
+
+  # WHY: assembling a filesystem path by string surgery hard-codes the OS
+  #      separator, skips normalization, and — when a component is external
+  #      input — is a direct path-traversal vector.
+  # SCOPE: universal (the hazard exists in every language); Python tokens are
+  #        just examples. No generic owner yet — candidate for a security_common
+  #        path-traversal rule. (This REPLACES the style-only `use-pathlib`,
+  #        which had no hazard: `os.path.join` was already correct.)
+  - name: manual-path-string-munging
+    status: stable
+    why: "Building a filesystem path by string concatenation is separator-fragile and a path-traversal vector."
+    description: >
+      Anti-pattern: constructing a filesystem path by string surgery —
+      `base + "/" + name`, `"%s/%s" % (d, f)`, `f"{dir}/{user_input}"`,
+      `"/".join(parts)` — instead of a path-join API. A hand-built path
+      hard-codes a separator (breaks across OSes), skips `..`/normalization,
+      and when any component is untrusted input becomes a direct path-traversal
+      vector (`../../etc/passwd`). FLAG a filesystem path assembled by
+      concatenation or format-string from two or more components, especially
+      when one is external input. The fix is a path API — `os.path.join`, or
+      preferably `pathlib.Path(base) / name` (which also normalizes and
+      compares structurally). EXEMPT non-filesystem strings (URLs, SQL, log
+      lines) and a single constant literal path with no concatenation.
+    severity: warning
+
+  # WHY: an untyped PUBLIC signature cannot be statically checked; `Any`
+  #      propagates through call sites and callers get no enforced contract.
+  # SCOPE: language-specific — a mandate only meaningful where types are
+  #        OPTIONAL (Python / TypeScript gradual typing). Statically-typed
+  #        languages (Rust/Go/Java) get this from the compiler for free.
+  - name: type-hints-required
+    status: stable
+    why: "An untyped public signature defeats static checking and lets `Any` propagate silently to callers."
+    description: >
+      Anti-pattern: a PUBLIC / exported function whose parameters or return
+      type carry no annotation, so nothing downstream can be type-checked and
+      `Any` flows silently through call sites. This is a boundary rule, not a
+      blanket mandate: FLAG the public API surface (exported functions, methods
+      on public classes, module-level callables). EXEMPT private helpers
+      (`_leading_underscore`), trivially-inferable locals, `self` / `cls`, and
+      `__init__` returning `None`. Meaningful only in a gradually-typed
+      language — a statically-typed one enforces this at compile time.
+    severity: warning
+
+  # WHY: a module that changes process-wide state when imported makes every
+  #      importer's behaviour depend on import order, and tests pass or fail
+  #      by which module happened to load first.
+  # SCOPE: language-specific — Python runs a module's top level on import.
+  - name: import-time-global-mutation
+    status: stable
+    why: "A library module that mutates process-wide state on import makes behaviour depend on import order."
+    description: >
+      Anti-pattern (Python-specific): a LIBRARY module (one other code
+      imports, not a `__main__` script or a test conftest) changes
+      process-wide state at import time — `sys.path.insert(...)` /
+      `sys.path.append(...)`, `os.environ[...] = ...`, `os.chdir`,
+      `logging.basicConfig(...)`, monkey-patching another module, seeding a
+      global RNG. Every importer inherits the change, the effect depends on
+      which module loaded first, and the `sys.path` form hides a packaging
+      problem (the import only works because something else ran first).
+      FLAG a module-level statement outside `if __name__ == "__main__":` that
+      mutates such state. The fix is to make the code an importable package
+      (or set the path once in the entry point / test config) and to move
+      configuration into the program's entry point. EXEMPT `__main__`
+      scripts, `conftest.py`, and a package `__init__` whose documented job is
+      to register a plugin.
+    severity: warning
+
+  # WHY: a Python interpreter cannot isolate code from code it runs in the
+  #      same interpreter; import hooks and trimmed builtins are bypassed by
+  #      `importlib`, `__import__`, `sys.modules`, and object introspection.
+  # SCOPE: language-specific spelling of a universal security hazard (same
+  #        interpreter / same origin is no boundary).
+  - name: in-process-sandbox-claim
+    status: stable
+    why: "Code that runs in the same interpreter as its guard can reach everything the guard hides."
+    description: >
+      Anti-pattern: code or its comments claim that untrusted code is
+      isolated from something sensitive (the host's JS bridge, credentials,
+      the filesystem, the network) by measures taken INSIDE the same
+      interpreter — an import hook that rejects `import js`, deleting names
+      from `builtins`, removing entries from `sys.modules`, a restricted
+      `globals` dict passed to `exec`. Every such measure is reachable from
+      the code it guards (`importlib.import_module`, `builtins.__import__`,
+      `sys.modules[...]`, `().__class__.__base__.__subclasses__()`), so the
+      claim is false and readers rely on it. FLAG a guard of this kind that is
+      presented as a security boundary. The fix is to either drop the claim
+      (and not run untrusted code where secrets are reachable) or put a real
+      boundary around it: a separate process, or a separate origin /
+      sandboxed iframe with no credentials. EXEMPT guards documented as
+      foot-gun prevention for honest code, not as isolation.
+    severity: error
+
+  # WHY: a budget enforced by instrumenting some constructs is skipped by
+  #      every construct it does not instrument, and the time limit then
+  #      falls to a coarser outer guard with a misleading message.
+  # SCOPE: universal hazard; the instrumentation spelling (an AST
+  #        transformer or `sys.settrace` counting loop iterations) is Python.
+  - name: resource-budget-on-a-bypassable-path
+    status: stable
+    why: "A step or memory budget that counts only some constructs is bypassed by the ones it does not count."
+    description: >
+      Anti-pattern: a resource budget for untrusted or user code (a step
+      count, an instruction counter, a recursion or allocation cap) is
+      charged only on the paths the instrumentation happens to cover — loop
+      iterations but not function calls, user functions but not dunder
+      methods the instrumenter skips, user code but not the runner's own
+      conversion loops over the user's return value, the instrumented source
+      but not code reached through `exec` / `eval` / `builtins`. Exponential
+      recursion, a loop in `__init__`, a cyclic linked list returned to a
+      converter, or `exec` of a string then runs until a coarser outer
+      timeout, with a message that blames the wrong thing. FLAG a budget whose
+      charging points can be avoided by an ordinary program; name the path
+      that escapes it. The fix is to charge at a point every execution must
+      pass (function entry as well as loop back-edges; the runner's own
+      traversals bounded with a visited set) and to report which budget ran
+      out. EXEMPT a budget documented as best-effort behind a hard outer
+      limit whose message says so.
+    severity: warning

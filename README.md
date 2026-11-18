@@ -230,15 +230,30 @@ the editor.
 
 ## Skills and plugins
 
-- **`arc` plugin (this repo)** — `claude plugin marketplace add leocaolab/getarc`,
-  then `claude plugin install arc@getarc`. Holds [`arc-setup`](skills/arc-setup/SKILL.md),
-  which installs and configures arc, and [`arc-review`](skills/arc-review/SKILL.md),
-  which still names 1.1 commands (`arc review`, `arc auto`); use the commands
-  above instead.
-- **`arc-skills` plugin** (`arc-skills.tar.gz` on the release) — skills over the
-  CLI (`arc-setup`, `review`, `fix`, `rot`, `automate`, `maintain`) and the review
-  methods arc's own team uses (`taste-check`, `seven-layer-check`, `error-check`,
-  `shift-left-<lang>`, …). Unpack it and run `claude --plugin-dir ./arc-skills`.
+This repo is a Claude Code plugin marketplace. Its `arc` plugin carries the
+skills of arc's `arc-skills` plugin (the one `arc-skills.tar.gz` packs):
+
+```bash
+claude plugin marketplace add leocaolab/getarc
+claude plugin install arc@getarc
+```
+
+In another agent: `npx skills add leocaolab/getarc`, and pick the skills.
+
+| Skill | What it does |
+|---|---|
+| [`arc-setup`](skills/arc-setup/SKILL.md) | installs and configures arc, stage by stage |
+| [`review`](skills/review/SKILL.md) | runs `arc local-review`, real findings first; read-only |
+| [`fix`](skills/fix/SKILL.md) | runs `arc fix` on the local PR; pushes nothing |
+| [`rot`](skills/rot/SKILL.md) | works through `arc rot`'s suggestions as refactors; asks first |
+| [`automate`](skills/automate/SKILL.md) | the post-commit review hook, or the merge gate's `merge.yml` |
+| [`maintain`](skills/maintain/SKILL.md) | diagnoses a failing command, resets local state, swaps a role |
+
+The review methods arc's own team works by need no `arc` binary:
+`seven-layer-check`, `taste-check`, `smell-check`, `error-check`, `test-check`,
+`name-check`, `type-naming`, `comment-clean`, `coding-convention`,
+`coding-principles` and `shift-left-<lang>` for eight languages. They cite the
+rule sets in [`rubrics/`](rubrics/), the same files arc's reviewer reads.
 
 ---
 

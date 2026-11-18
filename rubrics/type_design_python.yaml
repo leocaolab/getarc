@@ -1,0 +1,288 @@
+name: Type Design — Python (new types only)
+description: |
+  判一段 Python 改动里「新加的类」(dataclass / pydantic 模型 / Enum / 异常类 / 普通类 / ABC)——
+  它有没有必要、名字对不对、形状是不是 total。
+
+  这是 `type_design.yaml` 里语言无关的那几条,翻成 Python 的写法、配 Python 的例子;
+  每条规则的来由(维护者原话、最初的实例)在 `type_design.yaml` 的同名规则里,这里不抄。
+  只审新加的:搬家、改缩进不算新类型;已有的坏名字不是先例。每个新类逐条过,
+  一条规则只问一个问题,答「是」就是一条 finding。能删的写「删」和怎么删;
+  要改名的给 1–2 个候选名,各说一句它的角色。
+
+  Python 的 `TypedDict` / `Literal` 别名不是类定义,评审者只拿到 `class`;别名的问题由每文件评审管。
+
+language: [python]
+
+# `type_design` scope: loaded ONLY by the new-type reviewer, never by the per-file L4 set.
+applies_to: type_design
+
+rules:
+  # ── 一、名字 ────────────────────────────────────────────────────────
+
+  - name: data-type-named-by-verb
+    status: stable
+    severity: warning
+    summary: 类名不是名词(动词、过去分词);异常类没按 `<名词>Error` 起名
+    gate_question: 这个类的名字是名词或名词短语吗?异常类是 `<名词>Error` 吗?
+    description: |
+      ANTI-PATTERN:类名是动词、过去分词或进行时(`Loaded`、`Converting`);异常类用过去式说发生了什么
+      (`UserCodeRaised`),而不是 PEP 8 "Exception Names" 的 `<名词>Error`。
+
+      JUDGE:只看类名。数据类、普通类:名词 / 名词短语 = 过。异常类:以 `Error` 结尾、前面的名词说出
+      是哪种操作或哪种东西出的错 = 过。其余判负。`Enum` 的成员可以是形容词或分词(状态)。
+
+      FIX:改成说它是什么的名词;异常改成 `<名词>Error`(`UserCodeRaised` → `UserCodeError`)。
+    why: 来由见 `type_design.yaml` 同名规则。2026-11 一个 Next.js + Pyodide 刷题项目的七层审查实例:`UserCodeRaised`。
+    example_bad: |
+      class UserCodeRaised(Exception):
+          pass
+    example_good: |
+      class UserCodeError(Exception):
+          """Carries the traceback of an exception the user's code raised."""
+
+          def __init__(self, traceback: str) -> None:
+              super().__init__(traceback)
+              self.traceback = traceback
+
+  - name: junk-or-coined-word-in-type-name
+    status: stable
+    severity: warning
+    summary: 类名用了垃圾词(Manager/Helper/Util/Data/Info/Converter)、品牌前缀,或含义不明的形容词
+    gate_question: 这个类名里有垃圾词(`Manager`/`Helper`/`Util`/`Data`/`Info`/`Converter`)、项目名前缀,或说不出含义的形容词(`Safe`、`Smart`)吗?
+    description: |
+      ANTI-PATTERN:
+        - 垃圾词:`DataConverter` —— `Data` 加一个空泛的 `Converter`,说不出它在转什么、转成什么。
+        - 品牌前缀:类名前挂项目名,没说出它是什么。
+        - 含义不明的形容词:`_SafeStringIO` 实际是一个有上限的缓冲,该叫 `_BoundedStringIO`。
+
+      JUDGE:逐词看名字,任一条命中 = 判负。
+
+      FIX:重起一个说清角色的名词;候选交维护者。
+    why: 来由见 `type_design.yaml` 同名规则。七层审查实例:`DataConverter`、`_SafeStringIO`、带项目名前缀的插桩器类。
+    example_bad: |
+      class DataConverter:
+          def to_structure(self, value, kind): ...
+          def from_structure(self, node): ...
+    example_good: |
+      class CaseValueCodec:
+          """Encodes test-case values to linked lists and trees, and decodes them back."""
+
+  - name: type-name-collides-or-is-generic
+    status: stable
+    severity: warning
+    summary: 类名和仓里另一个不同的东西同名、太空泛,或同一个东西在边界两侧叫两个名字
+    gate_question: "`git grep -nwE 'class <Name>'` 下,这个名字是独一无二、说得出「谁的、什么的」,并且和跨语言边界另一侧对同一个东西的叫法一致吗?"
+    description: |
+      ANTI-PATTERN:
+        - 同名不同物、太空泛(`Record`、`Item`、`Result`)。
+        - 同一个东西跨边界换名:TypeScript 侧叫 `Blueprint`,Python 侧的模型叫 `CodeOntology`,
+          读者以为是两样东西。
+
+      JUDGE:对新名字 grep 仓里的类定义;再看它的实例会不会经 JSON / postMessage 交给另一种语言,
+      那一侧叫它什么。撞名、泛词、或跨边界不同名 = 判负。
+
+      FIX:换一个带角色的名词;跨边界的东西两侧用同一个名字。
+    why: 来由见 `type_design.yaml` 同名规则。七层审查实例:`CodeOntology` 与 TS 侧的 `Blueprint`。
+    example_bad: |
+      class CodeOntology(BaseModel):  # TypeScript reads this as `Blueprint`
+          variables: list[VariableRecord]
+    example_good: |
+      class Blueprint(BaseModel):
+          variables: list[VariableRecord]
+
+  # ── 二、说得清、要不要 ──────────────────────────────────────────────
+
+  - name: type-not-sayable-in-one-sentence
+    status: stable
+    severity: error
+    summary: 一句外行听得懂的话说不清这个类装的是什么、谁产出、谁读
+    gate_question: 能用一句外行听得懂的话说出这个类装的是什么、谁产出它、谁读它吗?
+    description: |
+      ANTI-PATTERN:说这个类是什么要用「A、B、以及 C」串起来;或者它是一个什么都做的类
+      (插桩、记录、编解码、判题都在一个类里)。
+
+      JUDGE:写下「<名字> 是 <业务上的什么>,由 <谁> 产出,给 <谁> 读」。写不出,或要并列串几样东西 = 判负。
+
+      FIX:说不清就多半没必要,或该拆开;真是一个概念,按那句话起名。
+    why: 来由见 `type_design.yaml` 同名规则。
+    example_bad: |
+      class Runner:
+          """Instruments the code, records frames, converts values, judges cases and sandboxes imports."""
+    example_good: |
+      class FrameRecorder:
+          """Collects the frames of one run, sampling loop iterations past the first few."""
+
+  - name: action-disguised-as-type
+    status: stable
+    severity: error
+    summary: 一个动作被做成了类 —— 只有一个实现的 ABC,或只装着参数、只有一个方法的类
+    gate_question: 这个类是不是一个被包成类的函数 —— 只有一个实现的抽象基类 / Protocol,或字段全是它唯一方法的参数?
+    description: |
+      ANTI-PATTERN:
+        - 一个 `ABC` / `Protocol` 现在只有一个实现,存在只为「以后可能有第二个」(docstring 里提到的另一个实现并不存在)。
+        - 一个类的 `__init__` 只收调用方手里本来就有的参数,唯一的公开方法就是那个动作。
+
+      JUDGE:列出实现和方法。抽象类少于两个实现 = 判负;类只有一个「做事」的方法、字段全是它的参数 = 判负。
+
+      EXEMPT:现在就有两个以上实现,且作为值传来传去。
+
+      FIX:写成一个模块级函数;要换实现,调用方收一个函数参数。
+    why: 来由见 `type_design.yaml` 同名规则。七层审查实例:`BlueprintExtractor(ABC)` 只有一个实现,docstring 指向的另一个实现不存在。
+    example_bad: |
+      class BlueprintExtractor(ABC):
+          @abstractmethod
+          def extract(self, source: str) -> Blueprint: ...
+
+      class AstExtractor(BlueprintExtractor):
+          def extract(self, source: str) -> Blueprint: ...
+    example_good: |
+      def extract_blueprint(source: str) -> Blueprint: ...
+
+  - name: type-only-read-to-print
+    status: stable
+    severity: error
+    summary: 类(或它的字段)没有按它做事的读者 —— 只被打印、序列化出去却没人读
+    gate_question: 除了打印、日志、或序列化给另一侧而另一侧从不读,还有谁按这个类(或这个字段)做事?
+    description: |
+      ANTI-PATTERN:模型上的字段由产出方填好,序列化交给另一种语言的消费方,消费方从不读它
+      (grep 只在生成的类型定义里出现);或者一个类只为 `print` / `logging` 存在。
+
+      JUDGE:grep 这个类和它每个字段的读者 —— 包括跨语言边界另一侧的代码。答不出一个按它做事的读者 = 判负。
+      测试在读不算读者。
+
+      FIX:删掉,或找到真正的读者再留。
+    why: 来由见 `type_design.yaml` 同名规则。七层审查实例:抽取器产出的 `confidence`、`secondary_paradigm`、`unclassified` 在 TS 侧没有任何读者。
+    example_bad: |
+      class Blueprint(BaseModel):
+          variables: list[VariableRecord]
+          confidence: float          # the TypeScript side never reads it
+    example_good: |
+      class Blueprint(BaseModel):
+          variables: list[VariableRecord]
+
+  - name: error-kind-in-a-string
+    status: stable
+    severity: error
+    summary: 失败的种类写在异常消息或结果 dict 的一个字符串里,而不是异常子类 / 和类型
+    gate_question: 「是哪一种失败」是由异常类(或结果的类型)说的,还是由一段消息字符串说的?
+    description: |
+      ANTI-PATTERN:
+        - `raise RuntimeError("题目数据坏了: ...")` / `raise ValueError("timeout")`:几种失败共用一个内置异常类,
+          上层只能解析 `str(e)`。
+        - 结果是 `{"passed": False, "error": "..."}`,`error` 里的文字是区分「用户代码抛了」「超时」「数据坏了」的唯一依据。
+
+      JUDGE:列出这段代码能表达的失败种类。只有一种 = 不报;不止一种,却只有消息文字在区分 = 判负。
+
+      EXEMPT:字符串是数据(用户的原始输入、traceback 原文、给人看的提示),不是种类。
+
+      FIX:一种失败一个异常子类,原始值放在属性上;结果用和类型(几个 frozen dataclass 的联合,或带
+      `Literal` 判别字段的模型)。
+    why: |
+      来由见 `type_design.yaml` 同名规则。七层审查实例:runner 的失败全是 `raise RuntimeError("…")` 或 `{"error": str}`。
+    example_bad: |
+      def load_case(raw: str) -> Case:
+          if not raw:
+              raise RuntimeError("bad case data: empty")
+          ...
+    example_good: |
+      class CaseDataError(Exception):
+          """Carries the raw case text the pipeline wrote and this reader could not decode."""
+
+          def __init__(self, raw: str) -> None:
+              super().__init__(f"undecodable case data: {raw[:200]!r}")
+              self.raw = raw
+
+  # ── 三、形状:透明度 / total / 规范化 ─────────────────────────────
+
+  - name: transparency-mismatches-invariant
+    status: stable
+    severity: error
+    summary: 有不变量的类可被随手构造、随后修改,而不是只经一个解析函数造出并冻结
+    gate_question: 这个类有要守的不变量吗 —— 有,它只经一个校验的构造路径(`classmethod parse`、`__post_init__` 抛类型化异常)造出、并且 frozen 吗?
+    description: |
+      Python 没有真正的私有字段。ANTI-PATTERN:
+        - 有不变量(非空、已排序、两个字段互相约束)的 dataclass 不校验、不 frozen,谁都能 `Case(...)` 出一个非法值,
+          或者事后改掉一个字段。
+        - 没有不变量却写一排 `@property` 透传 `_x`,多余的仪式。
+
+      JUDGE:写出它的不变量。写得出,却能不经检查造出或改成非法值 = 判负;写不出却不透明 = 判负。
+
+      FIX:有不变量 → `@dataclass(frozen=True)`,构造时在 `__post_init__` 校验并抛类型化异常,或只经
+      `classmethod parse(raw) -> Self` 造出;pydantic 模型用 validator 加 `frozen=True`。没有 → 普通 dataclass。
+    why: 来由见 `type_design.yaml` 同名规则。
+    example_bad: |
+      @dataclass
+      class SortedRun:
+          values: list[int]  # must be sorted
+    example_good: |
+      @dataclass(frozen=True)
+      class SortedRun:
+          values: tuple[int, ...]
+
+          def __post_init__(self) -> None:
+              if list(self.values) != sorted(self.values):
+                  raise UnsortedRunError(self.values)
+
+  - name: type-not-total
+    status: stable
+    severity: error
+    summary: 构造得出非法值 —— 几个 Optional 字段的组合、bool + 只在 True 时有意义的字段
+    gate_question: 这个类的每一个能构造出来的值都是合法的吗(试着造一个非法的)?
+    description: |
+      ANTI-PATTERN:
+        - `passed: bool` + `actual: object | None` + `error: str | None` 三个字段的组合表达五种结局,
+          造得出「passed 却有 error」。
+        - 两个互斥的 `Optional` 字段;两个总是同时出现的 `Optional` 字段。
+        - 封闭集合里塞一个兜底值(`"other"`),代替「推不出来」的 `None`。
+
+      JUDGE:试造一个非法值 —— 构造成功 = 判负,写出那个值。
+
+      FIX:每种情形一个 frozen dataclass,结局是它们的联合;总是一起出现的字段合成一个对象;推不出来就是 `None`。
+    why: 来由见 `type_design.yaml` 同名规则。七层审查实例:单用例结果用 `passed` / `actual` / `error` 的组合表达五种结局。
+    example_bad: |
+      @dataclass
+      class CaseResult:
+          passed: bool
+          actual: object | None = None
+          error: str | None = None
+    example_good: |
+      @dataclass(frozen=True)
+      class Passed:
+          actual: object
+
+      @dataclass(frozen=True)
+      class WrongAnswer:
+          actual: object
+
+      @dataclass(frozen=True)
+      class Raised:
+          traceback: str
+
+      CaseResult = Passed | WrongAnswer | Raised
+
+  - name: two-representations-of-one-fact
+    status: stable
+    severity: error
+    summary: 同一个事实存了两份(两个集合描述同一组东西、索引和关系各记一遍),或存了能算出来的字段
+    gate_question: 这个类里,每个事实只存一份、没有能从别的字段算出的字段吗?
+    description: |
+      ANTI-PATTERN:
+        - 两个字段描述同一组东西:`scalars: list[str]` 和 `scalar_roles: dict[str, str]`。
+        - 一个关系在两处各记一份:变量上的 `indexes_into`,和 `relationships` 列表里的同一条关系。
+        - `None` 和空列表都表示「没有」。
+
+      JUDGE:对每个字段问「它能从别的字段算出来吗」「它和别的字段说的是不是同一件事」。任一为是 = 判负。
+
+      FIX:只留一份;要快速查找,由读的一方从那一份建索引。
+    why: 来由见 `type_design.yaml` 同名规则。七层审查实例:`VariableRecord.indexes_into` 与 `relationships` 记同一个关系;`scalars` 与 `scalar_roles`。
+    example_bad: |
+      class Blueprint(BaseModel):
+          scalars: list[str]
+          scalar_roles: dict[str, str]
+    example_good: |
+      class Scalar(BaseModel):
+          name: str
+          role: ScalarRole | None = None
+
+      class Blueprint(BaseModel):
+          scalars: list[Scalar]
