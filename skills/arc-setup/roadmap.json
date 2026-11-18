@@ -1,6 +1,6 @@
 {
   "about": "The install route. probe.py reads it and reports, per stage, which criterion holds and which does not; SKILL.md walks it in order. Every stage is judged from the world (files, binaries, git) each time, so a stopped install resumes by probing again.",
-  "required_verbs": ["init", "review", "local-review", "fix", "rot", "workflow", "reset"],
+  "required_verbs": ["init", "local-review", "fix", "rot", "workflow", "submit", "reset"],
   "release_page": "https://github.com/leocaolab/getarc/releases",
   "assets": {
     "Darwin arm64": "arc-darwin-arm64.tar.gz",
@@ -107,11 +107,11 @@
       "verify": "arc rot --no-judge",
       "criteria": [
         {"id": "rot_offline_runs", "level": "required", "says": "`arc rot --no-judge` exits 0 here (binary, repo and [review] exclude all read)"},
-        {"id": "origin_remote", "level": "info", "says": "the repo has an origin remote (`arc review` pushes to it)"},
-        {"id": "gh_authed", "level": "info", "says": "`gh auth status` succeeds (`arc review` opens the PR through gh)"},
-        {"id": "review_service_here", "level": "info", "says": "this machine's ~/.arc/machine.toml serves this repo as a tenant, so `arc local-review` / `arc fix` can run here"}
+        {"id": "origin_remote", "level": "info", "says": "the repo has an origin remote (`arc submit` pushes to it)"},
+        {"id": "gh_authed", "level": "info", "says": "`gh auth status` succeeds (`arc submit` opens the PR through gh)"},
+        {"id": "review_service_here", "level": "info", "says": "this machine's ~/.arc/machine.toml serves this repo as a tenant (team edition), so a review service here takes the PR `arc submit` opens; `arc local-review` / `arc fix` need none"}
       ],
-      "sources": ["crates/apps/cli/src/cli/local_review_dispatch.rs", "crates/infra/fs/src/tenants.rs", "crates/review/cli/src/bootstrap/record.rs", "crates/review/cli/src/workflow/submit/mod.rs (QUEUE_REMOTE)"]
+      "sources": ["crates/review/cli/src/workflow/local_review/mod.rs (the clone's own review.db)", "crates/apps/cli/src/cli/dispatch.rs (writer_of)", "crates/review/cli/src/bootstrap/record.rs", "crates/review/cli/src/workflow/submit/mod.rs (QUEUE_REMOTE)"]
     }
   ]
 }

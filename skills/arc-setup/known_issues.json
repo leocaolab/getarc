@@ -29,9 +29,9 @@
       "id": "release_asset_missing",
       "stage": "binary",
       "pattern": "HTTPError: HTTP Error 404",
-      "source": "scripts/fetch_arc.py (GitHub's download URL for a tag or asset that does not exist)",
-      "cause": "the tag is not published on getarc (yet), or it has no asset for this platform.",
-      "fix": "check the tag with the person and the release page; do not fall back to another tag without saying so."
+      "source": "scripts/fetch_arc.py (GitHub's download URL for a --version or asset that does not exist)",
+      "cause": "the --version tag is not published on getarc (yet), or the release (or the --from mirror) has no asset for this platform.",
+      "fix": "check the tag or mirror with the person and the release page; do not fall back to another release without saying so."
     },
     {
       "id": "tars_no_providers",
@@ -149,8 +149,8 @@
       "id": "not_a_tenant",
       "stage": "smoke",
       "pattern": "is not a tenant in .*machine\\.toml",
-      "source": "crates/infra/fs/src/tenants.rs:70",
-      "cause": "`arc local-review` / `arc fix` work through a review service that serves this repo from this machine's ~/.arc/machine.toml. Nothing serves it here. The review service is not publicly released.",
+      "source": "crates/infra/fs/src/tenants.rs:64 (StoreError::NotATenant)",
+      "cause": "a team-edition lookup found no tenant for this repo in this machine's ~/.arc/machine.toml: no review service serves it here. `arc local-review` and `arc fix` never ask (they use the clone's own .arc/review.db); this comes from arc's services, which are not publicly released.",
       "fix": "not fixable by the install: report it. Registering a tenant is the operator's (`arc-server tenant add`), on a machine running arc's services."
     },
     {
@@ -158,16 +158,24 @@
       "stage": "smoke",
       "pattern": "post-commit-gate (\\S+): could not decide, so no review — (.*)",
       "source": "crates/apps/cli/src/cli/local_review_dispatch.rs:148 (the post-commit hook prints it to the terminal and .arc/critic.log since #3412); docs/user-guide/coding-agents.md",
-      "cause": "the post-commit hook asked whether to review this commit and could not decide, so it reviewed nothing. The reason follows the dash — most often the branch has no PR yet (`review.db holds no PR from <branch>: run `arc review` first`) or no review service serves the repo here (`… is not a tenant in …machine.toml`).",
-      "fix": "read the reason after the dash and follow its own row (no_pr_on_record / not_a_tenant). The commit itself succeeded; nothing to undo."
+      "cause": "the post-commit hook asked whether to review this commit and could not decide, so it reviewed nothing. The reason follows the dash — most often the branch has no local PR yet (`this checkout's branch holds no open local PR — run `arc local-review` first`).",
+      "fix": "read the reason after the dash and follow its own row (no_pr_on_record, or whichever row matches it). The commit itself succeeded; nothing to undo."
     },
     {
       "id": "no_pr_on_record",
       "stage": "smoke",
-      "pattern": "review\\.db holds no PR from (\\S+): run `arc review` first",
-      "source": "crates/review/cli/src/bootstrap/record.rs:40",
-      "cause": "local-review / fix work on the branch's PR, and this branch has none on record.",
-      "fix": "`arc review` opens it — an outward action (push + PR): ask first."
+      "pattern": "this checkout's branch holds no open local PR — run `arc local-review` first",
+      "source": "crates/review/cli/src/workflow/local_review/mod.rs:69 (LocalReviewError::NotReviewed)",
+      "cause": "arc fix works on the branch's local PR in this clone's .arc/review.db, and this branch has none open.",
+      "fix": "`arc local-review` opens it in this clone; nothing leaves the machine."
+    },
+    {
+      "id": "no_runner",
+      "stage": "smoke",
+      "pattern": "cannot tell who is submitting — not in an agent session and no `gh` login",
+      "source": "crates/apps/cli/src/cli/dispatch.rs:155 (writer_of); crates/infra/types/src/identity/agent.rs:36",
+      "cause": "`arc local-review`, `arc fix` and `arc submit` name who ran them: the agent session they run in (Claude Code, Codex, agy), else the `gh` login. This shell has neither.",
+      "fix": "run it from the person's coding agent, or have the person run `gh auth login` (their account — ask)."
     },
     {
       "id": "review_service_silent",
@@ -189,7 +197,7 @@
       "id": "bridge_unconfigured",
       "stage": "agents",
       "pattern": "no arc-bridge server is configured",
-      "source": "crates/bridge/cli/src/workflow/revive/mod.rs:78 (and collect.rs / history.rs / talk.rs); docs/user-guide/coding-agents.md",
+      "source": "crates/bridge/cli/src/workflow/collect.rs (and history.rs / talk.rs); docs/user-guide/coding-agents.md",
       "cause": "~/.arc/client.toml names no board. The bridge server is an operator's, not publicly released.",
       "fix": "only with an address from the operator: write `web = \"http://<host>:<port>\"` to ~/.arc/client.toml (ask first — global file)."
     }
