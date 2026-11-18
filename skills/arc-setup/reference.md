@@ -57,12 +57,9 @@ critic    = "<critic id>"
 critic_l4 = "<critic id>"     # per-file review
 critic_l5 = "<critic id>"     # arc rot's judge
 fixer     = "<fixer id>"      # must be written out; never falls back to default
-
-[gate]                         # optional: what arc fix hands the Fixer to run
-command       = "<build, compiling tests too>"
-final_command = "<tests>"
-# or: workflow = ".github/workflows/ci.yml"  job = ["build"]   — never both forms
 ```
+
+What the Fixer runs before it claims a fix is the repo's committed `presubmit.toml`.
 
 ## Merge gate (`.github/workflows/merge.yml`)
 *From `docs/user-guide/merge-gate.md`.* A merge machine runs it — not GitHub — on the
