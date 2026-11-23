@@ -15,7 +15,7 @@ Where arc looks: `--tars_home DIR` reads `DIR/config.toml`; `--tars-config FILE`
 the file directly; with neither, `$TARS_HOME/config.toml`, else `~/.tars/config.toml`.
 Pass the same flag to every arc call.
 
-```toml
+```toml ignore: ~/.tars/config.toml, tars's file, not arc's
 [providers.gemini_flash]            # an API-key provider
 type = "gemini"
 default_model = "flash@latest"      # a concrete id, or <series>@latest where the provider defines series
@@ -50,19 +50,16 @@ tested as Fixers end to end.
 *From `docs/user-guide/configuration.md`.* Not committed (`arc init` writes
 `.arc/.gitignore`). No `[providers]` — refused.
 
-```toml
+```toml config.toml
 [roles]
 default   = "<critic id>"
 critic    = "<critic id>"
 critic_l4 = "<critic id>"     # per-file review
 critic_l5 = "<critic id>"     # arc rot's judge
 fixer     = "<fixer id>"      # must be written out; never falls back to default
-
-[gate]                         # optional: what arc fix hands the Fixer to run
-command       = "<build, compiling tests too>"
-final_command = "<tests>"
-# or: workflow = ".github/workflows/ci.yml"  job = ["build"]   — never both forms
 ```
+
+What the Fixer runs before it claims a fix is the repo's committed `presubmit.toml`.
 
 ## Merge gate (`.github/workflows/merge.yml`)
 *From `docs/user-guide/merge-gate.md`.* A merge machine runs it — not GitHub — on the
@@ -90,7 +87,7 @@ from the target branch, so a PR editing it is judged by the old copy.
   Playwright, pytest.
 - Main must be green on the merge machine before the repo is registered.
 
-```yaml
+```yaml workflow.yml
 name: Merge gate
 on:
   workflow_dispatch: {}

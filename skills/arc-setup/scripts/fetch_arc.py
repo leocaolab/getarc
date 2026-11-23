@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
-"""Fetch the arc binary for this machine from getarc's public releases.
+"""Fetch the arc binary for this machine from a release.
 
   fetch_arc.py --stage-dir DIR                 download + unpack into DIR, then
                                                report its version and which of the
                                                route's verbs it has. Installs nothing.
   fetch_arc.py --stage-dir DIR --install-to D  also move it to D/arc — only after the
                                                person chose D (a directory on PATH).
-  fetch_arc.py --tag <tag> …                   a named release instead of the latest —
-                                               the only way to a prerelease (a design
-                                               partner's preview tag): GitHub's "latest"
-                                               skips prereleases.
+  fetch_arc.py --version vX.Y.Z …              fetch that getarc release — the way to a
+                                               prerelease (a design partner's preview tag),
+                                               which GitHub's "latest" skips.
+  fetch_arc.py --from URL …                    fetch URL/<asset> (a mirror, or a file://
+                                               directory).
 
-Output: one JSON object (release tag, asset, staged path, version, missing verbs,
-installed path). A failure is reported with the raw error, never retried quietly.
+--version and --from are mutually exclusive.
+
+Output: one JSON object — platform, url (where it fetched from), staged, version,
+missing_verbs, and after --install-to also installed and on_path; on failure, error with
+the raw error, never retried quietly.
 """
 
 from __future__ import annotations
@@ -29,14 +33,15 @@ from pathlib import Path
 from typing import Any
 
 ROADMAP = Path(__file__).resolve().parent.parent / "roadmap.json"
-REPO = "leocaolab/getarc"
+RELEASES = "https://github.com/leocaolab/getarc/releases"
 
 
-def latest_tag() -> str:
-    req = urllib.request.Request(f"https://api.github.com/repos/{REPO}/releases/latest",
-                                 headers={"Accept": "application/vnd.github+json"})
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return json.load(r)["tag_name"]
+def release_base(version: str | None, mirror: str | None) -> str:
+    if mirror:
+        return mirror.rstrip("/")
+    if version:
+        return f"{RELEASES}/download/{version}"
+    return f"{RELEASES}/latest/download"
 
 
 def unpack(archive: Path, into: Path) -> Path:
@@ -66,26 +71,28 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--stage-dir", required=True, help="an empty scratch directory to download into")
     ap.add_argument("--install-to", help="directory to move arc into (the person's choice)")
-    ap.add_argument("--tag", help="release tag (default: the latest)")
+    release = ap.add_mutually_exclusive_group()
+    release.add_argument("--version", help="getarc release tag, e.g. v1.3.0 (default: the latest)")
+    release.add_argument("--from", dest="mirror", metavar="URL",
+                         help="fetch URL/<asset> (a mirror, or a file:// directory)")
     a = ap.parse_args()
 
     roadmap = json.loads(ROADMAP.read_text())
     out: dict[str, Any] = {"platform": f"{platform.system()} {platform.machine()}"}
     asset = roadmap["assets"].get(out["platform"])
     if asset is None:
-        out["error"] = f"getarc ships no binary for {out['platform']}; assets: {roadmap['assets']}"
+        out["error"] = f"no arc build for {out['platform']}; assets: {roadmap['assets']}"
         print(json.dumps(out, indent=2))
         return 1
     try:
-        tag = a.tag or latest_tag()
-        url = f"https://github.com/{REPO}/releases/download/{tag}/{asset}"
+        url = f"{release_base(a.version, a.mirror)}/{asset}"
         stage = Path(a.stage_dir)
         stage.mkdir(parents=True, exist_ok=True)
         archive = stage / asset
         urllib.request.urlretrieve(url, archive)
         binary = unpack(archive, stage)
         version = subprocess.run([str(binary), "--version"], capture_output=True, text=True)
-        out.update({"tag": tag, "url": url, "staged": str(binary),
+        out.update({"url": url, "staged": str(binary),
                     "version": (version.stdout or version.stderr).strip(),
                     "missing_verbs": verbs_missing(binary, roadmap["required_verbs"])})
         if a.install_to:

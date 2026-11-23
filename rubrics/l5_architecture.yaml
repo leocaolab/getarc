@@ -1,0 +1,779 @@
+name: L5 Architecture (SRP + FP cohesion/coupling)
+description: |
+  ── THE ARCHITECTURAL LAW (highest principle) ──
+  Every module and every function does ONE thing, owns ONE
+  responsibility, and is maximally cohesive within / minimally coupled
+  without. Violating it is an L5 finding even when every line is
+  individually correct.
+
+  ── JUDGE THE STRUCTURE, NOT THE NAME ──
+  Every rule below is anchored on a STRUCTURAL anti-pattern — fan-out,
+  coupling direction, layer/tier position, duplication, a hidden state
+  graph, an effect the type doesn't witness. The tokens, suffixes and
+  idioms a rule lists (`_compat`, `manager`, `unwrap()`, `os.environ`,
+  a magic-string const) are EXAMPLES of the anti-pattern's surface, not
+  the trigger. A violation is a SYMPTOM (the structural evidence) that
+  the unit's architectural POSITION cannot explain — never a name match.
+  Confirm the physical/structural fact before you fire.
+
+  ── LANGUAGE-AGNOSTIC BY CONSTRUCTION ──
+  L5 reviews architecture in ANY language arc supports (rust, python,
+  ts/js, go, java, c, cpp). Every anti-pattern here is cross-language:
+  "trait" ≡ interface ≡ abstract base ≡ typeclass; "crate" ≡ package ≡
+  module. Language-specific tokens appear ONLY as concrete examples of a
+  language-neutral shape. A `# tag:` on each rule records this audit's
+  finding — all rules are `universal`; the tag flags any that still
+  LEAK a single language in their framing (to be read as an example,
+  not a restriction).
+
+  ── THE HASKELL LENS (operational aid, not the law) ──
+  A useful test for MOST violations: translate the code to idiomatic
+  Haskell. Every place that won't translate without faking a type or
+  using `unsafePerformIO` is the law being broken in a specific,
+  nameable way. Sub-principles A–T are the canonical taxonomy of those
+  ways. The lens has a BLIND SPOT — code can translate cleanly and
+  still violate the law (a pure function in the wrong module; a function
+  that does two well-typed things); M and N cover that.
+
+  ── ROUTING ──
+  Each rule carries `scope: function | cluster`:
+    - `function`  → Phase 2 bundle pass; source bodies visible.
+    - `cluster`   → Phase 1 cluster pass; signature-view of a crate.
+  See docs/arc-scan-unit-design.md §10 + docs/l5-cross-language-reference.md.
+
+  ── BUDGET ──
+  Cap 5 issues per commit per scope. Prefer silence.
+
+# applicability — rubric_set_for filters on this (ruff-style config, not source)
+applies_to: architecture
+
+rules:
+
+  # ───────── A. ERRORS AS VALUES ─────────
+  # tag: universal (anti-pattern: failure encoded in the success channel — cross-language)
+  - name: l5-A-errors-as-values
+    status: stable
+    severity: error
+    description: |
+      A function signals failure by returning a sentinel value
+      (`None`, `{}`, `-1`, `(file, {})`, empty list/string) instead of
+      `Either E A` / `Maybe A` / `Result<T, E>` / a sum type. Failure
+      is encoded in the success channel; caller cannot distinguish
+      "computation failed" from a legitimate empty result. The sentinel
+      tokens are examples — the anti-pattern is a return TYPE with no
+      failure channel that a call-site then misreads. `evidence` must
+      show the sentinel + the call-site that misreads it.
+      Distinct from R: A is a sentinel return with no error to swallow;
+      R is a swallowed error FORCED into a primitive return.
+    why: Implicit failures cause silent miscalculation downstream.
+    gate_question: |
+      Can a caller distinguish "failed to compute" from a legitimate
+      empty/zero/null result by type alone? If no → finding.
+
+  # ───────── B. SUMS VS PRODUCTS ─────────
+  # tag: universal (anti-pattern: a sum encoded as a product — cross-language)
+  - name: l5-B-sums-vs-products
+    status: stable
+    severity: error
+    description: |
+      Function returns `tuple[X, Y]` (or struct with multiple fields)
+      where one field carries "either real data or no result." Encoding
+      a sum as a product. Should be a tagged union whose constructors
+      name the two cases. Tell: a `bool` flag field paired with a
+      payload that's "valid only when flag is true." The structural
+      fact is the field whose meaning DEPENDS on a sibling field's value.
+    why: Forces caller to runtime-check; permits invalid combinations.
+    gate_question: |
+      Does any field's meaning depend on another field's value (rather
+      than the type witnessing the case)?
+
+  # ───────── C. OPEN TYPE UNIVERSE (duck-typed dispatch) ─────────
+  # tag: universal (anti-pattern: an open type set reached by defeating a
+  #   static type system — canonical form is dynamic-language duck-typing,
+  #   but it fires wherever a static type system is deliberately re-opened)
+  - name: l5-C-closed-type-universe
+    status: stable
+    severity: error
+    description: |
+      Anti-pattern: a function dispatches over an OPEN type universe —
+      the accepted type set has no finite enumeration, so the compiler
+      and reader cannot see the contract. The canonical (dynamic-language)
+      form is duck-typed dispatch: accepts `dict OR dataclass` via
+      `hasattr(x, F) else x.get(F, default)`. It cannot translate to
+      Haskell without a typeclass or sum type.
+
+      In a STATICALLY-typed language, fire ONLY when the type system was
+      deliberately defeated to recreate duck-typing: `Box<dyn Any>` /
+      `serde_json::Value` dispatch, Go `interface{}` + a sprawling type
+      switch, Java `Object` + an `instanceof` chain or raw reflection.
+      Plain generics / trait objects / sealed interfaces are NOT C —
+      that's the type system working, and the type set is closed.
+      Distinct from O (a single untyped blob threaded through — no
+      competing types) and D (anonymous but still typed).
+    why: Open type set hides contract violations from compiler and reader.
+    gate_question: |
+      Does the accepted type set lack a finite enumeration, AND is the
+      open shape achieved by defeating an available static type system?
+
+  # ───────── D. NAMED REPRESENTATIONS ─────────
+  # tag: universal (anti-pattern: anonymous nested structure where a named ADT belongs)
+  - name: l5-D-named-representations
+    status: stable
+    severity: error
+    description: |
+      Return / parameter types like `dict[K1, dict[K2, V]]`,
+      `tuple[A, B, C, D]`, `tuple[str, dict]`, `serde_json::Value` /
+      `&Map<String, Value>` threaded through core logic. Anonymous
+      record where a named ADT belongs — the anti-pattern is a shape
+      re-asserted at every access site instead of admitted as one named
+      type. Sibling form (value-surgery): doing key-path edits on JSON
+      (`v["findings"][i]["issue_id"] = …`) instead of parsing into
+      `Vec<Finding>` once at the edge.
+    why: The conceptual entity hasn't been admitted to exist; shape is re-asserted at every access.
+    gate_question: |
+      Could the signature be made more precise by introducing one
+      named record / sum type? If yes → finding.
+
+  # ───────── E. EFFECTS IN TYPES ─────────
+  # tag: universal (anti-pattern: a signature that hides an effect it performs)
+  - name: l5-E-effects-in-types
+    status: stable
+    severity: error
+    description: |
+      Side effect (subprocess, file IO, network, `raise`, `sys.exit`,
+      `log.Fatal`, `panic!`, `process::exit`, `.unwrap()`/`.expect()`
+      on fallible IO/parsing) inside a function whose signature claims
+      to be pure (`-> str | None`, `-> T` rather than `Result<T, E>` /
+      `IO T`). The anti-pattern is a signature that LIES about the
+      effect it performs; the token list is examples of hidden effects.
+      Lift the signature to admit the effect, or split the pure core
+      from the imperative shell.
+      Cross-language idioms: see docs/l5-cross-language-reference.md §1
+      rows "E: exit in a lib", "E: hidden IO".
+    why: Caller can't reason about retries, testability, or referential transparency.
+    gate_question: |
+      Could this function panic, do IO, or change observable global
+      state without that being witnessed in its return type?
+
+  # ───────── F. TOTAL FUNCTIONS ─────────
+  # tag: universal (anti-pattern: a partial function whose precondition lives in the body, not the type)
+  - name: l5-F-total-functions
+    status: stable
+    severity: error
+    description: |
+      `assert <invariant>`, `if X is None: raise`, `unwrap()`,
+      `expect()`, `panic!()`, array `[i]` on caller-derived index —
+      partial functions in disguise. The anti-pattern: a precondition on
+      the input lives as a RUNTIME CHECK in the body where a type-level
+      constraint belonged, so the function lies about accepting any
+      value of its declared type. Should be `NonEmpty`, `Refined`,
+      `Maybe`, `Option<T>`, a smart constructor, OR return
+      `Result<T, E>` instead of crashing.
+      Cross-language: docs/l5-cross-language-reference.md §1 row "F: partial".
+    why: Function lies about accepting any input of its declared type; runtime crash where compile error belonged.
+    gate_question: |
+      Is there a runtime check on input that ought to have been a
+      type-level constraint?
+
+  # ───────── G. ONE REPRESENTATION ─────────
+  # tag: universal (anti-pattern: one concept living in two coexisting shapes that drift)
+  - name: l5-G-one-representation
+    status: stable
+    severity: error
+    description: |
+      Same conceptual entity living in two shapes SIMULTANEOUSLY:
+      `frozen Issue` AND raw `dict`; tagged string AND structured
+      fields; `Counter` AND `_C` alias; `Status` enum AND legacy
+      string literal in a sibling module. Pick one canonical; convert
+      at boundaries; never let two shapes coexist mid-function or
+      mid-module.
+      Boundary vs neighbours:
+        - vs duplicated-domain-type: G is one concept in two DIFFERENT
+          shapes (enum + dict; struct + string) coexisting in a
+          function/module. duplicated-domain-type is the SAME shape (a
+          same-named type declaration) copied across ≥2 crates.
+        - vs P: when the second shape admits DIFFERENT members than the
+          first (an enum vs a wider string), it is also P (illegal
+          states) — flag both; that is a live semantic fork.
+    why: Two representations drift; a fix touches one but not the other.
+    gate_question: |
+      Does this concept exist in two definitions/types that callers
+      must keep in sync? If yes → finding (and check for P).
+
+  # ───────── H. SPEC ≡ TYPE SIGNATURE ─────────
+  # tag: universal (anti-pattern: a doc-comment asserting an invariant the type cannot enforce)
+  - name: l5-H-spec-equals-type
+    status: stable
+    severity: error
+    description: |
+      Docstring / rustdoc / javadoc claims an invariant the signature
+      cannot enforce: "X is tolerated" but code rejects X; "callers
+      must call init() first"; "returns sorted" with no type witness.
+      The anti-pattern is prose standing in for a type: reviewers and
+      tests trust the doc, the code drifts, and nothing catches it. In
+      static languages, fire only when the doc-comment asserts an
+      invariant the type system does NOT encode (ordinary mismatches the
+      compiler already catches don't count).
+    why: Reviewers and tests trust the docstring; code drifts; bugs emerge silently.
+    gate_question: |
+      Does the doc-comment claim an invariant the type system cannot
+      enforce?
+
+  # ───────── I. EXPLICIT CONTEXT ─────────
+  # tag: universal (anti-pattern: a dependency read-from / created-as hidden global, not in the signature)
+  - name: l5-I-explicit-context
+    status: stable
+    severity: error
+    description: |
+      TWO shapes, same anti-pattern — a dependency that lives OUTSIDE
+      the signature:
+        (a) READ — function reads global state (`os.environ`, singleton
+            config, module-level mutable dict, imported registry) deep
+            in body without that dependency in its signature.
+        (b) PROVIDE — library-level effectful singleton manufactured to
+            paper over a synchronous caller: `static TOKIO: LazyLock
+            <Runtime>`, `lazy_static!` global pool/client/registry.
+            Process-lifetime hidden world; untestable, un-substitutable.
+      Both should lift the dependency into the signature, or — for
+      runtimes — let `main`/`bin`/explicit FFI shim own ONE instance.
+      Cross-language: docs/l5-cross-language-reference.md §1 rows
+      "I: global read", "I: global resource".
+    why: Hidden context is untestable, un-substitutable, race-prone.
+    gate_question: |
+      Does this function depend on, or create, state that isn't in its
+      signature? (Bin/FFI-shim-owning-ONE-runtime is allowed.)
+
+  # ───────── J. IMMUTABILITY & DATA FLOW ─────────
+  # tag: universal (anti-pattern: mutation the return type doesn't reveal)
+  - name: l5-J-immutability-and-data-flow
+    status: stable
+    severity: error
+    description: |
+      THREE forms of the same anti-pattern — state mutated outside what
+      the return type reveals:
+        (1) ACCUMULATOR — `out = []`, `result = {}` declared then
+            mutated in a `for` loop (`out.append(x)`, `result[k] = v`).
+            Should be comprehension / `map` / `filter` / `fold`.
+        (2) REASSIGNMENT CHAIN — `x = process(x); x = transform(x)`
+            mid-function. Bind fresh names per stage.
+        (3) HIDDEN WRITER — struct field accumulated by `&self`
+            methods (`Mutex<Counter>`, `RefCell`, `Cell`) whose only
+            readers are own methods' side-effects, never the return
+            type. Effect should be in the return tuple, not in `self`.
+      Cross-language: docs/l5-cross-language-reference.md §1 rows
+      "J: accumulator", "J: hidden state".
+    why: Hidden mutation makes pipelines non-composable; method signatures lie about effect.
+    gate_question: |
+      Does the function (or its containing struct) mutate state
+      outside what the return type reveals?
+
+  # ───────── K. LAYER BOUNDARY (import graph) ─────────
+  # tag: universal (anti-pattern: a cross-tier effect leak in the IMPORT graph;
+  #   tier names below are illustrative — the check spans 8 languages via layer_check)
+  - name: l5-K-layer-boundary
+    status: stable
+    severity: error
+    description: |
+      Cross-file effect leak. A module's tier (a functional core, a data
+      layer, an LLM layer, an imperative shell — in arc: `arc_core` pure,
+      `arc_db` MAY touch SQLite, `arc_shell` MAY do anything) is a
+      contract about what its exports may do. The tier names are
+      illustrative; the anti-pattern is a dependency edge or an effect
+      that crosses the tier order in the WRONG direction.
+      Two failure modes:
+        (1) IMPORT graph violates tier order — a pure-core module imports
+            a shell/storage module. (Mechanical: caught by the
+            `layer_check` detector, which spans all supported languages;
+            appears in `<detector_hits>` as `[K. layer-boundary]`.)
+        (2) SIGNATURES leak effects inconsistent with the file's tier —
+            a pure-core function returns a DB connection handle or runs a
+            subprocess. Don't trust the docstring; read the body.
+      Boundary vs K2 / L: K is the IMPORT graph (`use`/`import`
+      statements). K2 is the MANIFEST graph (declared deps, no import
+      needed). L is the NAMING/knowledge graph (exports named for the
+      caller). One physical violation can hit more than one — flag each
+      graph it actually breaks.
+    why: Tier discipline keeps the pure-core property; one violation collapses the contract.
+    gate_question: |
+      Does an import or a signature in this module reveal an effect /
+      dependency outside its tier's contract?
+
+  # ───────── K2. MANIFEST DEPENDENCY INVERSION ─────────
+  # tag: universal (anti-pattern: a BUILD-graph edge pointing up the tier order;
+  #   one manifest driver per format — Cargo.toml / package.json / go.mod / …)
+  - name: l5-K2-manifest-dependency-inversion
+    status: stable
+    severity: error
+    description: |
+      The BUILD-graph twin of K. K reads the IMPORT graph (`use`/`import`
+      statements in source); this reads the MANIFEST (`Cargo.toml
+      [dependencies]`, `package.json`, `go.mod`). A lower-tier package that
+      DECLARES a dependency on a higher-tier package — edge points UP the
+      tier order (infra < db < core < review < shell < bin) — is an
+      inversion even when no `use` exists. The DEAD case is the one the
+      import-checker is structurally BLIND to: a refactor removed the last
+      `use` but left the manifest line, so there is no import edge to flag.
+      Mechanical: a manifest-graph checker (the MANIFEST sibling of
+      `layer_check` — one driver per manifest format, NOT a single-language
+      reader, mirroring how layer_check already spans 8 languages) surfaces
+      it in `<detector_hits>` as `[K2. manifest-inversion]`; an inverted
+      edge that is ALSO unused is the highest-confidence kill — delete it,
+      zero code change. Tell: `arc_db/Cargo.toml` names `arc_core`
+      while `arc_db/src` has zero `arc_core::` references — the data layer
+      pointing at the business layer, refactor residue.
+      Boundary: K2 fires on the MANIFEST edge specifically — use it when
+      there is no import to catch (K's blind spot). If both a `use` and a
+      manifest line invert, K covers the import; K2 adds the dead-debt
+      manifest line.
+    why: A build edge that points up is a latent cycle and a layering lie; a dead one is pure debt the import-checker can't see.
+    gate_question: |
+      Does this package's manifest name a dependency ABOVE its own tier —
+      and if so, is that dependency even still used in the source?
+
+  # ───────── DUP. DUPLICATED DOMAIN TYPE ─────────
+  # tag: universal (anti-pattern: one concept's type declaration copied across ≥2 packages, drifting silently)
+  - name: duplicated-domain-type
+    severity: error
+    description: |
+      One domain concept modeled by the SAME-NAMED `struct`/`enum`
+      declared in ≥2 crates — the shared core fields copied into each, so
+      the copies drift silently (every copy still compiles). The
+      logic-body duplication detectors (`dup_scan`/`reinvention`) are
+      blind to it: a type declaration has no body, only a name + a member
+      set, and the concept identity lives in the NAME. Mechanical:
+      surfaced in `<detector_hits>` as
+      `[duplicated-type <kind> <Name>: crateA, crateB]`.
+      Confirm it is ONE concept copied — then the fix is a single
+      canonical `Core` in the shared types crate plus a per-layer view
+      (`struct View { core: Core, ...layer-specific fields }`), NOT a
+      same-name coincidence (a per-crate `Error`/`Config`, a newtype
+      wrapper, a wire-DTO mirror). DRIFT escalates to the highest
+      severity: if the copies' variant/field sets already DIFFER
+      (e.g. `Status = Open/Resolved/Acknowledged` in one crate vs
+      `New/Fixed/Landed/Verified/Merged` in another) it is a live
+      semantic fork, not a latent risk.
+      Boundary vs G: this is the SAME shape (a same-named declaration)
+      copied across crates; G is one concept in two DIFFERENT shapes
+      coexisting locally.
+    why: A copied type is N books that must be hand-synced; they drift, the drift compiles, and it ships as a silent bug.
+    gate_question: |
+      Do these same-named types in different crates denote the SAME
+      domain concept (→ one canonical core + per-layer views), or are
+      they genuinely independent (per-crate error/config, coincidental
+      name)?
+
+  # ───────── L. DEPENDENCY POINTS DOWN (naming/knowledge graph) ─────────
+  # tag: universal (anti-pattern: a lower tier's public API shaped by a higher-tier consumer's vocabulary)
+  - name: l5-L-dependency-points-down
+    status: stable
+    severity: error
+    description: |
+      Lower-tier module whose public API is shaped by a higher-tier
+      consumer's OLD vocabulary — the anti-pattern is a NAMING/knowledge
+      edge pointing UP: this module knows its caller's history. The
+      naming tells below are EXAMPLES of that shape, not the trigger; the
+      structural fact is an export whose name references the consumer's
+      domain rather than this module's own.
+      Tells:
+        - re-export modules mirroring caller's pre-refactor import
+          path (`pub mod db_storage { pub use crate::compat::* }`,
+          `db_schema`, `db_cache` — names that exist nowhere in this
+          module's own domain, only in the caller's history);
+        - methods carrying `_core` / `_compat` / `_legacy` / `_shim`
+          suffix whose ONLY reason to exist is "so the caller need
+          not change its imports yet";
+        - a `compat.rs` / `compat.py` translation layer that maps the
+          new canonical names back to whatever the consumer called
+          them before.
+      Sibling to K (K = wrong edge in the IMPORT graph; K2 = wrong edge
+      in the BUILD graph; L = wrong edge in the NAMING/KNOWLEDGE graph).
+      The compat layer is sold as temporary but permanent: nothing forces
+      its removal. Fix: ONE canonical API named for THIS module's domain
+      (`arc_db::repo::runs::save`); caller adapts at its own boundary.
+    why: Permanent coupling masquerading as temporary migration; long pain beats short pain.
+    gate_question: |
+      Does this module's exports name things by who imports them
+      rather than by its own domain?
+
+  # ───────── M. ONE RESPONSIBILITY PER UNIT (SRP) ─────────
+  # tag: universal (anti-pattern: one unit doing two well-typed things — intra-unit)
+  - name: l5-M-one-responsibility-per-unit-srp
+    status: stable
+    severity: error
+    description: |
+      Function (or class) does TWO well-typed things — e.g.
+      `connection::open(path)` that opens SQLite + sets pragmas AND
+      runs schema migration; an `__init__` that also does IO; a
+      "manager" / "util" / "helper" with unrelated functions. The
+      structural fact is TWO unrelated verbs inside one unit; it
+      translates cleanly to Haskell yet is still architecturally wrong
+      (the lens's blind spot). Split into separate verbs; caller
+      composes. `evidence` = `SRP: <unit> does {A} and {B}; split at
+      <seam>`.
+      Boundary vs S: M is INTRA-unit (one function/class doing two
+      things). S is the TYPE SURFACE (one interface forcing many
+      methods, or one type accreting many interfaces).
+    why: One reason-to-change becomes N; modification risk multiplies.
+    gate_question: |
+      Does this unit do more than one verb's worth of work, even if
+      every line is individually correct?
+
+  # ───────── M2. CROSS-DOMAIN ARITY (the signature tell of an SRP break) ─────────
+  # tag: universal (anti-pattern: one signature threading several unrelated domains)
+  - name: l5-M2-cross-domain-arity
+    status: experimental
+    severity: warning
+    description: |
+      A function's signature threads parameters from SEVERAL UNRELATED DOMAINS
+      through one call — a DB handle + LLM config + a git sha + CLI flags + raw
+      review data — so it orchestrates multiple distinct pipeline phases at once
+      and threads data it does not itself use down to inner layers (a "bucket
+      brigade" middleman / God builder). This is the SEMANTIC arity smell — four
+      params from four worlds is worse than eight cohesive ones — DISTINCT from
+      the same-typed-run count in `rust_best_practices::primitive-obsession-long-param-list`.
+      It is the signature-shaped tell of M (SRP): one unit doing several verbs.
+      `evidence` = the param groups by domain + the pipeline phases fused.
+    why: |
+      A signature mixing a DB handle, an LLM config, and file data has one
+      reason-to-change per domain, cannot be tested without dragging the whole
+      graph, and forces the reader to hold unrelated vocabularies at once — a
+      pipeline squashed into one signature.
+    gate_question: |
+      Does this signature mix parameters from unrelated domains (DB / network /
+      git / LLM config / UI flags / raw domain data) rather than one cohesive
+      concern? If yes → refactoring axis (a structural PLAN, not a per-line fix):
+        1. SPLIT the function into the distinct phases it fuses (plan files →
+           build index → construct agent), each taking only its own domain's
+           parameters.
+        2. Group each phase's cohesive params into a DOMAIN-SPECIFIC value object
+           (`AgentConfig { confidence_floor, paginate, max_rounds }`).
+      ANTI-FIX (reject as fake): do NOT collapse all N params into one
+      `GodContext` / `GlobalConfig` and pass that — arity 1 with the same tangle
+      inside still fuses the domains, just hidden. The phase split removes the
+      responsibility; the struct does not.
+    # The fix is SEPARATION — split the fused phases into single-domain functions
+    # and group each phase's cohesive params into its own value object; never a
+    # catch-all GodContext.
+    fix_pattern: separate_into_single_domain_phases
+
+  # ───────── N. COHESION — RIGHT THING, RIGHT MODULE ─────────
+  # tag: universal (anti-pattern: a symbol mislocated in a module whose concern it doesn't share)
+  - name: l5-N-cohesion-right-thing-right-module
+    status: stable
+    severity: error
+    description: |
+      The lens's other blind-spot half. Code individually perfect but
+      lives in a module whose single concern it does not share.
+      Canonical: `arc_dir_of(db_path) -> PathBuf` (pure parent-dir
+      extraction) sitting in `connection.rs`. It touches no
+      connection, no SQLite — it's string/path logic that wandered
+      into the DB module because "it was needed nearby." Translates
+      to Haskell as a clean `FilePath -> FilePath`; A–L all pass.
+      Still a violation: dilutes module cohesion; makes "what does the
+      DB layer do?" un-answerable. The structural test: the symbol's
+      body references NONE of its containing module's core type/concern.
+      Move it to the module that owns the concern (e.g.
+      `arc_core::path_norm`). `evidence` =
+      `cohesion: <symbol> is <concern> logic mislocated in <module>;
+      belongs in <target>`.
+    why: Mislocation degrades the answer to "what does this module do?"
+    gate_question: |
+      Does this symbol's body reference its containing module's core
+      type/concern? If no, where does it belong?
+
+  # ───────── O. PARSE, DON'T VALIDATE ─────────
+  # tag: universal (anti-pattern: an untyped blob threaded through core with per-use defensive extraction)
+  - name: l5-O-parse-dont-validate
+    status: stable
+    severity: error
+    description: |
+      Untyped dynamic blob (`dict[str, Any]`, `**kwargs`,
+      `serde_json::Value`, `&Map<String, Value>`) threaded THROUGH
+      core/business logic, with defensive extraction
+      (`d.get("status", "new")`, `.and_then(Value::as_str).unwrap_or
+      (default)`) repeated at every use site instead of decoded ONCE
+      into a named ADT at the boundary.
+      Tells:
+        - a core/business-tier function (e.g. `arc_core` / `arc_db` /
+          `arc_review`) whose signature still contains `Value` /
+          `dict[str, Any]` / `Map<String, Value>` AND is NOT itself the
+          literal FFI line;
+        - a "parser" / "deserialize" function that returns another
+          untyped `Value` instead of the ADT (canonical tell:
+          `parse_issue(&Map) -> NormalizedIssue` immediately followed
+          by `serde_json::to_value(issue)`);
+        - per-field accessor families (`issue_status(&Value) -> &str`,
+          `get_str(obj, "file", "unknown")`) re-extracting the same
+          shape at N call sites.
+      Legitimate `Value` is at the literal FFI/IO boundary
+      (`#[pyfunction]`, the `json.loads` line) and its very next move
+      must be `-> TypedAdt`. Distinct from C (duck-typed dispatch —
+      competing types) and D (anonymous but still typed — here it has
+      NO type in the core).
+      `evidence` = `O: <fn> takes/returns <Value-shape> in <tier>; ADT
+      <Name> exists — decode at <boundary>`.
+    why: If the type is dynamic, the parse never happened — it was deferred into validate-as-you-go.
+    gate_question: |
+      Does the signature still contain `Value` / `Map<String,Value>` /
+      `dict[str,Any]` / `**kwargs` outside the literal FFI line?
+
+  # ───────── P. ILLEGAL STATES UNREPRESENTABLE ─────────
+  # tag: universal (anti-pattern: a closed finite domain typed as bare string, checked by scattered equality)
+  - name: l5-P-illegal-states-unrepresentable
+    status: stable
+    severity: error
+    description: |
+      Closed finite domain (status, kind, mode, verdict, severity,
+      result) encoded as bare `str` / `String` / `Literal[...]` with
+      magic-string constants (`STATUS_NEW = "new"`) and scattered
+      equality / membership checks (`if status == "fixed"`, `status in
+      CLOSURE_STATUSES`, `match raw { "new" => ... }`) where a sum
+      type belongs. The structural fact is a match/if ladder (or
+      membership set) over string literals of a closed set: `str`-that-
+      is-one-of-N is a partial type masquerading as total — signature
+      accepts the whole string universe, body silently mishandles all
+      but N of it; `"fixd"` / `"opne"` cannot even be constructed if the
+      domain is an enum.
+      Legacy aliases map ONCE at the deserialization boundary (parse
+      fn / serde rename hook), never via an `alias_lookup` scattered
+      through core.
+      WORST form: SAME conceptual domain re-encoded with DIFFERENT
+      members in two places — also a G violation, and a latent
+      correctness bug, not merely a smell.
+      Distinct from F (partial on input *shape*, precondition hidden
+      in body): here the function is total over its declared type, but
+      the declared type itself is the lie — `str` admits infinitely
+      more than the N legal states.
+      Tells: module-level `*_STATUS` / `*_KIND` string consts; a
+      `: str` / `String` field whose legal domain lives only in a
+      doc-comment; a `match` / `if` ladder over string literals of a
+      closed set.
+      `evidence` = `P: <domain> is one-of-{...} but typed <bare-str>
+      at <site>; collapse to enum, map aliases at <boundary>`.
+    why: "`str` admits more than the N legal states; typos uncatchable; closed set lives only in doc-comments."
+    gate_question: |
+      Is the legal domain of this field / parameter smaller than its
+      declared type permits?
+
+  # ───────── Q. LOOP THAT IS A STATE MACHINE ─────────
+  # tag: universal (anti-pattern: an implicit FSM hidden in loop-carried mutable locals)
+  - name: l5-Q-loop-is-state-machine
+    status: stable
+    severity: error
+    description: |
+      A loop drives its lifecycle through a few LOCAL variables that are
+      both read in branch/loop conditions AND reassigned across the
+      branches (`di`, `fill_j`, `state`, `phase`). The branches are not
+      independent decisions — they are transitions of an implicit state
+      the type system never sees. Spaghetti: the same vars thread through
+      every branch; adding a state deepens the nesting toward collapse.
+      A `match`/`if` that only dispatches (variable-disjoint arms, no
+      reassigned scrutinee) is NOT this — it is a healthy decision tree.
+      An accumulator (`sum += x`, written but never a guard) is NOT this
+      (that is J). The tell is the read∧write∧loop-carried triple on a
+      small var set; that var set IS the `enum State` it should become
+      (the engine pushes events, the strategy reacts — time is not
+      pulled by an index).
+      `evidence` = `Q: vars {…} are read-as-guard + reassigned across
+      branches in <fn>; lift to `enum State` / explicit FSM`.
+    why: Mutable locals threaded through control flow hide the state graph; untestable per-transition, nesting grows unbounded.
+    gate_question: |
+      Do a few loop-carried locals both gate the branches AND get
+      reassigned by them (a transition), rather than the loop just
+      iterating data?
+
+  # ───────── R. SWALLOWED ERROR + PRIMITIVE RETURN ─────────
+  # tag: universal (anti-pattern: an error swallowed BECAUSE the return type has no failure channel)
+  - name: l5-R-swallowed-error-primitive-return
+    status: stable
+    severity: error
+    description: |
+      Two faults that ONLY together are the rot (distinct from A, which is
+      a sentinel return needing no error at all): (1) a fallible op's error
+      is SWALLOWED (`except Exception: …`, `.unwrap_or_default()`,
+      `.unwrap_or_else(|_| …)`, `Err(_) => <empty>`) with no re-raise /
+      propagation; AND (2) the function's return type is a bare PRIMITIVE
+      with no failure channel (`dict`/`{}`, `list`/`[]`, `str`, `bool`,
+      `Vec`/`HashMap` — NOT `Result`/`Option`/`Either`). With nowhere to
+      put the error, the body returns a hollow shell, conflating "it
+      failed" with "legitimately empty" and detonating downstream. The
+      defensive `try/except` is the symptom; the weak return type is the
+      root cause. A function that already returns `Result`/`Option` is NOT
+      this — it carries the channel.
+      `evidence` = `R: <fn> swallows <error> and returns hollow <type> at
+      <site>; widen return to Result/Option or fail-fast with a typed
+      error; update callers`.
+    why: A buried error in a primitive return runs the system on hollow data; downstream sees no failure, only a black hole.
+    gate_question: |
+      Is an error swallowed into a hollow default BECAUSE the return type
+      (a bare primitive, not Result/Option) has no channel to carry it?
+
+  # ───────── S. INTERFACE FANOUT (god-interface / integration-point) ─────────
+  # tag: universal (anti-pattern: interface-segregation violation / integration hub —
+  #   "trait" ≡ interface ≡ abstract base ≡ typeclass across every language)
+  - name: l5-S-inheritance-fanout
+    status: stable
+    severity: error
+    description: |
+      Two complementary shapes of ONE rot family — too many concerns
+      forced through one abstract-interface edge (Rust `trait`, Java/TS/Go
+      `interface`, C++ abstract base, a typeclass; "trait" below stands
+      for whichever the language uses). Distinct from M (one unit doing
+      two things): M is intra-unit; this is the TYPE SURFACE.
+        (a) GOD-INTERFACE (ISP violation): an interface whose
+            REQUIRED-method count is large (≥ 7) — every implementor must
+            satisfy all of them, and adding a method cascades a real impl
+            or a useless stub to every site. Methods with a default body
+            don't cascade; only REQUIRED (signature-only) methods count.
+            The fix is to split the interface per concern: a caller
+            depending on a small surface should not be forced to know an
+            unrelated method.
+        (b) INTEGRATION-POINT TYPE: one concrete type accumulates many
+            distinct interface impls (≥ 5). The type has become the
+            bolt-on hub for every cross-cutting concern. Foundational
+            interfaces the standard library expects (display/debug,
+            (de)serialize, conversion, iteration — e.g. Rust
+            `Display`/`Debug`/`Serialize`/`From`/`Iterator`) are the
+            healthy ceiling; they compose cleanly. An arbitrary ladder of
+            ad-hoc interfaces is the smell.
+      This is the cross-language god-class / wide-interface rot; where a
+      language prefers composition (e.g. Rust) it lands on the trait
+      surface, where it prefers inheritance it lands on the base class —
+      same anti-pattern, judged on required-method / impl COUNT, not on
+      names.
+      `evidence` = `IH(a): interface <X> has N required methods (…) —
+      split per concern` OR `IH(b): type <Y> implements N distinct
+      interfaces (…) — extract the ad-hoc concerns into separate types`.
+      Boundary vs T / driver-seam-uniformity: S is the interface/type
+      SURFACE (method count, impl count). T is a public FUNCTION that is a
+      big discriminator-match. driver-seam-uniformity is the seam DESIGN
+      (whether all backends share ONE trait+registry shape).
+    why: A single interface/type that owns everything becomes the seam every change is forced to touch; impls accumulate stubs, callers depend on everything.
+    gate_question: |
+      Is one interface forcing every implementor to satisfy many unrelated
+      methods, OR is one concrete type the bolt-on point for many
+      unrelated interfaces?
+
+  # ───────── T. DRIVER-SEAM DISPATCH (STRUCTURAL) ─────────
+  # tag: universal (anti-pattern: a public god-dispatcher — one function grows an arm per backend)
+  - name: l5-T-driver-seam-dispatch
+    status: stable
+    severity: error
+    description: |
+      A `pub` boundary whose body is a single discriminator-match (Rust
+      outer `match`, Python `if`/`elif` chain on one name, a `switch` in
+      Go/Java/TS/C) with ≥ 5 arms, each carrying a non-trivial block
+      (≥ 5 lines OR a function call). The classic "god-dispatcher": every
+      new backend / driver / provider forces a new arm on a PUBLIC
+      function instead of becoming a new impl behind a stable interface.
+      Each arm is a separate domain concern stitched into one function;
+      the dispatcher's reasons-to-change scale linearly with the number
+      of backends.
+      This is anchored on the STRUCTURE (the ≥ 5-arm discriminator
+      match), NOT on any naming tell — it fires even when the function
+      has a plain domain name, and does NOT fire merely because a symbol
+      is called `*_driver` / `*_runner`. It is the structural
+      specialisation of driver-seam-uniformity clause 1 (NARROW TRAIT): a
+      uniform driver is a typeclass with instances; a `case name of "x"
+      -> …` smeared across N arms is the breach.
+      Tells:
+        - `pub fn route(req: &Req) -> Resp` whose body is
+          `match req.kind { Kind::A => {…}, Kind::B => {…}, … }`
+          with each arm doing real work (≥ 5 lines or calls);
+        - `pub fn dispatch(provider: &str)` matching on `&str` and
+          constructing a different client per arm;
+        - any `pub` fn whose ENTIRE job is a 5+-arm match.
+      Healthy shapes that do NOT fire:
+        - The ONE registry mapping `LanguageId → Box<dyn Driver>`
+          (`for_lang`) where each arm is a thin `Box::new(...)`;
+        - A 2-3 arm match on a tightly-coupled closed type;
+        - `match Result { Ok=>…, Err=>… }`-style binary dispatch.
+      `evidence` = `T: pub fn <name> dispatches via <N> non-trivial
+      arms on <discriminator> at <site>; extract a trait + impl-per-
+      backend, keep ONE registry as the only match`.
+      Boundary vs S / driver-seam-uniformity: T is one FUNCTION that is a
+      big match; S is the interface/type SURFACE; driver-seam-uniformity
+      is the whole seam's DESIGN across backends.
+    why: A public dispatcher growing one arm per backend re-introduces the reverse-dependency / fat-interface smells S+L forbid; new backends edit shared code instead of adding a new file.
+    gate_question: |
+      Does a `pub` fn exist solely to `match` a discriminator into ≥ 5
+      non-trivial branches, each conceptually a different backend? If
+      yes → finding (and the fix is a trait + one impl per backend).
+
+  # ───────── DRIVER-SEAM-UNIFORMITY (plugin-ring specialisation of L+M+N) ─────────
+  # tag: universal (anti-pattern: a plugin ring whose backends don't share ONE seam shape)
+  - name: driver-seam-uniformity
+    status: stable
+    severity: error
+    description: |
+      A "driver" = pluggable backend behind a stable seam (per LLM
+      provider, per agent backend, per language parser, per storage
+      target, per reporter). arc is functional core + a ring of these.
+      Every driver seam MUST share ONE shape. Flag a seam that
+      deviates on ANY of these five clauses:
+        1. NARROW TRAIT — one small trait (or one closed enum), pure
+           logic behind it, side effects in the shell. NOT a fat trait
+           mixing IO + policy; NOT ad-hoc free fns each re-implementing
+           dispatch. (The single-function structural breach of this
+           clause is T; the fat-trait breach overlaps S(a).)
+        2. ONE REGISTRY, KEYED BY TYPED ID — selection in ONE place
+           mapping a typed id (`LanguageId` / `Role` / provider-type /
+           agent name) → impl. NOT the same match arm copy-pasted at N
+           call sites; NOT scattered string-sniffing.
+        3. CAPABILITY QUERY — an impl declares "I don't support X" and
+           the caller degrades on that signal. NOT the caller
+           hard-coding which impls can do what.
+        4. FAIL-LOUD ON ABSENT / UNCAPABLE — unknown id / missing
+           backend / unsupported capability ⇒ explicit error OR
+           explicit, MARKED degradation. NEVER a silent fallback that
+           pretends success.
+        5. DEPENDENCY POINTS DOWN — driver impls depend on the core;
+           the core NEVER names a concrete driver (no core→impl reverse
+           edge), even if it compiles. (This is the seam-local reading of
+           K/K2/L; use those for the general layer/import/manifest/naming
+           edge, this clause when the reverse edge is inside a driver ring.)
+      Specialisation of L + M + N to the plugin ring arc is built on.
+      Haskell test: a uniform driver is a typeclass with instances; an
+      ad-hoc one is `case name of "x" -> …` smeared across the program.
+      Scope: fires on SEAM design, not on having many backends. Ten
+      providers behind ONE trait+registry = clean. Two backends with
+      two bespoke dispatch mechanisms = a finding.
+    why: Inconsistent plugin mechanisms re-introduce reverse-dependency / silent-fallback smells the rest of L5 forbids.
+    gate_question: |
+      Is this backend reached through the ONE trait+registry every
+      other driver uses — typed id, capability query, loud error on
+      absent/uncapable, zero core→impl reverse edges? Any "no" ⇒
+      violation.
+
+  # ───────── DETECTOR-DRIVEN ROT SIGNALS ─────────
+  # Produced by the deterministic rot detectors (arc_core::rot), NOT the per-file
+  # critic. Only signals WITHOUT an l5 counterpart get their own rule here; the
+  # rest (L→l5-L, IH→l5-S, DS/N→l5-T, god-module→l5-M) are the detectors FOR
+  # those l5 rules and emit the l5 rule_id directly (arc_core/rot/issue.rs), so a
+  # concept is never a rule twice in the same rot pass. The `criteria` in
+  # rot/detect.rs is the authoritative prompt; these mirror it.
+
+  - name: reinvention
+    status: stable
+    severity: warning
+    description: |
+      ANTI-PATTERN: the same idiom repeated across ≥3 files after α-normalization
+      (variables/literals normalized, callee/type names kept) — a fragment that
+      should be extracted into ONE shared unit. Detector-surfaced (AST shingle),
+      judge-confirmed. (Cross-file duplication — distinct from any single l5 rule.)
+    gate_question: |
+      Is this repeated fragment the SAME logic reinvented (extract-worthy), or a
+      coincidental shape / essential per-site variation? Extract-worthy → fire.
+
+  - name: signal-pc
+    status: stable
+    severity: warning
+    description: |
+      ANTI-PATTERN (config / policy constant hardcoded): a `const`/`static` encodes
+      a POLICY the USER owns — an exclusion/allow/deny list of names or paths, a
+      feature flag, a set of rule/provider ids, a threshold — used as a filter/gate,
+      changeable by a user, with no config-override path. It should live in config
+      (`.arc/config.toml`, read at runtime) and be threaded as one settings value.
+    gate_question: |
+      Is this constant a user-owned policy (list/flag/threshold used as a gate)
+      with no config-override path?

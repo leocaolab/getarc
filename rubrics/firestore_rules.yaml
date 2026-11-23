@@ -1,0 +1,77 @@
+name: Firestore Security Rules
+description: >
+  Rules for Cloud Firestore security rules files (`firestore.rules`,
+  `rules_version = '2'; service cloud.firestore { ... }`). In a Firebase
+  app the security rules ARE the server-side access control: the client
+  talks to the database directly, so a hole here is a hole in the whole
+  product, and no application-code rubric looks at this file.
+
+  Judge ONLY a file that declares `service cloud.firestore`; on any other
+  file every rule below is inapplicable — report nothing from this rubric.
+  Most findings need the client code too: grep the repository for the
+  collection name and the code that writes it before concluding. The rules'
+  emulator tests are judged by test_quality (`test-input-not-from-the-real-producer`
+  covers payloads written by hand instead of by the client).
+
+# No `language:` key: arc has no language driver for `.rules` files, so only a
+# language-agnostic rubric reaches them. Each rule scopes itself to the
+# `service cloud.firestore` file in its JUDGE.
+
+rules:
+  - name: read-open-to-everyone
+    status: stable
+    why: "`allow read: if true` lets anyone, signed out, list the whole collection — document ids included."
+    description: >
+      ANTI-PATTERN: a `match` block grants `read` (or `list`) with a
+      condition that is always true — `allow read: if true;`, or a condition
+      that does not involve `request.auth` or the document — on a collection
+      whose documents or ids are not meant to be public. `read` includes
+      `list`, so one unauthenticated query returns every document; when the
+      id is itself private (an email used as the document id) the ids alone
+      leak it. FLAG an always-true read on a collection holding user data,
+      contact details, or anything the client UI shows only to its owner.
+      Check what the client actually needs: often it reads only to test
+      "does my entry exist", which a `create` that fails on an existing id
+      answers without any read. FIX: `allow read: if false;` (or owner-only),
+      and restructure the client flow that relied on reading. EXEMPT
+      deliberately public data (a published counter, public catalogue
+      content), stated in a comment.
+    severity: critical
+
+  - name: owner-encoded-in-doc-id-unchecked
+    status: stable
+    why: "If the id says whose document it is but the rule only checks a field, anyone can create the id first and lock its owner out."
+    description: >
+      ANTI-PATTERN: the client derives a document id from its owner
+      (`drafts/${uid}_${problemId}`, `progress/${uid}`), but the rule for
+      that collection checks ownership only through a FIELD
+      (`request.resource.data.uid == request.auth.uid`) and never binds the
+      id to `request.auth.uid`. Another user can create the victim's id first
+      with their own uid in the field; the victim's later writes and reads
+      are then denied forever. FLAG a `match /coll/{id}` whose client builds
+      `id` from the user's uid while `create` / `update` do not compare `id`
+      (or its owner part) with `request.auth.uid`. FIX: bind the id in the
+      rule — `allow create, update: if docId == request.auth.uid + '_' +
+      request.resource.data.problemId && request.resource.data.uid ==
+      request.auth.uid` — or, when the id is just the uid, `match
+      /coll/{uid}` with `request.auth.uid == uid`. EXEMPT ids that do not
+      encode an owner (random ids).
+    severity: error
+
+  - name: write-open-on-unused-collection
+    status: stable
+    why: "A writable collection no code uses is free storage for any signed-in user and a schema nobody maintains."
+    description: >
+      ANTI-PATTERN: the rules grant `create` / `update` / `write` on a
+      collection that no code in the repository reads or writes any more
+      (the feature was removed, the backend job that filled it does not
+      exist, the client moved to another collection). Any signed-in user can
+      still write there — arbitrary fields, up to the document size limit,
+      including privilege-looking fields (`tier`, `role`) a future reader
+      may trust — and the rule's field list rots against a schema nobody
+      maintains. FLAG a `match` block with a write grant whose collection
+      name has no reader or writer in the client, server, or functions code
+      (grep the name as a string). FIX: delete the block; Firestore denies
+      by default. EXEMPT collections written only by a backend with the
+      Admin SDK (which bypasses rules) when the rule itself is `if false`.
+    severity: warning

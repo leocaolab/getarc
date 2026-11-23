@@ -1,0 +1,259 @@
+name: Java Best Practices
+description: >
+  Java / JVM correctness + idiom rules for L4 review. Function bodies
+  visible. Cap 10 issues. Flag concrete call sites, not stylistic
+  preference. Targets the failure modes the language and stdlib
+  invite: shared mutable static
+  state, null-vs-Optional, over-broad catch, resource leaks, and
+  concurrency primitives misused.
+
+  # AUDIT NOTE (rubric-antipattern pass) — each rule below carries a
+  # `TAG` comment classifying it on the axis that matters for a later
+  # cross-file synthesis pass:
+  #   language-specific  — the hazard depends on a genuine Java idiom
+  #     (checked exceptions, equals/hashCode, Optional, the JMM, raw
+  #     types, try-with-resources, intrinsic monitors, Streams).
+  #   universal-candidate — the SAME hazard exists in any language;
+  #     this is a Java-spelled DUPLICATE of a rule that belongs in the
+  #     language-agnostic rubrics. The `owner:` names the generic home.
+  # Tags are advisory metadata for the synthesis pass; nothing is moved
+  # or deleted here (that is a later step). Rule ids are unchanged — the
+  # names already describe the anti-pattern, and a rename would ripple
+  # into docs/features-and-cujs.md and a recorded VCR cassette for no
+  # gain.
+
+# applicability — rubric_set_for filters on this (ruff-style config, not source)
+language: [java]
+
+rules:
+  # NOTE: the former `equals-without-hashcode` rule moved to
+  #   l4_contracts::equality-contract-split, which also judges Rust, Python
+  #   and C++ (equality and hashing built from different fields).
+  # NOTE: the former `mutable-static-field` rule was DELETED as a pure Java
+  #   spelling of `l4_contracts::shadow-state-in-module` (it self-tagged that
+  #   owner). The canonical is language-agnostic, already names the Java
+  #   non-final `static` field, and now folds in the JMM framing (shared by
+  #   every thread → racy without synchronization; un-resettable across
+  #   parallel tests). No Java-only coverage is lost.
+
+  # TAG language-specific (borderline) — the recommended remedy
+  # `Optional<T>` is a genuine Java idiom. The underlying hazard
+  # (null-as-absence sentinel the caller can't distinguish and
+  # dereferences) is universal; universal cousin:
+  # l4_contracts::missing-error-classification (sentinel collapse).
+  - name: returns-null-instead-of-optional
+    status: stable
+    description: |
+      ANTI-PATTERN: a method signals "absent" by returning bare `null`
+      to a caller that will dereference the result without a
+      null-check — the canonical NPE source, because the type system
+      never warned anyone the value could be missing. `return null` is
+      the anchor; the hazard is an unguarded absence signal, not the
+      literal.
+      JUDGE: can this method return null on a path where at least one
+      caller immediately chains a method/field access on the result?
+      FLAG it; prefer `Optional<T>`, an empty collection, or a
+      documented sentinel. EXEMPT: a hot path where the contract is
+      documented and Optional allocation is measured to matter;
+      nullable FIELDS (this rule is about return values), and callers
+      that already guard.
+    severity: warning
+
+  # TAG language-specific — `Optional.get()` / `orElseThrow()` are the
+  # Java Optional API. (Cousin of Rust `unwrap` and TS non-null `!`, but
+  # each is anchored on its own language's construct — not a shared rule.)
+  - name: optional-get-without-presence-check
+    status: stable
+    description: |
+      ANTI-PATTERN: an `Optional` is force-unwrapped without
+      establishing presence — a bare `.get()` (or no-arg
+      `orElseThrow()`) on a path where the Optional may be empty,
+      throwing `NoSuchElementException` and defeating the whole point
+      of wrapping the value. `.get()` is one example of the anchor; the
+      hazard is unproven presence at the extraction site.
+      JUDGE: on this path, is emptiness ruled out before the unwrap?
+      If not, FLAG it; prefer `orElse` / `map` / `ifPresent` /
+      `orElseThrow(Supplier)`. EXEMPT: presence proven by a prior
+      `isPresent()` / `filter` on the same value on the same path.
+    severity: warning
+
+  # NOTE: the former `catches-overly-broad` rule was DELETED as a pure Java
+  #   spelling of `l4_contracts::over-broad-exception-handler` (it self-tagged
+  #   that owner, which already ENUMERATES `catch (Exception e)` /
+  #   `catch (Throwable t)` as its Java case and now folds in the top-level
+  #   request/loop boundary EXEMPT — catch broadly, log WITH the throwable,
+  #   rethrow or fail the unit). No Java-only coverage is lost.
+
+  # TAG language-specific — Java's thread-interruption protocol
+  # (`Thread.currentThread().interrupt()` to restore the flag) is a
+  # genuine JVM idiom with no cross-language analogue.
+  - name: swallows-interrupted-exception
+    status: stable
+    description: |
+      ANTI-PATTERN: an `InterruptedException` handler discards the
+      interrupt signal — it neither re-interrupts the thread
+      (`Thread.currentThread().interrupt()`) nor propagates the
+      exception — so cooperative cancellation silently stops working
+      and the thread runs on as if it were never asked to stop. The
+      swallowing catch is the anchor; the hazard is a lost interrupt.
+      JUDGE: after catching InterruptedException, is the interrupt
+      status restored OR the exception propagated? If neither, FLAG it.
+      EXEMPT: the handler rethrows, or the thread is provably about to
+      exit and documents why the flag need not be restored.
+    severity: error
+
+  # TAG language-specific — raw parameterized types are a consequence of
+  # Java generics + type erasure. No universal equivalent.
+  - name: raw-generic-type
+    status: stable
+    description: |
+      ANTI-PATTERN: a generic type is used with its type arguments
+      dropped (`List`, `Map`, `Comparable` instead of `List<Foo>`),
+      which turns OFF compile-time generic checking for every use of
+      that reference and forces unchecked casts that fail at runtime.
+      The bare `List` is one example; the hazard is erased element-type
+      safety at a signature or field.
+      JUDGE: does a signature, field, or local declare a parameterized
+      type without arguments where a concrete argument is knowable?
+      FLAG it. EXEMPT: legacy reflection / framework interop that
+      genuinely cannot name the argument, localized behind a
+      `@SuppressWarnings("unchecked")` with a comment.
+    severity: warning
+
+  # TAG language-specific — try-with-resources + `AutoCloseable` are the
+  # Java resource-management idiom. (Resource-leak-on-exception is a
+  # broadly-shared hazard, but no generic rubric owns it and the remedy
+  # here is Java-specific.)
+  - name: resource-not-try-with-resources
+    status: stable
+    description: |
+      ANTI-PATTERN: an `AutoCloseable` (stream, reader, connection,
+      statement, lock wrapper) is closed by hand in try/finally — or
+      not closed on the exception path at all — instead of
+      try-with-resources, so an exception between open and close leaks
+      the handle. Manual `close()` is the anchor; the hazard is a
+      resource whose release is not guaranteed on every exit path.
+      JUDGE: is a resource opened here released on ALL paths (including
+      thrown exceptions)? If release is manual/missing, FLAG it.
+      EXEMPT: a resource whose lifetime is deliberately owned elsewhere
+      (returned to the caller, held in a field) with documented
+      ownership.
+    severity: error
+
+  # TAG language-specific — locking on an intrinsic monitor
+  # (`synchronized(this)` / a `synchronized` method) is Java's built-in
+  # monitor model. No cross-language duplicate.
+  - name: synchronized-on-public-lock
+    status: stable
+    description: |
+      ANTI-PATTERN: a class guards its invariants with a publicly
+      reachable monitor — `synchronized(this)` or a `synchronized`
+      instance method — so ANY external code holding the instance can
+      also acquire that lock, enabling accidental deadlock the class
+      cannot see or prevent. The `synchronized(this)` form is the
+      anchor; the hazard is a lock whose identity escapes the class.
+      JUDGE: do instances of this class escape to callers that could
+      lock on them, while the class synchronizes on itself? FLAG it;
+      prefer a `private final Object lock`. EXEMPT: a small value type
+      that is provably never shared across threads (documented).
+    severity: warning
+
+  # TAG language-specific — `volatile` visibility-without-atomicity is a
+  # Java Memory Model property. No universal equivalent.
+  - name: volatile-on-compound-operation
+    status: stable
+    description: |
+      ANTI-PATTERN: a `volatile` field is mutated by a compound
+      read-modify-write (`count++`, `flag = !flag`, check-then-act),
+      trusting `volatile` to make it safe — but `volatile` guarantees
+      VISIBILITY, not ATOMICITY, so two threads can interleave and lose
+      updates. The `++` on a volatile is one example; the hazard is any
+      non-atomic mutation treated as atomic because the field is
+      volatile.
+      JUDGE: is a volatile field updated based on its own prior value
+      (or another read) under concurrency? FLAG it; prefer
+      `AtomicInteger` / `AtomicReference` / a lock. EXEMPT: a
+      single-writer thread with a documented invariant, or pure publish
+      (write-once, read-many).
+    severity: error
+
+  # TAG language-specific — checked exceptions only exist in Java, so
+  # "wrap purely to dodge `throws`" is a Java-only shape. Universal
+  # cousin (losing the typed cause): l4_contracts::untyped-error-origin.
+  - name: checked-exception-tunneling
+    status: stable
+    description: |
+      ANTI-PATTERN: a checked exception is caught and rethrown wrapped
+      in a bare `RuntimeException` / `IllegalStateException` for the
+      SOLE purpose of escaping the `throws` declaration — discarding the
+      typed error (and often the cause) so callers can no longer
+      pattern-match the failure. The `throw new RuntimeException(e)` is
+      the anchor; the hazard is an unclassified rethrow that exists only
+      to silence the compiler.
+      JUDGE: does this wrap add real domain meaning, or does it just
+      launder a checked exception into an unchecked one? FLAG the
+      latter (and any variant that drops the cause). EXEMPT: a typed
+      domain `RuntimeException` that meaningfully RECLASSIFIES the error
+      and preserves the cause.
+    severity: warning
+
+  # TAG universal-candidate — owner: llm_generated_code_smells::repeated-work-in-loop
+  # (the loop-perf family). Quadratic accumulation of an immutable
+  # aggregate in a loop recurs in every immutable-string language
+  # (Java, JS, Python, C#); this is a specialization, not a Java-only
+  # hazard. Was TOKEN-anchored (`s += ...`) — reframed onto the
+  # anti-pattern below.
+  - name: string-concat-in-loop
+    status: stable
+    description: |
+      ANTI-PATTERN: an immutable aggregate is built by repeated
+      reallocation inside a loop — each `+` / `+=` on a `String` in the
+      loop body copies the whole accumulated value again, turning what
+      reads as O(n) into O(n^2) allocations and copies. `s += part`
+      and `s = s + part` are examples of the anchor; the hazard is
+      re-copying a growing immutable buffer once per iteration.
+      JUDGE: does the loop accumulate into an immutable value by
+      reallocation each pass? FLAG it; prefer `StringBuilder` (or
+      `String.join` / a collector). EXEMPT: a provably small, bounded
+      loop where the cost is negligible. (Do NOT assume the compiler
+      hoists this — javac's invisible `+` optimization does NOT cover
+      the loop case.)
+    severity: info
+
+  # TAG language-specific — the hazard is specifically the Java Streams
+  # contract (laziness / reordering / parallel execution) that a
+  # side-effecting stage violates. Universal cousin (impurity where
+  # purity is assumed): l4_contracts::pure-function-mutates-input.
+  - name: side-effect-in-stream-pipeline
+    status: stable
+    description: |
+      ANTI-PATTERN: an intermediate `Stream` stage (`map` / `filter` /
+      `peek`) performs side effects — mutating captured external state
+      or doing IO — which breaks the assumptions that let streams be
+      lazy, reordered, and run in parallel: the effect may fire zero
+      times, out of order, or on multiple threads. A lambda writing to
+      a captured variable is the anchor; the hazard is an
+      order/count-dependent effect inside a supposedly pure pipeline.
+      JUDGE: does a non-terminal stage mutate outside state or perform
+      IO? FLAG it; move the effect to a terminal `collect` / explicit
+      loop. EXEMPT: a terminal `forEach` (still prefer collectors), and
+      a debugging `peek` slated for removal before commit.
+    severity: warning
+
+  # TAG universal-candidate — broken encapsulation via an exposed mutable
+  # field is a cross-language OO smell (Java, C++, C#, Kotlin). No exact
+  # generic owner today; nearest home is the l4_contracts invariant
+  # family (a public mutable field means no site can hold an invariant).
+  - name: public-mutable-field
+    status: stable
+    description: |
+      ANTI-PATTERN: a class that carries behavior/invariants exposes a
+      `public` non-final field, letting any caller mutate its internal
+      state directly and bypass every invariant the class tries to
+      maintain. The `public` field is the anchor; the hazard is
+      unmediated external mutation of state a class is responsible for.
+      JUDGE: does this class have behavior/invariants AND a caller-
+      writable public field? FLAG it; encapsulate behind an accessor or
+      make it `final`. EXEMPT: records, DTOs explicitly designed as open
+      structs, and framework-required public fields (documented).
+    severity: warning

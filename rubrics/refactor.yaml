@@ -1,0 +1,694 @@
+name: System Refactoring (universal architecture & organization)
+description: |
+  ── WHAT THIS RUBRIC IS ──
+  A SYSTEM-LEVEL refactoring assessment, not a per-line review. Each
+  rule is a gate on the WHOLE system: when it fires, the finding is
+  "the system needs refactoring along this axis." Because such a
+  change is large-scale by nature, the output is a PLAN (what to move /
+  split / invert, in what order, with blast radius) — NOT an auto-fix
+  and NOT per-line findings to feed `arc fix`. Advisory only; a human
+  (or a separate refactor loop) acts on the plan.
+
+  ── STANDALONE ──
+  This rubric is loaded ONLY by `arc refactor`. It is never used by
+  per-file L4 review (`arc local-review`) nor by the `scan --judge` L5 layer,
+  and it is never mixed with `l5_architecture.yaml` or any other rubric.
+  Some axes (dependency-inversion, anti-god-module) overlap the
+  `l5_architecture` rules by design — this file is self-contained on
+  purpose; the two paths emit DIFFERENT artifacts (l5 → per-suspect
+  finding; refactor → a plan step) and do not collide.
+
+  ── ALTITUDE ──
+  Three layers, macro → micro:
+    MACRO (repo/ecosystem boundaries): ecosystem-isolation,
+      asset-code-separation, infra-scripts-isolation.
+    MESO (module dependency & purity):  placement,
+      dependency-inversion.
+    MICRO (module cohesion & shape):    screaming-architecture,
+      anti-god-module, state-behavior-decoupling.
+
+  ── BIAS ──
+  Bias toward "no refactoring needed." Fire an axis ONLY when the
+  structural pressure is real and the remedy is genuinely large-scale.
+  Every finding's `evidence` MUST cite concrete paths (and lines where
+  a site is named). Prefer a short, ordered plan over a long list.
+
+  ── PRINCIPLE IS THE GOAL, NOT A FOLDER TEMPLATE (read this) ──
+  Each rule names an OUTCOME (separation, clear dependency direction,
+  cohesion). Directory NAMES in the rules (`assets/`, `hack/`, `python/`,
+  `core/`) are ILLUSTRATIVE, never required. Before firing:
+    1. Ask "is the GOAL already met?" — if the data already lives outside
+       the source tree, if the stacks are already distinguishable, the axis
+       is SATISFIED. Do NOT fire just because a directory isn't named X.
+    2. NEVER recommend a move purely for template conformance. A move must
+       fix a REAL problem (confusion, a buried-in-code asset, a wrong
+       dependency direction) — not "it belongs in a folder called X".
+    3. NEVER break an existing CONVENTION (a path other tools or the
+       scanned target rely on) to tidy a name. State what READS a path
+       before proposing to move it.
+  Mechanical template-matching is the failure mode this rubric exists to
+  avoid, not commit.
+
+# applicability — rubric routing filters on this; `refactor` scope is
+# consumed ONLY by `arc refactor`, never by L4 review or scan --judge.
+applies_to: refactor
+
+rules:
+
+  # ════════════════ MACRO — repo / ecosystem boundaries ════════════════
+
+  # ───────── 1. ECOSYSTEM ISOLATION ─────────
+  - name: ecosystem-isolation
+    status: experimental
+    severity: warning
+    description: |
+      Multiple language ECOSYSTEMS are interleaved instead of each
+      owning a top-level territory. Tells: a manifest of one stack
+      inside a business `src/` of another (a `package.json` under a
+      Rust crate's `src/`); a runtime script of language B (`.py`,
+      `.mjs`) living inside language A's source tree (NOT a build-time
+      asset dir); more than one language stack rooted in a single
+      top-level business directory. GOAL: the stacks are distinguishable
+      and partition cleanly for CI/ownership — NOT any particular folder
+      name. SATISFIED if each stack is already in its own area (whatever
+      it's called). `evidence` MUST cite the cross-stack path(s).
+    why: Interleaved stacks defeat per-directory CI, blur ownership, and
+      make the build graph unreadable to a newcomer.
+    gate_question: |
+      Does any directory mix runtimes that should each own a top-level
+      area, or does a manifest/script of stack B sit inside stack A's
+      source tree? If yes → refactoring axis.
+
+  # ───────── 2. ASSET / CODE SEPARATION ─────────
+  - name: asset-code-separation
+    status: experimental
+    severity: warning
+    description: |
+      A DOMAIN ASSET (a business-rule table, a long prompt/template, a
+      static blocklist/dataset, config, copy/text) is HARDCODED as a
+      literal inside control-flow code instead of living as data the code
+      loads at runtime/startup. The test is NOT SIZE — it is LIFECYCLE
+      ASYNCHRONY: does the data's lifecycle evolve INDEPENDENTLY of the
+      code logic? Domain data (a prompt a product-owner edits, a rules
+      table that changes on its own schedule) belongs OUTSIDE the source
+      tree and loaded at runtime. A STRUCTURAL CONSTANT the code OWNS — a
+      keyword list a lexer needs, a dispatch/lookup table intrinsic to the
+      algorithm, the magic numbers the code depends on — changes WITH the
+      code and stays inline, NO MATTER how big. GOAL: data with an
+      independent lifecycle lives as loadable data — the directory name is
+      incidental. SATISFIED (do NOT fire) if the data is ALREADY a separate
+      file/dir outside the code, even if it isn't named `assets/`.
+      `evidence` MUST show the literal. ESSENTIAL (do NOT fire) for a
+      code-coupled structural constant (a keyword set, a regex, a format
+      spec, a lookup table) — its lifecycle is the code's.
+    why: Inlined DOMAIN data can't be edited without a recompile, can't be
+      diffed/reviewed as data, and bloats the module that hides it — while
+      a structural constant the algorithm owns belongs right where it is.
+    gate_question: |
+      Is this literal DATA whose lifecycle evolves INDEPENDENTLY of the
+      code (a prompt/rules-table/config/dataset a non-programmer edits on
+      its own schedule) — as opposed to a structural constant the algorithm
+      owns (a keyword list, a lookup table)? If independent lifecycle →
+      refactoring axis (extract to a loaded asset). Size is not the test.
+
+  # ───────── 3. INFRA / SCRIPTS ISOLATION ─────────
+  - name: infra-scripts-isolation
+    status: experimental
+    severity: info
+    description: |
+      A research/ops SCRIPT that does not ship with the product (a
+      benchmark, an A/B harness, a one-off data-cleanup, a `.sh`
+      helper) lives mixed INTO the product source/trunk, indistinguishable
+      from shipping code. GOAL: dev/ops tooling is clearly OFF the product
+      path — the directory name is incidental. SATISFIED if it already
+      sits in its own non-product area (whatever it's called). `evidence`
+      MUST cite the script path. ESSENTIAL (do NOT fire) if it is genuinely
+      a build step wired into the manifest (`build.rs`, a packaged
+      migration the product runs).
+    why: Dev scaffolding in the trunk reads as product surface, inflates
+      the audit set, and blurs what actually ships.
+    gate_question: |
+      Is this a dev/ops script (bench/AB/one-off) sitting in a product
+      `src/` or the repo root instead of hack/scripts/infra? If yes →
+      refactoring axis.
+
+  # ════════════════ MESO — dependency & purity ════════════════
+
+  # ───────── 4. PLACEMENT (onion-ring fit) ─────────
+  - name: placement
+    status: experimental
+    severity: error
+    description: |
+      An entity lives in the WRONG onion ring. A codebase is an onion of
+      four rings, inner → outer:  type → core → adaptor → shell.
+        type    : DTOs / records / value objects / config / ports (traits)
+                  — pure leaf data and interfaces, no behaviour.
+        core    : pure domain / common logic — NO I/O, NO side effects.
+        adaptor : db clients, collectors, http/git/external-IO adapters,
+                  the concrete implementations of ports.
+        shell   : CLI / entry points / orchestration / the I/O edge /
+                  logging / error-recovery / presentation.
+
+      This is a GENERAL placement judgment — a strict SUPERSET of the old
+      functional-core-purity rule. It fires on three structural mismatch
+      classes (each computed from role + onion coordinate + the reverse
+      dependency index, never a token grep):
+        * OUTER EFFECT IN A PURE RING — an entity that does REAL fs / proc
+          / net I/O while its directory is a Type or Core ring (this is
+          exactly what functional-core-purity caught).
+        * ADAPTER / RENDERER / ORCHESTRATION BURIED INWARD — a role that
+          belongs in the adaptor or shell ring, buried in a pure ring, and
+          usage CORROBORATES (an outer ring uses it, its own ring does not).
+        * DATA PRODUCT IN THE WRONG RING — an exported pure DTO / value
+          object living OUTSIDE the Type ring while a DIFFERENT layer
+          imports it.
+
+      ARCHITECTURAL ROLE AXIOMS — judge on the PHYSICAL `does IO`
+      boundary, NOT the role NAME:
+        1. PURE COMPUTATION (CORE): any memory-to-memory transform —
+           parsing strings into structs (even `parse_json`/`load_config`),
+           normalizing, serializing, computing a metric, formatting a
+           `String` in memory — is CORE even if named/labelled "adapter"
+           (does IO = false). Rendering is data-in/data-out, NOT an effect.
+        2. PHYSICAL BOUNDARY (ADAPTER): an entity is an adapter ONLY if it
+           actually crosses the boundary — executes a subprocess, does
+           REAL filesystem or network I/O (does IO = true). Merely taking a
+           `PathBuf` or returning a command string is NOT I/O.
+        3. PRESENTATION (SHELL): an entity whose sole job is formatting for
+           human/terminal consumption, or CLI orchestration, belongs in
+           the shell.
+
+      Dependencies point INWARD: an outer ring using an inner one is
+      NORMAL — do NOT move an inner unit merely because outer rings (or
+      ONLY outer rings) use it. Move a unit ONLY when it does outer-ring
+      WORK its ring forbids, or its NATURE is an outer-ring concern.
+    why: A misplaced unit couples a pure ring to the world it should not
+      know about — an impure core can't be unit-tested without a world or
+      ported (WASM/sandbox), and an adapter buried in core leaks effects
+      callers can't see in the type. Placement fit keeps each ring's
+      contract honest.
+    gate_question: |
+      Does this entity belong in the onion ring where it lives now? Judge
+      on its EFFECTS (`does IO: fs/proc/net`) and the WORK it does, not its
+      name or who calls it: real I/O in a type/core ring → adaptor; a
+      renderer / orchestration buried in a pure ring → shell; an exported
+      pure DTO outside the type ring imported cross-layer → type. A pure
+      memory-to-memory transform stays in core; being used only by outer
+      rings is NORMAL, not a misplacement.
+    example_bad: |
+      // arc_core/src/dup_types.rs  (a CORE ring)
+      pub fn scan(workspace: &Path) -> Vec<Dup> {
+          let entries = std::fs::read_dir(workspace)?;  // real fs I/O in core
+          ...
+      }
+    example_good: |
+      // shell does the I/O, core stays a pure transform:
+      // shell:  let files = read_dir_to_corpus(workspace)?;
+      // core:   pub fn duplicated_type_names(
+      //             files: &[(String, String, LanguageId)],
+      //         ) -> Vec<DuplicateTypeClass>
+
+  # ───────── 4b. WHEEL REINVENTION BY ALTITUDE ─────────
+  - name: low-level-wheel-reinvention
+    status: experimental
+    severity: warning
+    description: |
+      A function hand-implements a GENERAL-PURPOSE primitive sitting
+      several abstraction layers BELOW this codebase's domain: number
+      formatting (thousands separators), byte / UTF-8 boundary handling,
+      table / column alignment, string padding, retry/backoff, glob,
+      date math. The judging axis is ALTITUDE GAP — "how far is this
+      chunk from the product's business layer?". The lower and more
+      universal it is, the more certainly a mature crate (or std) already
+      owns it. A language's std NOT having it (Rust has no `{:,}`
+      thousands — it is locale-dependent, handed to the ecosystem) is a
+      signal to USE THE DE-FACTO CRATE, NOT a license to hand-roll.
+      Quality is IRRELEVANT: a correct, tested, no-bug hand-roll is still
+      rot if it's a primitive the codebase shouldn't own — the textbook
+      "too high-quality to get caught in review" case. `evidence` MUST
+      name the primitive + the crate (or std API) that owns it.
+    why: Hand-rolled primitives carry their own bug surface (a hand-rolled
+      `thousands` shipped an `i64::MIN` panic), bloat the codebase far
+      below its real altitude, and survive review precisely because they
+      look clean. The further-below-domain the logic, the less it is ours.
+    gate_question: |
+      Is this logic a general-purpose primitive far BELOW the domain
+      (number/string formatting, byte handling, alignment, retry, glob,
+      date math)? Ask "how far from the business layer is this?" — the
+      lower / more universal, the more certainly a crate owns it. `std`
+      lacking it is NOT a reason to hand-roll. Being correct / bug-free
+      does NOT exempt it.
+    example_bad: |
+      // arc_core/src/display.rs — a code-review tool hand-implementing
+      // thousands separators by byte-slicing (+ i64::MIN edge, 6 tests)
+      pub fn thousands(n: i64) -> String { /* 26 lines of byte grouping */ }
+    example_good: |
+      // use the de-facto crate, in the shell where rendering lives:
+      use num_format::{Locale, ToFormattedString};
+      n.to_formatted_string(&Locale::en)
+
+  # ───────── 5. DEPENDENCY INVERSION / ONION ─────────
+  - name: dependency-inversion
+    status: experimental
+    severity: error
+    description: |
+      Dependencies point OUTWARD/UPWARD instead of inward to a stable
+      core. A low-level domain/core module imports a CONCRETE adapter (a
+      specific LLM client, a specific store, a specific AST library's
+      native types threaded through core logic) instead of a trait/port
+      the outer shell injects; or a manifest declares an inner layer
+      depending on an outer one. The remedy — introduce ports + inject
+      implementations — is structural, hence a plan. `evidence` MUST
+      cite the inward→outward import or the manifest edge.
+    why: When core depends on concrete adapters, swapping the LLM
+      (Claude→DeepSeek) or the store (SQLite→Postgres) forces core
+      changes; the dependency rule is the thing that makes those swaps
+      local.
+    gate_question: |
+      Would swapping a concrete external (LLM client, store, AST engine)
+      force edits to a core/domain module, because that module depends
+      on the implementation rather than a port? If yes → refactoring
+      axis.
+
+  # ───────── 5b. HIDDEN DEPENDENCY (reach vs. receive) ─────────
+  - name: hidden-dependency
+    status: experimental
+    severity: error
+    description: |
+      A function REACHES OUT for an input it needs instead of RECEIVING it
+      — the wall clock (`SystemTime::now`, `chrono::Utc::now`), an env var
+      (`std::env::var`), or a process-global singleton (`static` /
+      `lazy_static` / `OnceLock`) — read inside its body (or transitively,
+      through something it calls). So the function DEPENDS on state that is
+      NOT visible in its signature: its actual effect signature ⊋ its
+      declared parameter list — a HIDDEN INPUT. Precise, Haskell-effect-
+      grounded: Haskell forces every effect into the type (`MonadTime`,
+      `MonadReader Config`), so a hidden dependency is one the type would
+      have surfaced. Fix: read the ambient value ONCE at a thin PROVIDER /
+      the composition root and INJECT the resolved value inward as a
+      parameter (reach → receive).
+      NOT this smell: real IO (fs/net/subprocess) whose path/target is an
+      EXPLICIT PARAMETER — `write(path, content)` declares its dependency;
+      that is the adapter's designated job, not a hidden input. And a thin
+      PROVIDER whose whole body IS the ambient read + return
+      (`fn now_secs() { SystemTime::now()… }`) is the injection SOURCE —
+      exempt.
+    why: |
+      A function that reaches for the clock / env / a global can't be unit-
+      tested without a real clock, a set env var, or mutated global state —
+      the hidden read is an invisible dependency with no seam. Threading the
+      value in as a parameter makes the dependency explicit and the function
+      deterministic.
+    gate_question: |
+      Does this function read the clock / an env var / a global singleton
+      in the MIDDLE of doing other work (directly or via a callee), so the
+      input is not in its signature? If yes → refactoring axis (inject the
+      value as a parameter; read it once at a provider / the edge).
+    example_bad: |
+      // reaches for the clock deep in its logic — `now` is a hidden input
+      fn stamp(rec: &mut Record) {
+          let now = SystemTime::now();          // hidden clock dependency
+          rec.updated_at = to_secs(now);
+          rec.ttl = to_secs(now) + WINDOW;
+      }
+      // reads an env flag deep in a consumer:
+      fn worker() { if std::env::var("MOCK").is_ok() { /* .. */ } }
+    example_good: |
+      // the clock is RECEIVED as a parameter — visible in the signature:
+      fn stamp(rec: &mut Record, now: u64) { rec.updated_at = now; rec.ttl = now + WINDOW; }
+      // env read at a THIN provider at the edge, injected inward:
+      fn use_mock() -> bool { std::env::var("MOCK").is_ok() }   // provider (exempt)
+      fn worker(use_mock: bool) { if use_mock { /* .. */ } }
+
+  # ───────── 5c. REPLACE CONDITIONAL WITH POLYMORPHISM ─────────
+  - name: replace-conditional-with-polymorphism
+    status: experimental
+    severity: error
+    description: |
+      Fowler "Replace Conditional with Polymorphism": code DISPATCHES
+      BEHAVIOUR by repeatedly checking WHAT SOMETHING IS — its runtime TYPE
+      (`isinstance(x, DomainA)` / `x instanceof DomainA` / `typeof x ===`),
+      or a STRING/int tag it carries (`if kind == "circle"` … `elif kind ==
+      "square"`) — where each case could instead OWN that behaviour as a
+      polymorphic METHOD (a subtype / ABC per case, or a strategy). The
+      smell is the OPEN discriminant re-checked at several sites, each arm
+      re-implementing the per-case behaviour that should live ON the case.
+      This is a LANGUAGE-AGNOSTIC smell that lives mostly in languages
+      WITHOUT good sum types (Python / JS / TS). `evidence` MUST cite the
+      dispatch sites + the type/subtype hierarchy the behaviour should move
+      onto.
+      ESSENTIAL (do NOT fire): (1) a TYPE GUARD / validation —
+      `isinstance(x, dict)` / `instanceof Array` / `if not isinstance(x,
+      Foo): raise` that checks SHAPE before use (plumbing, not domain
+      dispatch); (2) a SUM-TYPE `match`/`case` on a proper enum / tagged
+      union in Rust/Haskell/TS — that IS the typed polymorphic answer
+      already (the CURED state, not the disease); (3) a ONE-TIME PARSE /
+      SERIALIZATION edge (`from_str`/`parse` in, `as_str`/`to_json` out) —
+      constructor/value mapping, un-polymorphizable; (4) a single trivial
+      2–3 arm value lookup.
+    why: A type/tag switch must be branched at EVERY site, so one forgets a
+      case and it breaks, and a new case means editing N functions;
+      polymorphism collapses every switch into one `x.method()` and makes
+      "add a case" a new subclass, not a hunt through the codebase.
+    gate_question: |
+      Is behaviour selected by REPEATEDLY checking what a value IS — its
+      runtime type (`isinstance`/`instanceof`) or a string/int tag it
+      carries — where each case could own that behaviour as a polymorphic
+      method/subtype? If yes → refactoring axis. A type-GUARD/validation, a
+      sum-type match on a proper enum, a from_str/as_str edge, or a single
+      trivial mapping is NOT the smell — do NOT fire.
+    example_bad: |
+      # the type switch reappears in every method
+      def area(s):
+          if isinstance(s, Circle):  return 3.14 * s.r * s.r
+          elif isinstance(s, Square): return s.side * s.side
+      def perimeter(s):
+          if isinstance(s, Circle):  return 2 * 3.14 * s.r
+          elif isinstance(s, Square): return 4 * s.side
+    example_good: |
+      # behaviour lives on the subtype; the switch is gone
+      class Shape:      # ABC
+          def area(self): ...
+          def perimeter(self): ...
+      class Circle(Shape):
+          def area(self): return 3.14 * self.r * self.r
+          def perimeter(self): return 2 * 3.14 * self.r
+      class Square(Shape):
+          def area(self): return self.side * self.side
+          def perimeter(self): return 4 * self.side
+
+  # ───────── 5d. STRONG → WEAK → STRONG TYPE CHURN ─────────
+  - name: strong-weak-strong-type-churn
+    status: experimental
+    severity: warning
+    description: |
+      Typed data is downgraded to a WEAK representation
+      (`serde_json::Value`, `String`, `HashMap<String, Value>`, or an
+      `Option`/`Result` unboxed then re-wrapped) in the MIDDLE of a
+      pipeline and re-upgraded to a strong type later — a
+      strong→weak→strong round-trip that exists only because a boundary
+      that could have stayed typed didn't. Data should be typed END TO
+      END; `Value` belongs ONLY at a TRUE external boundary (parsing an
+      LLM/SARIF payload ONCE, at the shell edge). Tells: a core fn
+      `compute(...) -> serde_json::Value` between two typed layers;
+      `to_value`/`from_value` bridging two owned types; an `*In`
+      (Deserialize) + `*Core` (compute) + `*Out` (Serialize) triplet for
+      ONE concept. `evidence` MUST show the weak hop between two typed
+      layers. ESSENTIAL (do NOT fire) for `Value` AT a real external
+      boundary (the LLM/SARIF parse) — that hop is the boundary, not churn.
+    why: Each weak hop drops the compiler's guarantees, multiplies types
+      (the In/Core/Out triplet), and the re-parse can fail on data your
+      OWN code produced. It is also the tell that a bespoke weak-typed DTO
+      duplicates a canonical strong type.
+    gate_question: |
+      Does typed data get pushed through `Value`/`String`/untyped-map
+      between two typed layers — not at a real external boundary — and
+      rebuilt into a strong type? If yes → refactoring axis (stay typed
+      end to end; keep `Value` only at the parse boundary).
+    example_bad: |
+      // arc_core metrics: typed records → Value → compute → Value → typed
+      let v = compute_value(to_value(&runs), to_value(&verdicts))?;
+      let m: MetricsIn = serde_json::from_value(v)?;   // strong→weak→strong
+    example_good: |
+      // typed in, typed out — no Value between typed layers
+      let m: MetricsReport = compute(&runs, &verdicts);
+
+  # ───────── 5e. CROSS-BOUNDARY PRIMITIVE, NOT ADT ─────────
+  - name: cross-boundary-primitive-not-adt
+    status: experimental
+    severity: warning
+    description: |
+      "Parse, Don't Validate." A value crosses an INTERNAL (non-adapter)
+      module/crate boundary as a WEAK CARRIER of a domain concept, such that
+      the CONSUMER STILL HAS TO VALIDATE it — because its type does not
+      guarantee the domain's invariant. It was NOT parsed into a type that
+      makes illegal states unrepresentable at the adapter edge. Two universal
+      dimensions decide it (NO language-specific type-name lists — that is the
+      point):
+      (1) CARRIER SHAPE is one of two universal shapes — a bare PRIMITIVE (a
+      scalar: string / int / bool / bytes) OR an untyped COLLECTION (a generic
+      container: map / list / set / dict / an untyped `Value`-map). A named
+      domain struct/enum, or a TYPED-ADT collection whose elements/keys/values
+      are named types (`Vec<Finding>`, `Map<IssueId,Verdict>`), is NEITHER →
+      not a candidate. This is a type-SHAPE the LLM classifies semantically (a
+      Python `dict`, a Rust `HashMap<String,String>`, a TS
+      `Record<string,string>` are all "untyped collection").
+      (2) STILL-NEEDS-VALIDATION (the discriminator): does a consumer STILL
+      have to validate/parse it? Evidence, EITHER form: (a) the body
+      INLINE-GUARDS the param — a type/instance check
+      (`isinstance`/`typeof`/`instanceof`/`match` on an untyped value), a
+      null/None guard, a downcast, a key-existence check; OR (b) the body makes
+      an explicit VALIDATE/PARSE/CHECK CALL on it
+      (`validate(x)`/`parse(x)`/`from_value(x)`/`.as_str().ok_or(...)`). The
+      ABSENCE of both is the SELF-CERTIFYING all-clear — the type already
+      carries the invariant, so a `usize` offset / a `Config` struct / a
+      `Vec<Finding>` do NOT fire (there is NO separate exclusion list; the same
+      question is both alarm and all-clear). `evidence` MUST show the weak-carrier
+      param + the boundary it crosses + the guard/validate the body performs on
+      it. ESSENTIAL (do NOT fire) for the ADAPTER edge itself (git / db / parse
+      taking raw input and validating it ONCE is its whole job — that is WHERE
+      the parse should happen).
+    why: |
+      A weak carrier crossing an internal boundary carries no guarantees (a
+      `&str` could be anything; an untyped map's keys were never checked),
+      forcing every consumer to re-validate the SAME invariant the adapter
+      should have parsed ONCE. Parse-don't-validate pushes that check to the
+      edge into a type that makes illegal states unrepresentable; inward
+      communication then stays pure, testable, and total (no repeated guards).
+    gate_question: |
+      Does a value cross a NON-adapter module/crate boundary as a WEAK CARRIER
+      (a bare primitive OR an untyped collection) of a domain concept, such
+      that the consumer's body STILL guards or validates/parses it (a
+      type/null/key check, a downcast, or a `validate`/`parse`/`.ok_or(...)`
+      call)? If yes → refactoring axis (parse it into an ADT at the adapter
+      edge so the type carries the invariant; pass the ADT inward). If the body
+      never needs to validate it, the type already self-certifies → do NOT fire.
+    example_bad: |
+      // untyped map crosses inward; the consumer STILL has to guard every key
+      fn dispatch(args: &Map<String, Value>) -> Result<Plan> {
+          let id = args.get("id").and_then(|v| v.as_str()).ok_or(BadArg)?;  // re-validate
+          ...
+      }
+      fn resolve(id: String, status: String)   // bare primitives, re-checked downstream
+    example_good: |
+      // parsed into ADTs at the edge; inward, nothing left to validate
+      fn dispatch(cmd: &ResolveCmd) -> Result<Plan> { .. }
+      fn resolve(id: IssueId, status: ResolutionStatus)
+
+  # ════════════════ MICRO — cohesion & shape ════════════════
+
+  # ───────── 6. SCREAMING ARCHITECTURE ─────────
+  - name: screaming-architecture
+    status: experimental
+    severity: warning
+    description: |
+      The top-level structure names FRAMEWORKS or PATTERNS, not the
+      BUSINESS, so a newcomer can't tell what the system DOES from its
+      layout. Tells: a sea of `utils`/`helpers`/`managers`/`common`/
+      `misc` holding unrelated code with no business cohesion;
+      top-level dirs built around design patterns (`strategies/`,
+      `factories/`) rather than capabilities. Remedy: rename/regroup
+      top-level modules by business concept (`scan`, `fix`,
+      `merge_sweep`) — a structural reshape. `evidence` MUST name the
+      junk-drawer / pattern-named module(s).
+    why: Layout that screams the framework instead of the domain raises
+      every newcomer's load and is where unrelated code silently
+      accretes.
+    gate_question: |
+      Does the top-level layout reveal the system's purpose, or only its
+      tech? A junk-drawer or pattern-named top-level module with no
+      business cohesion → refactoring axis.
+
+  # ───────── 7. ANTI GOD-MODULE (SRP) ─────────
+  - name: anti-god-module
+    status: experimental
+    severity: error
+    description: |
+      One module/crate carries multiple UNRELATED responsibilities —
+      it would need to change for several independent reasons (e.g. a
+      `runner` that does DAG scheduling AND prompt assembly AND
+      extension detection AND subprocess management). The remedy is a
+      split into cohesive units, which is large-scale by nature.
+      `evidence` MUST enumerate the distinct responsibilities and
+      propose the split boundaries (which sub-module gets what).
+    why: A unit with many reasons to change is the highest-churn,
+      hardest-to-test, hardest-to-own part of any system.
+    gate_question: |
+      Is there a module/crate that would need to change for several
+      unrelated reasons? If yes → propose the split (refactoring
+      axis).
+
+  # ───────── 8. STATE / BEHAVIOR DECOUPLING ─────────
+  - name: state-behavior-decoupling
+    status: experimental
+    severity: warning
+    description: |
+      The workflow's SHAPE (DAG edges, state-machine transitions, the
+      order/conditions of steps) is tangled INSIDE executor/worker
+      bodies instead of declared in one place, so the data-flow
+      lifecycle can't be read or changed without touching execution
+      code. Remedy: extract a DECLARATIVE plan/topology (the edges and
+      transitions) apart from the per-node execution, so state storage
+      and computation behavior are decoupled. `evidence` MUST cite where
+      transition logic is interleaved with node work.
+    why: When the topology lives inside the workers, you can't see the
+      lifecycle, can't reorder it safely, and can't test the flow apart
+      from the work.
+    gate_question: |
+      Are the workflow's transitions/edges declared separately from the
+      per-node execution code, or are they tangled inside worker bodies?
+      Tangled → refactoring axis.
+
+  # ════════════════ MICRO — testability seams (Misko) ════════════════
+  # The rest of Misko Hevery's "hard to test" list is already covered:
+  # ask-don't-look → `hidden-dependency`; polymorphism-over-
+  # conditionals → `variant-as-conditional-not-impl`; composition-over-
+  # inheritance → l5 `inheritance-fanout`; mixing-concerns → `anti-god-module`.
+  # These three fill the gaps. Testable code == DI'd == onion-conforming;
+  # the observable proof is "can you unit-test it with only injected doubles,
+  # no disk / env / network?"
+
+  # ───────── 9. CONSTRUCTION MIXED WITH LOGIC ─────────
+  - name: construction-mixed-with-logic
+    status: experimental
+    severity: warning
+    description: |
+      One unit both BUILDS its object graph — `new`/`build_*` of a SERVICE
+      collaborator (a client / store / pipeline / factory: something with an
+      interface, multiple impls, or its own dependencies) — AND does
+      application logic. The two must split: FACTORIES / composition roots
+      are full of `new` and wire the graph but do no work; LOGIC units are
+      devoid of service-`new` and only do work, ASKING for collaborators as
+      parameters. Mixed, the logic can't be tested in isolation — every test
+      drags in the real graph. NOTE: value objects (`Finding`, `ProviderConfig`,
+      an `EmailAddress`) are leaves — free to `new` inline; this rule is about
+      SERVICE objects only. `evidence` MUST show the service-`new` + the logic
+      in the same unit.
+    why: |
+      A unit that constructs its own service collaborators has no seam —
+      every test of its logic must first navigate building the real graph
+      (config, network, subprocess). Separating construction (factory/root)
+      from work (logic) is what lets a test inject doubles.
+    gate_question: |
+      Does this unit both construct a service collaborator (`new`/build of an
+      injectable client/store/pipeline) AND do application work? If yes →
+      split the factory/root from the logic (refactoring axis).
+    example_bad: |
+      fn judge(repo: &Path) -> Result<Verdict> {
+          let client = LlmClient::new(load_config(repo)?)?;  // builds the graph
+          client.complete(build_prompt(repo))                // ...and does work
+      }
+    example_good: |
+      // logic asks for the service; a factory/root built it:
+      fn judge(client: &dyn LlmService, prompt: &str) -> Result<Verdict> {
+          client.complete(prompt)
+      }
+
+  # ───────── 10. GLOBAL MUTABLE STATE / SINGLETON ─────────
+  - name: global-mutable-state
+    status: experimental
+    severity: error
+    description: |
+      Application state lives in a GLOBAL mutable (`static mut`, a
+      `OnceCell`/`lazy_static!` holding mutable app state), a SINGLETON
+      (private-ctor + a global instance), or behavior branches on a
+      process-global AMBIENT read (an env var consulted as a state/behavior
+      switch) deep in logic rather than injected. Global state persists
+      across tests → order-dependence, failures that don't reproduce in
+      isolation. An immutable `const`/`static` (a table, a spec) is FINE —
+      this is about MUTABLE / behavior-switching global reach. `evidence`
+      MUST cite the global mutable / singleton / ambient read.
+    why: |
+      Global mutable state is GOTO for data: tests share it, so order
+      matters and a failure can't be reproduced alone; a singleton makes all
+      of its internals transitively global. Inject the state instead.
+    gate_question: |
+      Is there mutable global/static state, a singleton, or a process-global
+      ambient (env) read used as a behavior switch below the composition
+      root? If yes → inject it (refactoring axis).
+    example_bad: |
+      static mut RUN_MODE: Mode = Mode::Prod;              // global mutable
+      fn worker() { if std::env::var("MOCK").is_ok() { .. } }  // ambient switch
+    example_good: |
+      // mode/config is a parameter, resolved once at the root:
+      fn worker(mode: Mode) { .. }
+
+  # ───────── 11. VALUE OBJECT HOLDS A SERVICE OBJECT ─────────
+  - name: value-object-holds-service
+    status: experimental
+    severity: warning
+    description: |
+      A VALUE object (data: fields/getters, cheaply `new`ed inline, never
+      mocked — `Finding`, `ProviderConfig`, `EmailAddress`) HOLDS or takes a
+      SERVICE object (a collaborator that does work, has an interface /
+      multiple impls — a client, store, pipeline, factory, connection) in its
+      fields/constructor, making a hybrid with neither the ease-of-construction
+      of a value nor the substitutability of a service. Tells: a config / DTO /
+      record struct with a field typed as a client / pipeline / factory /
+      `Arc<dyn ...>` / connection. `evidence` MUST show the value struct + the
+      service-typed field. (Contrast: a service object taking VALUE objects is
+      fine — that's normal collaboration.)
+    why: |
+      The hybrid can't be freely `new`ed in a test (it needs a live service),
+      and it isn't a clean injectable either — it has the baggage of a service
+      and the interface of a bag of data. Keep data as data; inject the
+      service separately.
+    gate_question: |
+      Does a value / data / config struct hold or take a SERVICE object
+      (client / store / pipeline / factory / connection) in its fields or
+      constructor? If yes → separate the data from the service (refactoring
+      axis).
+    example_bad: |
+      struct VerifyProviderConfig {          // a value/config...
+          provider_id: String, model: String,
+          llm: Arc<dyn LlmService>,          // ...that also carries a service
+      }
+    example_good: |
+      struct VerifyRole { provider: String, model: String }  // pure data
+      // the LlmService is injected where it's used, not carried by the value
+
+  - name: handoff-struct-carries-effects
+    status: experimental
+    severity: warning
+    description: |
+      A pipeline STAGE-HANDOFF struct — the typed `Outcome` / `Result` / `Plan`
+      one stage returns for the next to consume (`AssemblyResult`, a converge
+      `Outcome`) — is the RIGHT concept: a strong typed boundary. KEEP it; do NOT
+      flatten it back to a positional tuple. The defect is that it is IMPURE — it
+      carries EFFECT / UI payload mixed in with the domain data: a
+      `notifications: Vec<String>` of console lines to print, a `Color`, a
+      preformatted display message, a channel `Sender`/`Receiver`, a progress
+      handle. The next stage must first DRAIN the UI junk (emit it) before it can
+      use the data, so side effects leak across the seam and the pipeline shape is
+      coupled to the UI. A handoff struct must be 100% COLD DATA — the domain
+      facts the next stage needs, nothing renderable, nothing that talks to the
+      outside world. Sibling of `value-object-holds-service` (that is the
+      SERVICE-object form of "keep data as data"; this is the UI/effect-PAYLOAD
+      form). `evidence` MUST show the handoff struct + its non-data field(s).
+    why: |
+      A boundary that carries `Vec<String>` for printing forces every consumer to
+      know it must drain and emit them, couples the pipeline to the UI, and makes
+      the stage untestable without asserting on rendered strings. Pure data across
+      the seam + rendering at the shell makes each stage a data-in/data-out
+      function and the UI one concentrated, swappable layer.
+    gate_question: |
+      Does a stage-to-stage handoff / Outcome / Result / Plan struct carry any
+      field that is UI / rendering / side-effect rather than domain data — a
+      `Vec<String>` of messages to print, a `Color`, a channel `Sender`/`Receiver`,
+      a progress / notifier handle? If yes → STRIP it; the imperative shell renders
+      from the pure data at the boundary (`if !plan.skipped.is_empty() {
+      reporter.emit(…) }`). Do NOT "fix" it by deleting the struct and returning a
+      tuple — the typed boundary is correct; purify it (refactoring axis).
+    example_bad: |
+      pub struct AssemblyResult {
+          pub items: Vec<ReviewUnit>,             // domain data — good
+          pub skipped_unchanged: Vec<ReviewUnit>, // domain data — good
+          pub notifications: Vec<String>,         // UI payload — pollutes the seam
+      }
+    example_good: |
+      pub struct CorpusPlan {                     // 100% cold data
+          pub items: Vec<ReviewUnit>,
+          pub skipped_unchanged: Vec<ReviewUnit>,
+      }
+      // the shell renders from the data at the boundary:
+      //   if !plan.skipped_unchanged.is_empty() { reporter.emit(…) }

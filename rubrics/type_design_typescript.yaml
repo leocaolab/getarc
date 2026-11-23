@@ -1,0 +1,423 @@
+name: Type Design — TypeScript (new types only)
+description: |
+  判一段 TypeScript 改动里「新加的类型」(interface / type 别名 / enum / class)——
+  它有没有必要、名字对不对、住对地方没有、形状是不是 total。
+
+  这是 `type_design.yaml` 里语言无关的那几条,翻成 TypeScript 的写法、配 TypeScript 的例子;
+  每条规则的来由(维护者原话、最初的实例)在 `type_design.yaml` 的同名规则里,这里不抄。
+  只审新加的:搬家、改缩进不算新类型;已有的坏名字不是先例。每个新类型逐条过,
+  一条规则只问一个问题,答「是」就是一条 finding。能删的写「删」和怎么删;
+  要改名的给 1–2 个候选名,各说一句它的角色。
+
+  TypeScript 里没有和 Rust trait / `thiserror` 错误 enum 一一对应的东西,
+  `trait-not-a-capability-or-doer`、`error-variant-*`、`error-shape-ignores-its-callers` 不在这里;
+  一个 interface 被多个 class 实现、作为端口传来传去时,按 `action-disguised-as-type` 的意思判
+  (只有一个实现的接口不该存在)。
+
+language: [typescript]
+
+# `type_design` scope: loaded ONLY by the new-type reviewer, never by the per-file L4 set.
+applies_to: type_design
+
+rules:
+  # ── 一、名字 ────────────────────────────────────────────────────────
+
+  - name: data-type-named-by-verb
+    status: stable
+    severity: warning
+    summary: interface / type / enum / class 的名字不是名词(动词、过去分词、进行时)
+    gate_question: 这个 interface / type 别名 / enum / class 的名字是名词或名词短语吗?
+    description: |
+      ANTI-PATTERN:装数据的类型名是动词、过去分词或进行时(`Classified`、`Loaded`、`Verifying`)。
+      读起来像一个动作,读者要猜「谁做了什么、结果放在哪」。判别联合的 `kind` 值可以是形容词或分词
+      (`"loading" | "failed" | "ready"` 说的是状态),类型名本身是名词。
+
+      JUDGE:只看类型名。名词 / 名词短语 = 过;动词 / 分词 / 进行时 = 判负。`Error` 子类按
+      `<名词>Error` 判(`ParseError`,不是 `ParseFailed`)。
+
+      FIX:改成说它是什么的名词;常常先该问它要不要存在(`type-not-sayable-in-one-sentence`)。
+    why: 来由见 `type_design.yaml` 同名规则。动作名的数据类型让读者猜主语和结果在哪。
+    example_bad: |
+      type Verifying = { running: boolean; results: CaseResult[] | null }
+    example_good: |
+      type Verification =
+        | { kind: "running" }
+        | { kind: "done"; results: CaseResult[] }
+
+  - name: type-name-names-format-or-mechanism
+    status: stable
+    severity: warning
+    summary: 类型名写的是格式或机制(Json / Dto / Map / Result-of-a-library)而不是它是什么
+    gate_question: 这个类型名里有没有格式或机制词(`Json`、`Dto`、`Map`、`Response`、库名),而类型本身和那个格式 / 机制无关?
+    description: |
+      ANTI-PATTERN:类型名写的是读进来的格式、底层结构或执行它的库(`ProblemJson`、`CaseMap`、
+      `PyodideResult`)。序列化和执行引擎是边上的事,类型说的是它在业务上是什么。
+
+      JUDGE:把名字里的格式 / 机制 / 库名删掉,看类型本身还和那个词有没有关系。没关系 = 判负。
+
+      EXEMPT:类型**就是**那个格式或协议在适配器里的表示(一条 `postMessage` 的线上消息、一行
+      Firestore 文档),住在适配器里、边界上转换一次。
+
+      FIX:去掉格式 / 机制词,用业务角色;两种用途共用一个机制名的类型,拆成各自的类型。
+    why: |
+      来由见 `type_design.yaml` 同名规则。2026-11 一个 Next.js + Pyodide 刷题项目的七层审查:
+      `PyodideResult` 同时装「跑用例」和「抽可视化蓝图」两种结果,名字只说出了执行引擎。
+    example_bad: |
+      interface PyodideResult { stdout: string; testResults?: CaseResult[]; blueprint?: Blueprint; error?: string }
+    example_good: |
+      interface RunOutcome { stdout: string; cases: CaseResult[] }
+      interface ExtractOutcome { blueprint: Blueprint }
+
+  - name: junk-or-coined-word-in-type-name
+    status: stable
+    severity: warning
+    summary: 类型名用了垃圾词(Manager/Helper/Util/Data/Info/Context)、自创隐喻,或重复了文件路径已说的词
+    gate_question: 这个类型名里有垃圾词(`Manager`/`Helper`/`Util`/`Data`/`Info`/`Context`)、只有作者懂的自创词,或重复了所在模块已经说过的词吗?
+    description: |
+      ANTI-PATTERN:
+        - 垃圾词:`Manager`、`Helper`、`Util`、`Data`、`Info`、`Props` 以外的 `*Context` 袋子 ——
+          说明没想清它的单一职责(`ProblemDraftData` 就是 `ProblemDraft`)。
+        - 自创词、品牌前缀:名字前挂项目名或「Safe」「Smart」这类说不出含义的形容词。
+        - 重复模块路径:`problem/ProblemProblemItem`。
+
+      JUDGE:逐词看名字,任一条命中 = 判负。React 的 `XxxProps` 是惯例名,不判;React Context 对象
+      (`createContext` 的值)叫 `XxxContext` 是惯例,只有它成了什么都往里塞的袋子才判 `parameter-bag-type`。
+
+      FIX:重起一个说清角色的名词;候选交维护者。
+    why: 来由见 `type_design.yaml` 同名规则。七层审查实例:`ProblemDraftData`、`JourneyContext`。
+    example_bad: |
+      interface ProblemDraftData { title: string; examples: DraftExample[] }
+    example_good: |
+      interface ProblemDraft { title: string; examples: DraftExample[] }
+
+  - name: type-name-collides-or-is-generic
+    status: stable
+    severity: warning
+    summary: 类型名和仓里另一个不同的类型同名、太空泛,导入时只好改名
+    gate_question: "`git grep -nwE '(interface|type|class|enum) <Name>'` 下,这个名字是独一无二的、说得出「谁的、什么的」吗?"
+    description: |
+      ANTI-PATTERN:
+        - 同名不同物:同一个名字在几个文件各定义一份、形状不同,调用处只好 `import { Problem as P2 }`。
+        - 太空泛:`Entry`、`Item`、`Relation`、`Role` —— 说不出谁的、什么的;`Role1` 这种编号更糟。
+
+      JUDGE:对新名字跑 `git grep -nwE '(interface|type|class|enum) <Name>' -- '*.ts' '*.tsx'`。
+      命中另一个不同的定义、或名字是不带角色的泛词 = 判负。只在定义它的文件里用、不 `export` 的,不判。
+
+      FIX:换一个带角色的名词;同一个东西的几份定义合成一份(见 `existing-type-already-fits`)。
+    why: 来由见 `type_design.yaml` 同名规则。七层审查实例:`Problem` 有 4 个定义,调用处改名导入;`Role` / `Role1`。
+    example_bad: |
+      // src/app/problems/types.ts
+      export interface Problem { id: string; title: string }
+      // src/components/editor/types.ts
+      export interface Problem { id: number; title: string; examples: Example[] }
+    example_good: |
+      // src/domain/problem.ts — the one definition, owned by the problem bank
+      export interface Problem { id: ProblemId; title: string; examples: Example[] }
+      // the list page keeps only what it shows
+      export type ProblemListRow = Pick<Problem, "id" | "title">
+
+  - name: alias-restates-its-structure
+    status: stable
+    severity: warning
+    summary: type 别名只是给已有类型换个名字,或名字复述右边的结构
+    gate_question: 这个 `type` 别名的名字说得出一个新角色,而不是复述右边的结构、或只给已有类型换个名字吗?
+    description: |
+      ANTI-PATTERN:`type ExampleSpec = ExampleText`(同一个东西两个名字,读者以为是两样)、
+      `type CaseList = Case[]`(名字复述结构)。
+
+      JUDGE:遮住右边只读名字 —— 能说出它在业务上的角色吗?右边是另一个已命名类型、左边没有新角色 = 判负。
+
+      FIX:删掉别名,直接用原类型;真有新角色就按角色起名。
+    why: 来由见 `type_design.yaml` 同名规则。七层审查实例:`ExampleSpec = ExampleText`。
+    example_bad: |
+      export type ExampleSpec = ExampleText
+    example_good: |
+      // ExampleSpec deleted: callers use ExampleText
+
+  # ── 二、说得清、要不要 ──────────────────────────────────────────────
+
+  - name: type-not-sayable-in-one-sentence
+    status: stable
+    severity: error
+    summary: 一句外行听得懂的话说不清它装的是什么、谁产出、谁读
+    gate_question: 能用一句外行听得懂的话说出这个类型装的是什么、谁产出它、谁读它吗?
+    description: |
+      ANTI-PATTERN:说这个类型是什么要用「A、B、以及 C」串起来,或者只能说出结构
+      (「一个有三个可选字段的对象」),说不出业务上是什么。
+
+      JUDGE:写下「<名字> 是 <业务上的什么>,由 <谁> 产出,给 <谁> 读」。写不出,或要用并列串几样东西 = 判负。
+      `export` 出模块的类型要一眼说清。
+
+      FIX:说不清就多半没必要 —— 先看 `parameter-bag-type` 和 `existing-type-already-fits`;
+      真是一个概念,按那句话起名。
+    why: 来由见 `type_design.yaml` 同名规则。
+    example_bad: |
+      /** The deadline, the timeout text, and whether to rebuild the worker. */
+      interface Deadline { ms: number; message: string; rebuild: boolean }
+    example_good: |
+      /** Holds how the host treats one kind of request to the worker when it does not answer in time. */
+      interface RequestPolicy { timeoutMs: number; onTimeout: "rebuild-worker" | "report-only" }
+
+  - name: parameter-bag-type
+    status: stable
+    severity: error
+    summary: 类型只是把几样不相干的东西捆在一起,为了凑参数原样转给一个函数或组件
+    gate_question: 这个类型是不是只为把几样东西原样转给一个函数(或一个组件的 props)而存在的参数袋?
+    description: |
+      ANTI-PATTERN:几样东西拼在一起、一句话说不完,只在一处构造、原样交给一个函数再拆开用;
+      或者一个 props / options 类型把父组件手里的一堆状态和 setter 原样往下传。
+
+      JUDGE:找构造点和读者。只在一处构造、只被一个函数拆开读、字段之间没有共同的业务意义 = 判负。
+      React 组件的 props 类型本身不判 —— 判的是它里面那个「什么都塞」的嵌套袋子。
+
+      EXEMPT:几样东西**总是**一起出现、在多处一起流转 —— 写出这个理由才留。
+
+      FIX:删掉,把已有的那个类型交出去,零散的单独传。
+    why: 来由见 `type_design.yaml` 同名规则。
+    example_bad: |
+      interface PublishArgs { draft: ProblemDraft; embedding: number[]; uid: string; toast: (m: string) => void }
+      function publish(args: PublishArgs) { /* … */ }
+    example_good: |
+      function publish(draft: ProblemDraft, author: UserId): Promise<ProblemId> { /* … */ }
+
+  - name: existing-type-already-fits
+    status: stable
+    severity: error
+    summary: 仓里已有类型装得下这份数据,或新联合是已有联合的子集 / 手抄
+    gate_question: 仓里有没有一个已有类型(或它的一部分、一个 zod schema 推出的类型、一个已有的字面量联合)已经装得下这份数据?
+    description: |
+      ANTI-PATTERN:同一份数据,仓里已经有一个类型。
+        - 手抄已有的字面量联合:`difficulty: "Easy" | "Medium" | "Hard"`,而 `Difficulty` 已经定义了。
+        - 字段就是某个已有类型的几个字段 —— 该用 `Pick<>` / 直接用原类型。
+        - 已有 zod schema,又手写了一份同形的 interface(该用 `z.infer<typeof Schema>`)。
+
+      JUDGE:按字段名和字面量 grep 仓里已有的类型和 schema。找到一个装得下的 = 判负,写出它的路径。
+
+      FIX:删掉,用已有的类型(或 `Pick` / `z.infer`)。
+    why: 来由见 `type_design.yaml` 同名规则。七层审查实例:手写的 `difficulty` 联合与 `Difficulty` 并存。
+    example_bad: |
+      interface ProblemRow { id: string; difficulty: "Easy" | "Medium" | "Hard" }
+    example_good: |
+      interface ProblemRow { id: ProblemId; difficulty: Difficulty }
+
+  - name: type-only-read-to-print
+    status: stable
+    severity: error
+    summary: 类型(或它的字段)没有按它做事的读者 —— 只被展示、打日志,或根本没人读
+    gate_question: 生产代码里除了把它渲染成一段文字、打日志或原样转发,还有谁按这个类型(或这个字段)做事?
+    description: |
+      ANTI-PATTERN:产出方写出一个类型或字段,消费方从不按它做决定:只在一处 `console.log`、
+      `JSON.stringify` 一下,或者 grep 只在类型定义里出现。
+
+      JUDGE:grep 这个类型和它每个字段在生产代码里的读者。答不出一个按它做事的读者 = 判负。
+      测试在读不算读者。
+
+      FIX:删掉;要展示就在那一处直接拼字符串。
+    why: 来由见 `type_design.yaml` 同名规则。七层审查实例:`visualState` 字段从来没被读过。
+    example_bad: |
+      interface Frame { line: number; vars: Snapshot; visualState?: VisualState }  // nobody reads visualState
+    example_good: |
+      interface Frame { line: number; vars: Snapshot }
+
+  - name: error-kind-in-a-string
+    status: stable
+    severity: error
+    summary: |
+      失败的种类写在一个 string 字段里(`error?: string`、`message`),而不是判别联合的 `kind` 或 Error 子类
+    gate_question: 这个结果 / 错误类型里,「是哪一种失败」是由判别字段或 Error 子类说的,还是由一段字符串说的?
+    description: |
+      ANTI-PATTERN:
+        - 结果类型是 `{ success: boolean; error?: string }`:几种不同的失败(运行时没加载、用户代码抛了、
+          超时)挤在同一段字符串里,调用方只能 `includes("timeout")` 去分。
+        - `throw new Error("...")` 的消息文字是唯一区分失败种类的东西,上层 `catch` 解析 `e.message`。
+
+      JUDGE:列出这个类型能表达的失败种类。只有一种,字段全有类型 = 不报;不止一种却只有一个 string 在说 = 判负。
+
+      EXEMPT:string 字段装的是数据(用户的原始输入、外部进程的原始输出、给人看的消息),不是种类。
+
+      FIX:判别联合,一个 `kind` 一种失败,各带类型化的事实和原始值:
+      `{ kind: "runtime-unavailable"; cause: string } | { kind: "user-code-raised"; traceback: string }`;
+      或一个原因一个 `Error` 子类,原始值放在只读字段上。
+    why: |
+      来由见 `type_design.yaml` 同名规则。七层审查实例:运行结果的 `error: string` 把「运行时没跑起来」
+      和「用户代码抛了异常」写成同一个字段,提交那一层把运行时故障记成了用户的 Runtime Error。
+    example_bad: |
+      interface RunOutcome { success: boolean; error?: string; cases?: CaseResult[] }
+    example_good: |
+      type RunOutcome =
+        | { kind: "ran"; cases: CaseResult[] }
+        | { kind: "runtime-unavailable"; cause: string }
+        | { kind: "timed-out"; afterMs: number }
+
+  # ── 三、住对地方 ────────────────────────────────────────────────────
+
+  - name: type-lives-away-from-its-owner
+    status: stable
+    severity: error
+    summary: 类型住在读它的组件 / 页面 / 公共桶里,而不是它所说的那个事实的主人那里
+    gate_question: 这个类型住在它所说的那个事实的主人(产出并维护它的模块、DAO、API 路由)那里吗,而不是读它的组件、页面或 `types/` 公共桶?
+    description: |
+      ANTI-PATTERN:
+        - 领域类型定义在一个 UI 组件文件里,别的组件反向 import 那个组件文件拿类型。
+        - 一个 API 路由的请求体类型定义在调用它的页面里。
+        - 「很多地方都 import」于是进了 `types/index.ts` 公共桶。
+
+      JUDGE:用一句话说出这个类型陈述的是谁的事实,再看它住在哪。住处不是主人 = 判负,写出主人该在哪。
+      只有一个读者不是搬去读者那里的理由。
+
+      FIX:搬到主人那里(领域模块、DAO、路由旁的 schema),读者去依赖主人。
+    why: 来由见 `type_design.yaml` 同名规则。七层审查实例:`Problem` 类型住在学员端的工作区组件里;联系表单的消息类型住在管理员页面。
+    example_bad: |
+      // src/app/(user)/problems/[id]/problem-workspace.tsx
+      export interface Problem { id: string; title: string; examples: Example[] }
+    example_good: |
+      // src/domain/problem.ts
+      export interface Problem { id: ProblemId; title: string; examples: Example[] }
+
+  - name: type-visibility-wider-than-its-use
+    status: stable
+    severity: warning
+    summary: 只在一个文件里用的类型被 export 了,或只为测试 export
+    gate_question: 这个类型的 `export` 有外部真正的读者吗(只在本文件用就不 export)?
+    description: |
+      ANTI-PATTERN:只在本文件里用的类型被 `export`;或者为了让测试 import 而 `export` 一个内部形状,
+      别的组件随后开始依赖它。
+
+      JUDGE:grep 它在定义文件之外的 import。没有 = 不该 export;只有测试 import = 判负(测试该测公开的行为)。
+
+      FIX:去掉 `export`;要跨出去,它是一个契约,住在主人那里再导出。
+    why: 来由见 `type_design.yaml` 同名规则。七层审查实例:用例的标签类型从一个 UI 文件 export,被别的组件反向 import。
+    example_bad: |
+      // only used in this file
+      export interface ChunkCursor { at: number }
+    example_good: |
+      interface ChunkCursor { at: number }
+
+  # ── 四、形状:透明度 / total / 规范化 ─────────────────────────────
+
+  - name: transparency-mismatches-invariant
+    status: stable
+    severity: error
+    summary: 有不变量的值是谁都能拼出来的普通对象 / 裸 string,而不是经解码函数或品牌类型造出
+    gate_question: 这个类型有要守的不变量吗 —— 有,它的值是只能经一个解码 / 工厂函数造出(品牌类型、私有构造的 class),还是谁都能用对象字面量或 `as` 拼出来?
+    description: |
+      TypeScript 的 interface 永远是透明的:谁都能写一个对象字面量、或 `as X` 出一个值。
+      ANTI-PATTERN:
+        - 有不变量(非空、已排序、合法 id 格式、两个字段互相约束)却是普通 interface / 裸 `string`,
+          读的地方用 `as X` 或直接构造。
+        - 没有不变量却包成 class + 私有字段 + 一排 getter,多余的仪式。
+
+      JUDGE:写出它的不变量。写得出,却能不经检查造出这个类型的值 = 判负;写不出却不透明 = 判负。
+
+      FIX:有不变量 → 品牌类型 `type ProblemId = string & { readonly __brand: "ProblemId" }`,
+      只由 `parseProblemId(raw: unknown): ProblemId | ParseFailure` 这样的函数产出;或私有构造函数的 class
+      加静态工厂。读的地方不用 `as`。没有不变量 → 普通 interface。
+    why: 来由见 `type_design.yaml` 同名规则。七层审查实例:提交记录在读出时 `as Submission`,没有任何解码。
+    example_bad: |
+      export interface DraftKey { value: string }  // must be `${uid}_${problemId}`
+      const key = { value: `${uid}-${pid}` } as DraftKey
+    example_good: |
+      export type DraftKey = string & { readonly __brand: "DraftKey" }
+      export function draftKey(owner: UserId, problem: ProblemId): DraftKey {
+        return `${owner}_${problem}` as DraftKey
+      }
+
+  - name: type-not-total
+    status: stable
+    severity: error
+    summary: 构造得出非法值 —— 可选字段的组合、boolean + 只在 true 时有意义的字段、本该已知却写成可选
+    gate_question: 这个类型的每一个能写出来的值都是合法的吗(试着写一个非法的对象字面量,tsc 会拒绝吗)?
+    description: |
+      ANTI-PATTERN:
+        - `{ running: boolean; results: X[] | null }`:造得出「在跑却有结果」「没在跑也没结果」。
+        - 两个互斥的可选字段,两个都写 / 都不写也能编译。
+        - 两个总是同时出现的可选字段,只写一个也能编译 —— 本该合成一个可选的对象。
+        - 上层已经保证存在的值,类型上仍写成可选(`uid?: string`,而布局已经保证登录了),每个读者都要再判一次。
+        - 一个字段全可选的「大而全」对象,不同组合代表不同情形。
+
+      JUDGE:试写一个非法值 —— tsc 接受 = 判负,写出那个值。
+
+      FIX:判别联合表达互斥情形;上层已保证的值在边界收窄一次,往下传非可选的类型。
+    why: 来由见 `type_design.yaml` 同名规则。七层审查实例:`VerifyResult { running; results | null }`;工作区组件的 `uid?`。
+    example_bad: |
+      interface VerifyResult { running: boolean; results: CaseResult[] | null }
+    example_good: |
+      type Verification =
+        | { kind: "idle" }
+        | { kind: "running" }
+        | { kind: "done"; results: CaseResult[] }
+
+  - name: sum-type-misses-family-member
+    status: stable
+    severity: error
+    summary: 判别联合只装了家族的一部分,或用一个全可选的大对象代替「每个成员一个类型 + 装全家的联合」
+    gate_question: 这个类型所属的家族,是否每个成员都有自己的类型、`kind` 值对称,且有一个联合装下**全部**成员?
+    description: |
+      ANTI-PATTERN:
+        - 联合漏了成员:产出方会产出某种情形,联合里却没有它,只好落进 `default` 或 `as`。
+        - 不按情形切开,做成一个字段全可选的对象。
+        - 成员的字段平铺进联合的每一支,成员不能单独当参数传。
+
+      JUDGE:列出这个家族在业务上(或产出方实际产出)的全部成员,对照联合的分支。缺成员、
+      或成员只存在于可选字段组合里 = 判负。
+
+      FIX:补齐成员类型,加一个覆盖全家的联合;`switch (x.kind)` 末尾用 `const _: never = x` 让编译器逼每处处理新成员。
+    why: 来由见 `type_design.yaml` 同名规则。七层审查实例:可视化视图模型的联合漏了产出方会产出的几种结构。
+    example_bad: |
+      type ViewModel = ArrayView | LinkedListView  // the extractor also emits hash maps
+    example_good: |
+      type ViewModel = ArrayView | LinkedListView | HashMapView
+      function render(vm: ViewModel) {
+        switch (vm.kind) {
+          case "array": return renderArray(vm)
+          case "linked-list": return renderList(vm)
+          case "hash-map": return renderMap(vm)
+          default: { const unhandled: never = vm; return unhandled }
+        }
+      }
+
+  - name: two-representations-of-one-fact
+    status: stable
+    severity: error
+    summary: 同一个事实有两种写法(undefined 与空数组、展示文本与结构化值各存一份),或存了能算出来的字段
+    gate_question: 这个类型里,每个事实只存一份、相等的值只有一种表示(没有能从别的字段算出的字段)吗?
+    description: |
+      ANTI-PATTERN:
+        - `items?: T[]`:`undefined` 和 `[]` 都表示「没有」。
+        - 同一个值存两份:展示用的文本和结构化的值(`output: string` + `outputJson: unknown`),
+          改一份、另一份留着旧值,下游各读各的。
+        - 冗余字段:能从别的字段算出来却存着。
+
+      JUDGE:对每个字段问「它能从别的字段算出来吗」;对每个可选集合问「空和缺是不是同一个意思」。任一为是 = 判负。
+
+      FIX:只留一种表示(结构化的值;展示文本在显示时算);派生值写成函数。
+    why: 来由见 `type_design.yaml` 同名规则。七层审查实例:例子的 `output` 展示文本和 `outputJson` 各存一份,编辑器只改了其中一份。
+    example_bad: |
+      interface Example { input: string; output: string; inputJson?: unknown; outputJson?: unknown }
+    example_good: |
+      interface Example { input: CaseValue; output: CaseValue }
+      const shown = (v: CaseValue): string => formatCaseValue(v)
+
+  # ── 五、弱类型字段 ──────────────────────────────────────────────────
+
+  - name: weak-typed-field
+    status: stable
+    severity: warning
+    summary: 字段是裸 string / number,而它装的是一个领域值(id、行号、枚举值),仓里有或该有对应的类型
+    gate_question: 这个 `string` / `number` 字段装的是一个领域值吗(某种 id、某份源码的行号、封闭集合里的一个值)?仓里有对应的品牌类型或字面量联合吗?
+    description: |
+      ANTI-PATTERN:新类型的字段用裸 `string` / `number` 装领域值:`uid: string` 和 `problemId: string`
+      可以互换着传;`difficulty?: string` 装的其实是三选一;`lines: number[]` 不说是哪份源码的行号。
+
+      JUDGE:对每个 `string` / `number` 字段问它装的是什么。是领域值、而仓里有对应类型(品牌类型、字面量联合)= 判负;
+      仓里没有、但它会和别的同底层类型的值混淆 = 判负,写出该定义的类型。
+
+      EXEMPT:本来就是原样文本的(用户输入的原文、给人看的消息、外部进程的原始输出)。
+
+      FIX:换成领域类型,在入口解析一次。
+    why: |
+      来由见 `type_design.yaml` 同名规则。七层审查实例:`difficulty?: string`;`uid` 和 `problemId` 都是裸 string,拼成文档 id 时没有任何约束。
+    example_bad: |
+      interface Draft { uid: string; problemId: string; difficulty?: string }
+    example_good: |
+      interface Draft { owner: UserId; problem: ProblemId; difficulty: Difficulty }

@@ -1,0 +1,1298 @@
+name: LLM-Generated Code Smells
+description: |
+  Rules distilled from the fix_per_file / review_fix case studies
+  (see docs/code-clean-code-refactoring.md). These patterns recur in
+  code that an LLM wrote in one pass and nobody re-read. Each rule
+  marks a `transformer` field when there's an existing detector that
+  can mechanically flag it (and sometimes auto-fix); the Agent should
+  prefer the transformer path when present.
+
+rules:
+
+  - name: doc-comment-vs-code-mismatch
+    status: stable
+    description: |
+      The function's doc comment (Python docstring, JSDoc/TSDoc,
+      Javadoc, rustdoc `///`, godoc, KDoc, doxygen) describes a
+      behavior that the implementation does NOT actually exhibit.
+      E.g., the doc says "X is tolerated" but the code iterates
+      over X and raises on a hit. Two spec sources, one wrong.
+    severity: error
+    why: |
+      A spec/impl mismatch in the SAME function is the strongest
+      possible evidence of a bug. Either:
+        (a) The spec is wrong — someone changed the impl without
+            updating the docs.
+        (b) The impl is wrong — someone added defensive code that
+            overshoots the documented contract.
+      Both fail tests and reviewers alike. Reviewers reading the
+      docstring trust it; tests written against the docstring catch
+      the impl bug. The function isn't trustworthy until they agree.
+
+      This is also the canonical pattern for "FP refactor surfaces
+      bugs": pulling the rule logic into a pure function with
+      explicit data flow makes the discrepancy visible. While the
+      logic was tangled with side effects (registry lookup, raise,
+      log), readers' eyes glided over the contradiction.
+    transformer: null   # LLM-only — requires NLP on docstring vs code
+    gate_question: |
+      Read the doc comment. List each claim it makes about runtime
+      behavior (e.g. "X is tolerated", "Y always raises", "only A and
+      B are valid"). For EACH claim, find the corresponding code path
+      and check whether it actually does what the claim says.
+
+      For any mismatch: WHICH side is the truth?
+
+        (a) Spec correct, impl wrong → fix the impl. Add a test that
+            asserts the spec'd behavior, so the bug can't return.
+
+        (b) Impl correct, spec wrong → update the doc comment. The
+            tightened impl is presumably intentional; document it.
+
+      Default to (a) if uncertain — explicit doc-comment claims are
+      stronger signals of intent than tangled code.
+    fix_pattern: align_to_spec
+    example_bad: |
+      def _assert_no_self_grading(agent_name: str) -> None:
+          """Anti-incest...
+          Agent vs Audit overlap is tolerated (rare).
+          """
+          ...
+          # 1. Agent vs any Critic role — hard check.
+          if agent_type is not None:
+              for role in (*critic_roles, "audit"):   # ← bug: audit included
+                  cfg = _try_role(reg, role)
+                  if cfg is not None and cfg.type == agent_type:
+                      raise AntiIncestViolation(...)
+    example_good: |
+      def _assert_no_self_grading(agent_name: str) -> None:
+          """Anti-incest...
+          Agent vs Audit overlap is tolerated (rare).
+          """
+          ...
+          # 1. Agent vs any Critic role — hard check.
+          # Audit is intentionally excluded per the docstring claim.
+          if agent_type is not None:
+              for role in critic_roles:               # ← matches the spec
+                  cfg = _try_role(reg, role)
+                  if cfg is not None and cfg.type == agent_type:
+                      raise AntiIncestViolation(...)
+
+  - name: unnamed-record-as-nested-map
+    status: stable
+    description: |
+      A compound entity that deserves its OWN NAMED TYPE is instead
+      encoded as a doubly-nested untyped map, so its schema lives only
+      in the caller's head. The outer key + inner value are really the
+      fields of one record (a `FileBucket`, an `Aggregate`), yet the
+      code hands back `dict[K1, dict[K2, V]]` / `Map<K1, Map<K2, V>>` /
+      `map[K1]map[K2]V` / `HashMap<K1, HashMap<K2, V>>` / `Record<
+      string, Record<string, V>>` and every caller must iterate the
+      outer map AND unpack inner pairs to reach the value — double
+      index-by-position cognitive load, no field discoverable.
+
+      Boundary: this is the DOUBLY-NESTED special case a detector can
+      mechanically pin. A single untyped bag, a `Value`, or a wide
+      anonymous tuple crossing a module boundary is the general smell
+      `untyped-bag-across-boundary`; duck-typed dispatch over an
+      untyped map is `untyped-map-with-polymorphic-dispatch`.
+    severity: warning
+    why: |
+      Two layers of map for a single conceptual entity means that
+      entity doesn't have a name yet. Once it does (`FileBucket`,
+      `Aggregate`, `Group`), call sites become
+      `for bucket in buckets: ...bucket.file...bucket.issues...`
+      instead of `for file, contents in d.items(): ...`. The loop body
+      reads what the loop IS doing instead of decoding the shape, and
+      adding a field can't silently shift a positional access.
+    transformer: nested_dict_return
+    gate_question: |
+      Do callers EVER need the outer key WITHOUT the inner map,
+      or vice versa? If they always travel together (every call site
+      either iterates or zips them), the pair IS the record — extract
+      a named record type. If some callers genuinely use only outer
+      keys (e.g. just `list(d.keys())` for set-membership), keep the
+      map but document why.
+    fix_pattern: extract_record_type
+    example_bad: |
+      def group_by_file(
+          issues: dict[str, Issue],
+      ) -> dict[str, dict[str, Issue]]:
+          ...
+
+      # caller — double unpack:
+      for file, file_issues in groups.items():
+          for uid, issue in file_issues.items():
+              ...
+    example_good: |
+      @dataclass(frozen=True)
+      class FileBucket:
+          file: str
+          issues: dict[str, Issue]
+
+      def group_by_file(issues: dict[str, Issue]) -> list[FileBucket]:
+          ...
+
+      # caller — flat iteration, named fields:
+      for bucket in groups:
+          for uid, issue in bucket.issues.items():
+              ...
+
+  - name: untyped-map-with-polymorphic-dispatch
+    status: stable
+    description: |
+      A function is its OWN type discriminator: it accepts a bare
+      untyped bag (`dict`, `Map<_, Any>`, `Map<String, Object>`,
+      `map[string]any`, `Record<string, unknown>`, `serde_json::Value`)
+      and at each field access feature-detects the item — `hasattr` /
+      `instanceof` / type-assertion / `_, ok := x.(T)` — to handle both
+      a typed-ADT instance AND a raw map. The schema is missing, so the
+      dispatch is duck-typing and the default value (`"unknown"`,
+      `None`, `0`) silently buckets malformed data into the success
+      channel.
+
+      Boundary: the smell here is the runtime type-DISPATCH + silent
+      fallback, not merely the untyped type. A nested untyped map with
+      no dispatch is `unnamed-record-as-nested-map`; a plain untyped
+      bag returned across a boundary is `untyped-bag-across-boundary`.
+    severity: warning
+    why: |
+      A function that promises to operate on data should operate on
+      ONE typed shape. Polymorphic input forces the function to be
+      its own type discriminator at every field access. Silent
+      fallback values (`"unknown"`, `None`, `0`) hide upstream data
+      quality issues by absorbing them into the success channel.
+
+      Most occurrences are dead defensive code: the dict branch
+      never fires in production because all real callers already
+      pass the ADT. Investigation (grep callers + check the ADT's
+      required-field set) confirms or denies quickly.
+    transformer: polymorphic_dispatch
+    gate_question: |
+      BEFORE removing the polymorphism, search all callers of this
+      function. Does ANY caller actually pass a raw dict (not your
+      ADT instance)?
+
+      YES → the polymorphism is real. Extract a thin adapter at the
+            edge that converts dict → ADT; keep the core typed as
+            `dict[str, ADT]` only.
+
+      NO  → it's dead defensive code from copy-paste / YAGNI. Strip
+            the dispatch + the silent fallback. Tighten the input
+            type to your ADT.
+
+      If the dict path has NO tests, that's strong evidence for NO.
+    fix_pattern: schema_first_input
+    example_bad: |
+      def _group_by_file(issues: dict) -> dict[str, dict]:
+          """Bucket {issue_id: Issue|dict} by file path."""
+          by_file: dict[str, dict] = {}
+          for uid, item in issues.items():
+              # Accept both Issue and raw dict shape.
+              file = (item.file if hasattr(item, "file")
+                      else item.get("file", "unknown"))
+              by_file.setdefault(file, {})[uid] = item
+          return by_file
+    example_good: |
+      from app.core.blackboard import Issue
+
+      def _group_by_file(
+          issues: dict[str, Issue],
+      ) -> dict[str, dict[str, Issue]]:
+          """Bucket Issues by file path. Strict input — callers
+          convert raw dicts to Issue at the API boundary."""
+          by_file: dict[str, dict[str, Issue]] = {}
+          for uid, issue in issues.items():
+              by_file.setdefault(issue.file, {})[uid] = issue
+          return by_file
+
+  - name: swallow-exception-as-design-smell
+    status: stable
+    description: |
+      `except X: return <sentinel>` (or `catch`/`if err != nil`/`Err`
+      arm returning a bare value) where the returned `{}`, `None`,
+      `-1`, `(file, {})` cannot be distinguished by the caller from a
+      legitimate "no result". Indicates a missing Result/Outcome ADT —
+      the design lacks a way to express failure, so a CAUGHT failure
+      leaks into the success channel as an empty sentinel.
+
+      Boundary: this rule is specifically failure-from-a-caught-error
+      folded into an in-band value (missing Result/Outcome type). One
+      sentinel that means several DIFFERENT outcomes, exceptions or
+      not, is `ambiguous-return-sentinel`.
+    severity: warning
+    why: |
+      Most "ugly exception handling" cases are SHAPE problems (control
+      flow) with a SCHEMA root cause (no algebraic data type for
+      outcomes). Surface-level fixes — merging try blocks, consolidating
+      log calls, picking a less ambiguous sentinel — treat symptoms.
+      The root is the function returning an ambiguous union of "value
+      OR sentinel-meaning-failure" instead of `Success | Failure`.
+      Once a Result ADT exists, the surface smells disappear naturally.
+    transformer: swallow_exception
+    gate_question: |
+      Before applying the refactor: ASK the LLM (or human reviewer) —
+      "Is this sentinel `{returned_value}` in `{function_name}`
+       distinguishable from a legitimate 'no result' by callers?"
+
+      If callers CANNOT tell failure from emptiness → it IS a design
+      smell. Apply the railway_oriented_programming fix pattern.
+
+      If the sentinel IS the intentional contract (e.g., best-effort
+      cache cleanup that ignores all errors deliberately) → DO NOT
+      refactor. Add `# noqa: swallow-exception (intentional)` and
+      record in `.arc/whitelist.toml` so this rule stops firing on
+      this site.
+    fix_pattern: railway_oriented_programming
+    example_bad: |
+      def _fix_one_file(file: str, issues: dict) -> tuple[str, dict]:
+          try:
+              output = agent.run(prompt, repo)
+              replies = parse_agent_reply(output, ids)
+              return file, replies
+          except (AgentError, ParseError):
+              log.exception("fix_failed", file=file)
+              return file, {}   # ← failure indistinguishable from "no replies"
+    example_good: |
+      @dataclass(frozen=True)
+      class FixSuccess:
+          file: str
+          replies: dict[str, Reply]
+
+      @dataclass(frozen=True)
+      class FixFailure:
+          file: str
+          error_type: Literal["AgentError", "ParseError"]
+          reason: str
+          raw_excerpt: str | None
+
+      FixResult = FixSuccess | FixFailure
+
+      def run_one(ctx: FixContext) -> FixResult:
+          output: str | None = None
+          try:
+              prompt = _build_prompt(ctx)
+              output = _call_agent(prompt, ctx)   # ONLY IO step
+              replies = _parse_reply(output, set(ctx.issues))
+              return FixSuccess(file=ctx.file, replies=replies)
+          except (AgentError, ParseError) as e:
+              return FixFailure(
+                  file=ctx.file,
+                  error_type=type(e).__name__,
+                  reason=str(e),
+                  raw_excerpt=output[:300] if output else None,
+              )
+
+      # Caller dispatches via match:
+      match result:
+          case FixSuccess(file=f, replies=r):
+              apply(threads, r); report_success(f, r)
+          case FixFailure(file=f, error_type=t, reason=msg):
+              report_failure(f, t, msg)
+
+  - name: process-exit-in-library-function
+    status: stable
+    description: |
+      A process-termination call (`sys.exit()`, `os.Exit()`,
+      `System.exit()`, `process.exit()`, `std::process::exit()`,
+      `kotlin.system.exitProcess()`, bare `exit()`/`quit()`) inside
+      a function annotated with a return type. CLI termination is
+      a top-level concern; library functions should raise/return-Err
+      and let `main` / the CLI verb decide whether to exit.
+    severity: error
+    why: |
+      `process.exit` short-circuits caller error handling. A function
+      annotated `-> Foo` promises a return; calling exit breaks that
+      contract and prevents reuse in non-CLI contexts (tests, libraries,
+      future RPC handlers).
+    transformer: sys_exit_in_library  # detector flags; LLM fixes
+    example_bad: |
+      def fix_per_file(...) -> str | None:
+          if record is None:
+              print("[A.R.C.] No saved runs found.", file=sys.stderr)
+              sys.exit(1)
+    example_good: |
+      def fix_per_file(...) -> str | None:
+          if record is None:
+              raise RuntimeError("No saved runs found. Run `arc scan` first.")
+
+  - name: duplicate-error-handler-shell
+    # OPT-IN CODE-CONVENTION DEMO (off by default). Conventions are your own
+    # linters' job (ruff/eslint/clippy) — arc ships a few as before→after
+    # examples so you can write your own. Enable per-id via
+    # `[review] enable=[...]`. See docs/user-guide/code-conventions.md.
+    status: deprecated
+    description: |
+      Two or more try/catch (or `if err != nil` / `match Result`)
+      blocks in the same function with the same fallback (`return X`
+      / common log + return). Languages that support type-based
+      handler dispatch (Python `except T:`, Java/Kotlin multi-catch
+      `catch (A | B e)`, Rust `match err { A => ..., B => ... }`)
+      should use ONE try-block / ONE match with per-type arms sharing
+      the fallback once. Manual isinstance / type-assertion dispatch
+      inside a single broad catch is a JS-style anti-pattern in
+      languages with native typed dispatch.
+    severity: warning
+    why: |
+      Typed handler dispatch is the idiomatic way to react to different
+      error categories. Splitting into multiple try-blocks for the same
+      fallback duplicates the recovery logic; manual `isinstance` /
+      `instanceof` / type-assertion inside one broad catch obscures
+      the type-flow that the language could check for you.
+    transformer: duplicate_try_except
+    example_bad: |
+      try:
+          output = agent.run(...)
+      except AgentError as e:
+          log.warning("agent_failed", reason=str(e))
+          return file, {}
+      try:
+          replies = parse(output)
+      except ParseError as e:
+          log.warning("parse_failed", reason=str(e), raw=output[:300])
+          return file, {}
+      return file, replies
+    example_good: |
+      try:
+          output = agent.run(...)
+          replies = parse(output)
+      except AgentError as e:
+          log.warning("agent_failed", reason=str(e))
+          return file, {}
+      except ParseError as e:
+          log.warning("parse_failed", reason=str(e), raw=output[:300])
+          return file, {}
+      return file, replies
+
+  - name: log-event-name-proliferation
+    # OPT-IN CODE-CONVENTION DEMO (off by default). Conventions are your own
+    # linters' job (ruff/eslint/clippy) — arc ships a few as before→after
+    # examples so you can write your own. Enable per-id via
+    # `[review] enable=[...]`. See docs/user-guide/code-conventions.md.
+    status: deprecated
+    description: |
+      Multiple log calls in the same op emit distinct event names
+      (`op_step1_failed` / `op_step2_failed` / ...) that only differ
+      by which step they tag. The exception type already encodes
+      "which step failed"; use ONE event name and an `error_type`
+      structured field.
+    severity: info
+    why: |
+      Single semantic event + typed field >> N event names. Log
+      queries become consistent; new failure modes don't multiply
+      the event-name namespace; alert rules filter on a field
+      instead of needing OR of N strings.
+    transformer: null  # semantic; LLM
+    example_bad: |
+      except AgentError as e:
+          log.warning("fix_file_agent_failed", reason=str(e))
+      except ParseError as e:
+          log.warning("fix_file_parse_failed", reason=str(e),
+                      raw_excerpt=output[:300])
+    example_good: |
+      output = None
+      try:
+          output = agent.run(...)
+          replies = parse(output)
+      except (AgentError, ParseError) as e:
+          log.exception(
+              "fix_file_failed",
+              error_type=type(e).__name__,
+              raw_excerpt=output[:300] if output else None,
+          )
+
+  - name: log-string-vs-error-object
+    # OPT-IN CODE-CONVENTION DEMO (off by default). Conventions are your own
+    # linters' job (ruff/eslint/clippy) — arc ships a few as before→after
+    # examples so you can write your own. Enable per-id via
+    # `[review] enable=[...]`. See docs/user-guide/code-conventions.md.
+    status: deprecated
+    description: |
+      Inside an error handler, the log call stringifies the error
+      (`reason=str(e)`, `msg=e.toString()`, `"err: %s" % err`) instead
+      of passing the error object itself so the logger can attach the
+      stacktrace / cause-chain / typed metadata automatically. Every
+      mainstream logger has a dedicated path for "an exception handler
+      is reporting": `log.exception(...)` (Python `structlog`/stdlib,
+      auto `exc_info=True`), `logger.error(msg, throwable)` (SLF4J/
+      Logback Java), `slog.Error("msg", "err", err)` (Go slog),
+      `tracing::error!(error = %e, ...)` (Rust tracing).
+    severity: info
+    why: |
+      Stringifying the error in the log call loses the stacktrace and
+      duplicates info already on the error object. The logger-with-
+      error-object path is universal across languages; use it.
+    transformer: null
+    example_bad: |
+      except OSError as e:
+          log.warning("write_failed", path=path, reason=str(e))
+    example_good: |
+      except OSError:
+          log.exception("write_failed", path=path)
+
+  - name: obscure-import-or-alias
+    # OPT-IN CODE-CONVENTION DEMO (off by default). Conventions are your own
+    # linters' job (ruff/eslint/clippy) — arc ships a few as before→after
+    # examples so you can write your own. Enable per-id via
+    # `[review] enable=[...]`. See docs/user-guide/code-conventions.md.
+    status: deprecated
+    description: |
+      An import/use renames or shortens a symbol so the reader cannot
+      tell what it is at the call site: Python `from M import Name as
+      <short>`, TS/JS `import { Name as _C } from "m"`, Rust `use M::N
+      as X`, Go `import x "github.com/long/path"`. The short alias is
+      single-char, underscore-prefixed, or significantly shorter than
+      the original AND not a community convention (np / pd / plt /
+      cst etc.).
+    severity: info
+    why: |
+      Readers shouldn't need to jump back to the import block to know
+      what `_C` / `x.Foo` refers to. Use the original name unless the
+      alias is a real community-standard shorthand.
+    transformer: alias_obscurity
+    example_bad: |
+      from collections import Counter as _C
+      tag_summary = ", ".join(f"{n} {t}" for t, n in _C(tags).items())
+    example_good: |
+      from collections import Counter
+      tag_summary = ", ".join(f"{n} {t}" for t, n in Counter(tags).items())
+
+  - name: branch-redundancy-default-leak
+    # OPT-IN CODE-CONVENTION DEMO (off by default). Conventions are your own
+    # linters' job (ruff/eslint/clippy) — arc ships a few as before→after
+    # examples so you can write your own. Enable per-id via
+    # `[review] enable=[...]`. See docs/user-guide/code-conventions.md.
+    status: deprecated
+    description: |
+      An if/elif/else chain where ≥2 branches assign the same default
+      values. Refactor as a single default assignment + conditional
+      override of the non-default branches.
+    severity: warning
+    why: |
+      Repeating "the default" across branches is a smell — the chain
+      doesn't reveal that there IS a default, hiding the symmetry.
+      Lift the default; override only what changes.
+    transformer: branch_redundancy
+    example_bad: |
+      if post_fix_run_id:
+          post_record = storage.get_run(post_fix_run_id)
+          if post_record is not None:
+              final_threads = _deserialize(post_record.threads)
+              target_run = post_fix_run_id
+          else:
+              final_threads = threads
+              target_run = run_id
+      else:
+          final_threads = threads
+          target_run = run_id
+    example_good: |
+      final_threads, target_run = threads, run_id
+      if post_fix_run_id:
+          post_record = storage.get_run(post_fix_run_id)
+          if post_record is not None:
+              final_threads = _deserialize(post_record.threads)
+              target_run = post_fix_run_id
+
+  - name: flag-gated-side-channel-interleaving
+    status: stable
+    description: |
+      A function takes a Boolean parameter (e.g. `notify=True`) and
+      consults it at ≥3 sites in the body, each followed by a
+      side-effect call. Main logic and side channel are interleaved
+      at the same abstraction level. Extract a structured outcome
+      type + a dedicated dispatcher.
+    severity: warning
+    why: |
+      Reading the function alternates "what does this do" with "and
+      tell the user about it" branches. The two concerns live at
+      different abstraction levels and should be separated: the core
+      function produces an outcome; a separate dispatcher consumes
+      it. As a bonus, enumerating outcome kinds in the dispatcher
+      surfaces silent-drop paths that the flat code misses.
+    transformer: flag_gated_side_channel
+    example_bad: |
+      def review_fix(commit, ..., notify=True, auto_commit=False):
+          if not opens:
+              if notify: _notify("clean", ...)
+              return
+          if notify: _notify("starting", ...)
+          ...
+          if final_opens:
+              if notify: _notify("incomplete", ...)
+              return
+          if auto_commit:
+              if committed and notify: _notify("committed", ...)
+          elif notify: _notify("pending", ...)
+    example_good: |
+      @dataclass
+      class Outcome:
+          kind: Literal["clean", "incomplete", "committed", "pending"]
+          ...
+
+      def review_fix(commit, ..., notify=True, auto_commit=False) -> None:
+          outcome = _review_fix_core(commit, ..., auto_commit=auto_commit)
+          if notify:
+              _notify_outcome(outcome)
+
+      def _review_fix_core(...) -> Outcome:
+          # pure decision tree, returns Outcome, zero IO
+          ...
+
+      def _notify_outcome(o: Outcome) -> None:
+          match o.kind:
+              case "clean": _notify(...)
+              case ...
+
+  - name: assert-as-runtime-check
+    status: stable
+    description: |
+      An assertion mechanism that the runtime may strip is used as a
+      production invariant check (not in a test file / test function):
+      Python `assert` (stripped by `python -O`), Java `assert`
+      (disabled unless `-ea`), Rust `debug_assert!` (compiled out in
+      release), C/C++ `assert()` (compiled out under `-DNDEBUG`),
+      Kotlin `assert(...)` (off unless `-ea`). Use the always-on
+      counterpart instead: `if not <expr>: raise <Error>(...)`,
+      `if (!cond) throw new IllegalStateException(...)`,
+      `assert!` / `panic!` (Rust always-on), `if (!cond) abort()`.
+    severity: error
+    why: |
+      Strippable asserts are scaffolding for tests, not production
+      validators. The runtime mode that strips them is exactly the
+      one users run, so the check silently disappears in production.
+    transformer: assert_as_control_flow
+    example_bad: |
+      def review_fix(...):
+          record = storage.get_run(run_id)
+          assert record is not None
+          ...
+    example_good: |
+      def review_fix(...):
+          record = storage.get_run(run_id)
+          if record is None:
+              raise RuntimeError(f"run {run_id} not found")
+          ...
+
+  - name: ambiguous-return-sentinel
+    status: stable
+    description: |
+      ONE sentinel value (`{}`, `None`, `-1`, `(file, {})`) is returned
+      from >= 2 semantically DIFFERENT positions (e.g. "no result" vs
+      "error" vs "empty-but-ok"), so callers cannot tell the cases
+      apart and bugs hide in the gap. The value is overloaded to mean
+      several things at once.
+
+      Boundary: this is one sentinel carrying MULTIPLE meanings,
+      exceptions or not. Failure specifically swallowed from a caught
+      error into a success value is `swallow-exception-as-design-smell`;
+      both are cured by a tagged union / distinct sentinels.
+    severity: warning
+    why: |
+      `(file, {})` returned both for "agent failed" and "parser failed"
+      and "agent returned but parser said no replies" — three different
+      cases, one sentinel. Prefer raising or returning a tagged union.
+    transformer: null  # semantic, requires understanding caller usage
+    example_bad: |
+      def fix(f) -> tuple[str, dict]:
+          try:
+              out = agent.run()
+          except AgentError:
+              return f, {}    # failure
+          if not out:
+              return f, {}    # empty
+          return f, parse(out)
+    example_good: |
+      def fix(f) -> tuple[str, dict | None]:
+          try:
+              out = agent.run()
+          except AgentError as e:
+              log.exception("agent_failed", file=f)
+              return f, None  # explicit "failure" sentinel
+          if not out:
+              return f, {}    # empty result, distinct from failure
+          return f, parse(out)
+
+  - name: function-internal-dependency-without-reason
+    status: stable
+    description: |
+      A dependency is resolved inside a function body where no
+      documented reason (circular dependency, optional dependency,
+      lazy-init perf, plugin loading) applies — Python `import`
+      inside a function, JS/TS dynamic `import()` or `require()`
+      mid-flow, Java `Class.forName(...)` reflective load, Kotlin
+      lazy class load. Such resolutions should hoist to module/file
+      top so the dependency graph is statically visible. Doesn't
+      apply to languages where there is no such notion (Go imports
+      are file-scope only).
+    severity: info
+    why: |
+      Per-call resolution is cheap but cumulative. More important:
+      function-local dependency resolution hides the module's true
+      dependency set from readers and tools (import graph, IDE
+      "find usages", dead-code detection). Reserve for genuine cycle-
+      breaking / optional-dep and mark with a comment when used.
+    transformer: null
+    example_bad: |
+      def fix_per_file(repo_path):
+          from concurrent.futures import ThreadPoolExecutor, as_completed
+          ...
+    example_good: |
+      from concurrent.futures import ThreadPoolExecutor, as_completed
+
+      def fix_per_file(repo_path):
+          ...
+
+  - name: repeated-work-in-loop
+    status: stable
+    description: |
+      A loop body re-does work that is invariant across iterations or
+      that scales the loop into O(rows x payload): re-preparing/
+      re-compiling the same statement or regex, re-opening a
+      connection, issuing a per-row query against the same key
+      (classic N+1), or re-deserializing a large blob that several
+      iterations share. Language-agnostic — applies to any `for` /
+      `while` / iterator chain, not just SQL.
+    severity: warning
+    why: |
+      The cost is invisible at small N and catastrophic at large N —
+      exactly the input scale that never shows up in a unit test.
+      A `prepare()` / `regex.compile()` / `json.loads(big)` lifted one
+      scope out is a one-line change that turns O(n*k) into O(n+k).
+      The N+1 variant (a query per row instead of one query plus an
+      in-memory map) is the single most common silent perf cliff in
+      data-access code and the hardest to spot in review because each
+      individual line looks innocent.
+    transformer: null   # semantic — requires reasoning about invariance
+    gate_question: |
+      For each expensive call inside the loop (prepare / compile /
+      open / query / deserialize / large alloc / clone of a
+      non-mutated owned value): does its result depend on the loop
+      variable?
+
+      NO  → it is loop-invariant. Hoist it above the loop.
+      YES but keyed (e.g. `fetch(run_id)` where run_id repeats) →
+            it is an N+1. Hoist the prepared statement; memoize the
+            per-key result in a local map (cache the *parsed* value,
+            and cache the negative/None case too so corrupt input
+            isn't retried every hit).
+
+      Only leave it in the loop if the result genuinely changes every
+      iteration AND cannot be batched.
+    fix_pattern: hoist_invariant_and_memoize
+    example_bad: |
+      while let Some(row) = rows.next()? {
+          let run_id: String = row.get(0)?;
+          // N+1: a prepare + query + giant-JSON parse PER ROW,
+          // even though many rows share the same run_id.
+          let mut s = conn.prepare("SELECT threads_json FROM runs WHERE run_id=?")?;
+          let blob: String = s.query_row([&run_id], |r| r.get(0))?;
+          let threads: Value = serde_json::from_str(&blob)?;
+          ...
+      }
+    example_good: |
+      let mut run_stmt =
+          conn.prepare("SELECT threads_json FROM runs WHERE run_id=?")?;
+      let mut parsed: HashMap<String, Option<Value>> = HashMap::new();
+      while let Some(row) = rows.next()? {
+          let run_id: String = row.get(0)?;
+          let threads = parsed.entry(run_id.clone()).or_insert_with(|| {
+              run_stmt.query_row([&run_id], |r| r.get::<_, String>(0))
+                  .ok()
+                  .and_then(|s| serde_json::from_str(&s).ok())
+          });
+          let threads = match threads { Some(t) => t, None => continue };
+          ...
+      }
+
+  - name: untyped-bag-across-boundary
+    status: stable
+    description: |
+      A function/method/API returns (or accepts) an untyped bag across
+      a module boundary: `serde_json::Value` / `dict` / `Map<_, Any>`
+      / `JsonValue` / a TS index-signature bag (`Record<string, unknown>`,
+      `Record<string, any>`, `{ [k: string]: any }`, bare `object`), OR
+      an anonymous tuple of >= 2 fields, where the caller must "know"
+      which keys/positions exist. This is the GENERAL form of the
+      missing-named-record smell: a `Vec<Value>` assembled via
+      `json!({...})`, a `Vec<(String, String)>`, a `-> dict` — all the
+      same hazard in different languages.
+      EXEMPT: a genuinely dynamic map whose keys are NOT known at compile
+      time (an i18n string table, an HTTP header bag) documented as such —
+      there the untyped map is the right tool.
+
+      Boundary: the DOUBLY-NESTED map special case (detector-flagged)
+      is `unnamed-record-as-nested-map`; duck-typed dispatch over the
+      bag is `untyped-map-with-polymorphic-dispatch`. This rule owns
+      the plain single-level bag / wide tuple crossing a boundary.
+    severity: warning
+    why: |
+      An untyped return pushes the schema into every caller's head and
+      defers all field errors to runtime (a `Value` indexes panic; a
+      missing dict key KeyErrors). A named record (`struct`/`dataclass`
+      /`@dataclass`) makes the contract checkable, the fields
+      discoverable, and evolution safe — add a field and tuple/Value
+      call sites don't silently shift. A DAO/service that "returns
+      domain values" must not hand back a JSON blob it just hand-
+      assembled; that is the caller-assembles-the-dict habit leaking
+      through a typed language.
+    transformer: null   # overlaps detector nested_dict_return but is broader
+    gate_question: |
+      Does the returned value have >= 2 conceptual fields the caller
+      must reach into by key or position?
+
+      YES → name it. Define a record type next to the query/function
+            (`IgnoredIssueView { issue_id, file, line, snippet,
+            reason }`), return `Vec<That>` / `list[That]`. The
+            serialization to JSON/dict (if a wrapper still needs it)
+            belongs in that wrapper, not the core.
+      Single scalar / single column → `T` / `Option<T>` is fine.
+
+      A tuple is acceptable ONLY for a truly anonymous, never-
+      evolving pair (e.g. `(min, max)`); the moment a third field is
+      plausible, it is a record.
+    fix_pattern: extract_record_type
+    example_bad: |
+      pub fn ignored_issues(conn: &Connection, limit: i64)
+          -> Result<Vec<serde_json::Value>, DbError> {
+          ...
+          out.push(json!({ "issue_id": id, "file": f,
+                           "approx_line": ln, "reason": r }));
+          Ok(out)   // caller must guess these 4 keys, at runtime
+      }
+    example_good: |
+      pub struct IgnoredIssueView {
+          pub issue_id: String,
+          pub file: Option<String>,
+          pub approx_line: Option<i64>,
+          pub snippet: Option<String>,
+          pub reason: Option<String>,
+      }
+
+      pub fn ignored_issues(conn: &Connection, limit: i64)
+          -> Result<Vec<IgnoredIssueView>, DbError> { ... }
+
+  - name: layer-knows-its-consumer
+    status: stable
+    description: |
+      A module's code, comments, types, or errors point UP the
+      dependency graph — they reference WHO calls it or WHICH layer
+      wraps it, instead of only what THIS module is and the invariant
+      it holds. Includes: a core module commenting about the FFI / HTTP
+      / CLI boundary that wraps it ("so the PyO3 boundary can
+      rebuild..."), naming another layer's error type, or shaping its
+      own error solely to reconstruct a consumer's exception. Knowledge
+      is flowing the wrong way.
+
+      Boundary: this rule is about DIRECTION — a lower layer naming a
+      higher one. A comment that merely narrates HISTORY ("moved from
+      X", "port of the old Python", "formerly Y") is
+      `comment_hygiene::refactor-history-narration`, not this.
+    severity: info
+    why: |
+      A layer that names its consumer cannot be reused or reasoned
+      about in isolation, and its comments rot the instant the consumer
+      changes (delete the wrapper and the comment is nonsense).
+      Dependencies AND knowledge must point ONE way: down. Cross-layer
+      contracts are documented at the boundary that owns them, not
+      smeared into the core.
+    transformer: null   # semantic
+    gate_question: |
+      Delete, in your head, every layer that depends on this module
+      (the wrapper, the FFI shim, the caller). Re-read each comment /
+      type name / error mapping in this module.
+
+      Does any of it now read as nonsense or refer to something that
+      lives in a layer ABOVE this one? Each such spot is the smell:
+        - error→consumer mapping in the core  → move it to the
+          consumer's adapter; the core raises its own typed error.
+        - "so the <boundary> can ..." comment → delete; document the
+          contract in the boundary instead.
+        - a type/const named for who consumes it → rename it for what
+          it is here.
+    fix_pattern: invert_or_drop_upward_reference
+    example_bad: |
+      //! `record` rejects a verdict outside the CHECK set. That
+      //! failure is classified to DbError::Constraint so the PyO3
+      //! boundary can rebuild the identical sqlite3.IntegrityError —
+      //! the verdict-CHECK -> IntegrityError contract is byte-stable.
+      //! ^ the core is shaping its error to serve a layer above it.
+    example_good: |
+      //! `record` upserts one verdict per (run_id, issue_id). A
+      //! `verdict` value outside the table's CHECK set is rejected by
+      //! the store and surfaces as `DbError::Constraint`; any other
+      //! write failure stays `DbError::Sqlite`.
+
+  - name: reinvented-wheel
+    status: stable
+    description: |
+      A hand-rolled implementation of functionality that the standard
+      library, a maintained crate already in (or trivially added to)
+      the dependency tree, or an existing helper ELSEWHERE in this repo
+      already provides. Two shapes:
+        (a) Buy-vs-build: hand-rolling UUIDs, hashing, number/date
+            formatting, hex/base64, retry/backoff/circuit-breaking,
+            string distance, glob/ignore matching, JSON-pointer/$ref
+            resolution, temp-file naming — when a well-known crate or
+            std fn does it correctly and audited.
+        (b) DRY: a SECOND copy of logic the repo already has (the same
+            formatter, parser, or mapping written twice in two modules).
+      An LLM writing one file in isolation neither knows the ecosystem
+      nor sees the existing helper, so it re-derives both.
+    severity: warning
+    why: |
+      "Use the library unless there is a good reason not to" is a core
+      review standard, and DRY is its in-repo twin. A hand-rolled wheel
+      is unaudited (the std/crate version has fuzzing, edge cases, years
+      of bug reports behind it) and a duplicate is a divergence trap:
+      when one copy is fixed the other silently rots. Real example from
+      this repo — thousands-separator formatting existed TWICE
+      (`bench::comma` and `display::thousands`); the copies diverged and
+      one still used `n.abs()`, which panics on `i64::MIN`, while the
+      other had been fixed to `unsigned_abs`. The fix landed in one copy
+      only. One canonical implementation, called from both sites, makes
+      that class of bug impossible.
+
+      Good reasons to hand-roll DO exist and must be stated in a comment:
+      a measured hot-path that the crate can't match; deliberately
+      DIFFERENT semantics (e.g. XOR *obfuscation*, explicitly not
+      encryption — using a crypto crate would be the wrong tool); or a
+      genuinely dependency-constrained context. Absent a stated reason,
+      prefer the wheel that already exists.
+    transformer: null   # judgment — needs ecosystem + whole-repo knowledge
+    gate_question: |
+      For the implementation under review, ask:
+        1. Does std, or a maintained crate already in the dep tree (or
+           one trivially added), do exactly this? (uuid, sha2, hex,
+           base64, num-format, strsim, tempfile, …)
+        2. Does a helper ELSEWHERE in this repo already do this? (grep
+           the obvious name + a synonym.)
+      If YES to either: is there a comment stating a concrete good
+      reason to hand-roll anyway (measured perf, intentionally different
+      semantics, dependency constraint)?
+        - No good reason → replace with the library / shared helper;
+          if it's an in-repo duplicate, extract ONE canonical version
+          and call it from every site.
+        - Stated good reason → ESSENTIAL; leave it, the comment is the
+          contract.
+      A trivial, correct, single-use snippet (a few lines, no crate
+      would meaningfully beat it) is NOT this smell — don't pull a
+      dependency to delete five obvious lines.
+    fix_pattern: use_library_or_shared_helper
+    example_bad: |
+      // bench.rs
+      fn comma(n: i64) -> String { /* thousands grouping, unsigned_abs */ }
+      // display.rs — the SAME thing, written again, with an i64::MIN panic
+      fn thousands(n: i64) -> String { let s = n.abs().to_string(); /* … */ }
+
+      // arc_db — hand-rolled UUID v4 when the `uuid` crate is in the tree
+      fn uuid_v4_string() -> String { /* fill 16 bytes, set version nibble… */ }
+    example_good: |
+      // ONE canonical formatter in the lowest crate that needs it…
+      pub fn thousands(n: i64) -> String { let s = n.unsigned_abs().to_string(); /* … */ }
+      // …called from every site:
+      use arc_core::display::thousands;
+
+      // Hand-roll WITH a stated good reason → essential, not a smell:
+      // XOR is obfuscation, not encryption (a crypto crate is the wrong
+      // tool here); the goal is only to defeat `strings`, see secret.rs.
+
+  - name: magic-literal
+    status: stable
+    description: |
+      A bare literal (a number, but equally a string / duration / size)
+      sits in LOGIC encoding a policy, threshold, limit, capacity,
+      timeout,
+      or tuning value whose MEANING is not self-evident and that has no
+      named constant. The reader can't tell what it represents, what
+      unit it's in, or why it's that value — and a maintainer who needs
+      to change it must find every copy by grep. An LLM writing one pass
+      reaches for the value inline (`take(6)`, `timeout = 300`,
+      `if score > 0.7`, `buf = 4096`) instead of `const X = …` with a
+      one-line rationale.
+      Two shapes, the second the stronger signal:
+        (a) ONE non-obvious literal in logic — its meaning/unit isn't
+            clear from the surrounding code, OR a comment would be
+            needed to explain the bare value (if you'd write that
+            comment, write a named const instead).
+        (b) The SAME literal repeated at 2+ sites that must stay in
+            lock-step — they should reference one const; divergence
+            when one is changed is a latent bug.
+    severity: warning
+    why: |
+      A named constant does three things a bare literal can't: it states
+      the value's MEANING (`MAX_AGENT_ATTEMPTS` vs `3`), pins its UNIT
+      (`TIMEOUT_SECS` vs `300` — seconds? ms?), and gives every dependent
+      site ONE place to change. A repeated magic value is the same
+      divergence trap as a duplicated wheel: fix one, miss the other.
+      Real example from this repo — the reinvention judge listed
+      `take(6)` member locations with no reason for "6"; the numbers that
+      actually moved the verdict were the copy COUNT and the file SPREAD,
+      so the 6 was both unexplained AND capping the wrong thing. Naming
+      it would have forced the question "6 of what, and why?" — which was
+      exactly the bug.
+    transformer: null   # judgment — "is this value's meaning obvious?" is contextual
+    gate_question: |
+      TRIAGE FIRST — most literals are fine; only flag genuinely opaque
+      policy values. A literal is NOT this smell (do NOT flag) when:
+        - it is 0, 1, -1, or 2 in the obvious arithmetic / identity /
+          halving / pairing sense;
+        - it is a self-evident local index / loop bound / small offset
+          whose meaning is clear from one line of context;
+        - it is a format precision / field width / a well-known port or
+          HTTP status read at face value;
+        - it lives in test code / a fixture (test values are data);
+        - its meaning is already obvious from the adjacent name or code
+          (`.chars().take(8)` next to a `// short id`).
+      FLAG when, after that triage, the literal still encodes a
+      non-obvious threshold / limit / capacity / timeout / tuning value
+      in production logic — ESPECIALLY when the same value recurs at 2+
+      sites that must agree. The fix: a named `const` (or config field)
+      at the right scope with a one-line rationale; route every site
+      through it. Don't over-correct — naming `2` in `x / 2` adds noise,
+      not clarity.
+    example_bad: |
+      // Magic — unit and meaning opaque, no named home:
+      tokio::time::sleep(Duration::from_secs(300)).await;   // 300 what? why?
+      if confidence > 0.7 { accept() }                      // 0.7 = ?
+    example_good: |
+      /// Per-call wall-clock cap; big paginated files legitimately run long.
+      const LLM_TIMEOUT: Duration = Duration::from_secs(300);
+      /// Below this the critic's verdict isn't trusted (calibrated on the dogfood set).
+      const ACCEPT_THRESHOLD: f64 = 0.7;
+      // NOT this smell — 1 is the obvious "skip the header" offset:
+      for line in src.lines().skip(1) { /* … */ }
+
+  # NOTE: the former `changelog-narrative-in-comment` rule was DELETED as a
+  #   clean duplicate of `comment_hygiene::refactor-history-narration` (both
+  #   experimental, both catch history/temporal narration in comments). The
+  #   canonical now folds in this rule's strongest signal — a comment naming
+  #   an identifier/module/path that resolves NOWHERE in the tree is a
+  #   provably-stale dead reference, flag with high confidence — plus the
+  #   published-changelog-doc EXEMPT. `comment_hygiene` routes to
+  #   rust/python/typescript/go/java (this rule's real-world targets); the
+  #   c/cpp long tail is the only nominal loss and both are experimental.
+
+  # ── LEAST POWER — use the weakest construct that solves the problem ──
+  - name: least-power
+    status: experimental
+    severity: warning
+    description: |
+      ANTI-PATTERN: a task is solved with a construct MORE POWERFUL than it
+      needs — a cannon aimed at a fly. The WRITTEN complexity dwarfs the
+      ESSENTIAL complexity of what the code actually does, so every reader (and
+      every future LLM edit) pays to understand machinery the problem never
+      required. Given a choice, the LEAST powerful construct that does the job
+      wins: it is the easiest to read, test, and change, and it cannot do the
+      surprising things a powerful one can.
+      Instantiated by (examples, NOT the definition — the definition is "more
+      power than the task needs"):
+        • a trivial operation written as a pile — a `seq + 1`, a bool flip, or a
+          two-line compare spelled as a multi-branch state machine;
+        • an existing primitive / stdlib call / helper reimplemented by hand;
+        • a heavy execution container (async runtime, `block_on`, spawned thread,
+          held lock, DB transaction) hosting a computation that needs none of its
+          power — e.g. a pure `==` inside `rt.block_on(async { … })`;
+        • reflection / dynamic dispatch / a macro where a direct call works;
+        • a mutable `var` / a global where an immutable value would do.
+      JUDGE by asking: what does this code actually DO? Could the SAME result be
+      written with a weaker, simpler, or already-existing construct? If a
+      materially simpler form does exactly the same job, flag it and name both
+      the powerful construct used and the weaker one that suffices.
+    why: |
+      Power costs predictability and attention: the most flexible construct is
+      the hardest to analyse, a restricted one the easiest to inspect and change.
+      Reaching for more power than the task needs is the signature of one-pass
+      generated code nobody re-read down to "wait — this is just `n + 1`". A
+      human re-reading writes the weak form; the model writes the pile.
+    example_bad: |
+      // a pure hash-compare hosted inside an async runtime it does not need
+      let (kept, skipped) = rt.block_on(async {
+          for u in items {
+              let stored = hash_of(db, &u.path).await?;
+              if stored.as_deref() == Some(hash(&u.content).as_str()) { skipped.push(u) }
+              else { kept.push(u) }
+          }
+          (kept, skipped)
+      });
+    example_good: |
+      // same job, the weakest construct that does it: a plain sync read + compare
+      for u in items {
+          let stored = hash_of_sync(db, &u.path);
+          if stored.as_deref() == Some(hash(&u.content).as_str()) { skipped.push(u) }
+          else { kept.push(u) }
+      }
+
+  # tag: the LLM's favourite move — patch beside the trunk, never subtract.
+  #   GENERAL "too many ifs = patch residue" smell, LLM-judged, no detector /
+  #   no run. The TYPE-dispatch pile cross-refs refactor::replace-conditional-
+  #   with-polymorphism; the mutable form cross-refs l5_architecture::l5-J.
+  - name: conditional-accretion
+    status: experimental
+    severity: warning
+    transformer: null   # LLM-judged; "is this a patch pile" is a semantic call, no run
+    description: |
+      ANTI-PATTERN (patch-on-patch instead of subtraction): a function has grown a
+      PILE of conditionals / handlers — successive `if` / early-`return` / `retain`
+      / `continue`, a STACK of `try`/`catch`/`except`/`rescue` each wrapping one
+      more error case, a `let mut flag = false|None|[]` completed later in a
+      branch, or a stack of TYPE / CASE dispatch (`if isinstance`, `match kind`,
+      `if t == TypeA … elif TypeB`) — each bolted on for one more requirement,
+      preserving
+      the original trunk and adding BESIDE it rather than re-expressing the whole.
+      The result is an imperative TIMELINE: to know the final state the reader must
+      run the function step by step in their head. This is the LLM's favourite
+      move — the safest way to "compile without breaking the trunk" is to add a
+      branch, never subtract.
+      Two tells:
+        • PROLIFERATION — many small guards / type-cases / exception handlers
+          piling on one flow or one mutable, that one declarative predicate, one
+          dispatch, or one structured error path would state once.
+        • BOLTED-ON (later-written) — a branch that sits AFTER the main computation
+          and guards / fixes / special-cases its result (a post-hoc `if
+          x.is_empty()` fallback, a late `retain`, a `// also handle …`) instead
+          of being part of the primary dataflow.
+      The SNAPSHOT surfaces it — a cheap, recall-first first pass. But patch code
+      is LATER-WRITTEN by definition, so the confirmation is git BLAME: AT
+      RE-REVIEW run `git blame` on the pile — if the guards / flags were each added
+      in a SEPARATE, LATER commit than the trunk they wrap (accretion across
+      commits, never a subtraction), it is confirmed patch code, not a designed
+      multi-condition. Snapshot = the cheap filter; blame = the precision.
+      Remedy is SUBTRACTION, not another branch: collapse the accreted conditions
+      into ONE declarative form — a single `.filter(|x| a && b && c)`, a bound
+      `let x = match … { … }`, or for TYPE dispatch, polymorphism
+      (`refactor::replace-conditional-with-polymorphism`) — so the rule is stated
+      in one place, not completed across the body.
+    why: |
+      Each patch is locally correct and globally a knot: the conditions no longer
+      read as one decision, the mutable's final value lives nowhere in particular,
+      and the next change adds yet another `if` instead of seeing the pattern. A
+      declarative form (or a polymorphic dispatch) states the whole rule at once,
+      testable as a pure expression.
+    gate_question: |
+      Are these branches GENUINELY independent decisions, or successive patches
+      accreted onto one flow / one mutable / one type-switch that a declarative
+      predicate, a single `match`, or polymorphism would state once? Look for the
+      BOLTED-ON shape too — a guard appended after the main flow to fix its result.
+      Confirm at RE-REVIEW with `git blame`: guards added in later commits than the
+      trunk they wrap = patch code. Either → flag it; the fix is to SUBTRACT into
+      one expression, not add another branch.
+    example_bad: |
+      let mut units = g.review_units(HOPS)?;
+      if files_selected { units.retain(|u| selected.contains(u.file())); }  // patch 1
+      if !include_tests { units.retain(|u| !is_test(u.file())); }           // patch 2
+      let mut changed: Option<_> = None;
+      if diff_only { changed = Some(diff_lines(u)); }                       // patch 3 (deferred mut)
+    example_good: |
+      let units: Vec<_> = g.review_units(HOPS)?.into_iter()
+          .filter(|u| (!files_selected || selected.contains(u.file()))
+                   && (include_tests   || !is_test(u.file())))
+          .collect();
+      let changed = diff_only.then(|| diff_lines(u));   // stated once, no mut
+
+  # tag: readability = correctness insurance. The GENERAL form of
+  #   flag-gated-side-channel-interleaving (whose own `why` says the two concerns
+  #   "live at different abstraction levels and should be separated"). Distinct
+  #   from l5-M (SRP, two verbs) and core-buried-outward (pure logic vs IO): this
+  #   fires on ONE responsibility doing legit work, whose body just mixes levels.
+  - name: mixed-abstraction-levels
+    status: experimental
+    severity: warning
+    transformer: null   # LLM-judged; "does the altitude jump between statements" is semantic
+    description: |
+      A function mixes MORE THAN ONE level of abstraction in its body, so the
+      reader is dragged up and down the stack line by line. A HIGH-LEVEL function
+      — one whose job is to SEQUENCE a flow (gather → decide → execute → report) —
+      inlines LOW-LEVEL implementation detail between its steps: async-runtime
+      bridging (`rt.block_on(...)`), a multi-line `tracing::info!(…)` block, output
+      string-formatting (`format!("{n} of {m} …")` for the console), ad-hoc IO,
+      byte/offset fiddling. Each switch flushes the reader's working memory: hold
+      the flow → wade through Tokio / logging / formatting → find the flow again.
+      Single Level of Abstraction (SLAP): every statement in a function should sit
+      at ONE level; push each low-level chunk DOWN into a named helper (`record_run`,
+      `render_summary`) so the top reads like a table of contents — the steps of
+      the flow, nothing else. `evidence` = the high-level steps + the low-level
+      noise interleaved between them.
+    why: |
+      Readability is not cosmetic — it is correctness insurance. A reader (human OR
+      an LLM edit) following a flow should see the flow, not the runtime bridge and
+      the console formatting; every abstraction-level switch is a context switch
+      that dilutes attention and drops the thread, and dropped-thread edits are
+      where bugs and hallucinations come from. Naming the plumbing lets the top be
+      skimmed as intent and each detail be changed in isolation.
+    gate_question: |
+      Read the function top to bottom. Does the abstraction level JUMP between
+      adjacent statements — a high-level step (`build_corpus`, `plan(...)`), then a
+      low-level chunk (`block_on`, a `tracing::info!` block, a `format!` for the
+      console, raw IO), then back up? If following the flow means repeatedly
+      re-orienting across levels → push each low-level chunk into a named helper so
+      the body sits at one level. A function that is ALL low-level, or all
+      high-level, is fine — the defect is the MIX in one body.
+    example_bad: |
+      pub fn run(repo, target, expert, reporter) -> Result<Report> {
+          let ctx = WorkflowContext::open(repo)?;                       // HIGH: a step
+          shared_runtime()?.block_on(ctx.record_run(rev, "review"))?;   // low: runtime bridge
+          tracing::info!(run_id=%…, db=%…, "review run … per file");    // low: logging (≈6 lines)
+          let corpus = build_corpus(&ctx, &target, &expert)?;           // HIGH: a step
+          let (crashed, last) = run_review(&ctx, &corpus, …)?;          // HIGH: a step
+          if crashed > 0 {                                              // low: presentation
+              let detail = last.map(|e| e.to_string()).unwrap_or_else(|| …);
+              reporter.emit(&Message { text: &format!("{crashed} of {n} failed — {detail} …") });
+          }
+          Ok(report)
+      }
+    example_good: |
+      pub fn run(repo, target, expert, reporter) -> Result<Report> {
+          let ctx     = WorkflowContext::open(repo)?;          // every line is one step,
+          let corpus  = build_corpus(&ctx, &target, &expert)?; // one altitude — read it
+          let plan    = plan_review(&ctx, corpus)?;            // like a table of contents
+          let outcome = execute_review(&ctx, plan)?;
+          report_review(&reporter, &ctx, outcome)              // owns logging + format!
+      }
+      // record_run / block_on / tracing / format! all live INSIDE the named steps,
+      // one level down — reachable when you want them, invisible when you don't.
+
+  # tag: function-body readability (TotT "isBooleanTooLongAndComplex",
+  #   2026-06-25 gap list; Effective Python "helper functions instead of
+  #   complex expressions"). Language-neutral; countable from the AST.
+  - name: complex-boolean-expr
+    status: experimental
+    severity: warning
+    transformer: null   # countable (leaf conditions per expression) but no detector yet
+    description: |
+      ANTI-PATTERN: one boolean expression carries more conditions than a
+      reader can evaluate in their head — more than four leaf conditions —
+      with no intermediate name saying what any group of them MEANS. `&&`
+      and `||` (`and` / `or`) mixed across nesting levels make it worse,
+      but four or fewer leaves stay readable even when mixed. To know when
+      the branch is taken the reader has to build a truth table:
+        if ((!pepperoni.empty() || sausages.size() > 0)
+            && (useOnion || hasMushroom(ENOKI, PORTOBELLO)) && hasCheese())
+      FLAG such an expression (in an `if`, a `while`, a `return`, a `filter`
+      predicate, an assignment) and quote it. FIX: give each group of
+      conditions that expresses ONE quality its own named boolean or
+      predicate function (`hasGoodMeat`, `hasGoodVeggies`), so the final
+      expression combines a few names with one operator; or move the logic
+      into a function with guard clauses. A run of equality tests on one
+      value (`a == 1 || a == 2 || a == 3 || ...`) is better written as a set
+      membership. EXEMPT: generated code, and a query or rule builder whose
+      chained conditions ARE the data. Boundary: `conditional-accretion` owns
+      a PILE of separate branches bolted on one at a time — five short
+      successive `if ...: return` guards each with one condition are that
+      rule's alone; a single designed condition of six leaves mixing `&&`
+      and `||` is this rule's alone. When `conditional-accretion`'s fix
+      collapses branches into one predicate, this rule asks that the
+      predicate's parts be named, not split back into branches.
+      `mixed-abstraction-levels` owns statements at different altitudes, not
+      the size of one expression.
+    why: |
+      A reader holds three or four conditions at once; past that they reach
+      for pen and paper or a debugger. A named intermediate states the intent
+      the conditions implement, so a wrong condition shows up as a name that
+      does not match its definition, and each named part can be tested alone.
+    example_bad: |
+      if user.active and not user.banned and (user.plan == "pro" or user.trial_days > 0) and region in ALLOWED and not maintenance:
+          serve(user)
+    example_good: |
+      has_paid_access = user.plan == "pro" or user.trial_days > 0
+      in_good_standing = user.active and not user.banned
+      service_open = region in ALLOWED and not maintenance
+      if in_good_standing and has_paid_access and service_open:
+          serve(user)
+
+  # tag: function-body clarity + a race on shared maps (TotT "One Map Key,
+  #   One Lookup", 2026-06-25 gap list; Effective Python "prefer get over in").
+  - name: redundant-map-lookup
+    status: experimental
+    severity: info
+    transformer: null   # deterministic shape (same map + same key, check then fetch) but no detector yet
+    description: |
+      ANTI-PATTERN: the code looks up the same key in the same map twice in
+      a row — once to ask whether it is there, once to fetch or update it —
+      with no write to the map in between, where one lookup that returns
+      "the value or absence" does both:
+        - Python `if k in m: use(m[k])`; `if k not in counts: counts[k] = 0`
+          followed by `counts[k] += 1`
+        - Java `if (m.containsKey(k)) use(m.get(k))`; containsKey + put to
+          initialise
+        - JS/TS `if (m.has(k)) use(m.get(k)!)`
+        - C++ `if (m.count(k)) use(m[k])` / `m.find(k) != m.end()` then
+          `m.at(k)`
+        - Rust `if m.contains_key(&k) { m[&k] }` / `.get(&k).unwrap()`
+      Each extra lookup pays the hash or tree walk again, and the second
+      access usually re-asserts presence with an unchecked index or `!` /
+      `unwrap()` that a later edit can break. FLAG the pair and quote both
+      lookups. FIX: one lookup that yields an optional (`m.get(k)` +
+      walrus / `if let Some(v)` / `v, ok := m[k]` / `find` kept in a
+      variable), or the container's own insert-or-update (`defaultdict`,
+      `Counter`, `setdefault`, `computeIfAbsent` / `merge`, Rust `entry()`,
+      C++ `operator[]` / `try_emplace`). EXEMPT: a Java map that may hold
+      `null` values, where `get` alone cannot tell absent from null; code
+      between the two lookups that may write the map. Boundary:
+      `repeated-work-in-loop` owns work repeated ACROSS iterations (a regex
+      recompiled each pass) — `if k in m: v = m[k]` outside any loop is this
+      rule's alone. When the map is shared across threads, the gap between
+      check and fetch is a race (check-then-act), which is a concurrency
+      defect and more severe than this one; report the race instead.
+    why: |
+      Two lookups state one question twice and leave a gap between them; one
+      lookup returning an optional states it once, removes the unchecked
+      second access, and is what every map API already offers.
+    example_bad: |
+      if employee_id in employees:
+          mail_to(employees[employee_id].email_address)
+    example_good: |
+      if (employee := employees.get(employee_id)) is not None:
+          mail_to(employee.email_address)
+
+  # tag: function-body clarity (TotT "Else Nuances" + "Reduce Nesting",
+  #   2026-06-25 gap list; Effective Go "omit else after return").
+  - name: else-after-early-return
+    status: experimental
+    severity: info
+    transformer: null   # shape is deterministic (if-arm always exits, else follows); "special case vs core" is judged
+    description: |
+      ANTI-PATTERN: an `if` branch that always leaves the function (`return`,
+      `raise` / `throw`, `continue` / `break` in a loop, `panic`) handles a
+      SPECIAL case — an invalid argument, an empty input, a cache hit — and
+      the function's main body then sits inside the `else`, one level deeper
+      than it needs to be:
+        if not path:
+            raise ValueError("path is empty")
+        else:
+            ...   # the real work, nested
+      The `else` adds nothing the early exit did not already guarantee, and
+      every such guard pushes the main path further right. FLAG an `else`
+      (or `elif` chain) following an exiting branch when the exiting branch
+      is a guard for a special case and the `else` holds the function's
+      main work. FIX: drop the `else` and dedent — the guard clause stands
+      alone at the top, the main path runs straight down. EXEMPT: an
+      `if / elif / else` whose branches are COMPLEMENTARY outcomes of the
+      core decision (`if signed_out: return Icon.SIGNED_OUT elif incognito:
+      return Icon.INCOGNITO else: return Icon.HAS_ITEMS`) — there the
+      `else` says the cases belong together, which is the point; a `match`
+      / `switch` would be better still. EXEMPT expression-oriented
+      languages where `if c { a } else { b }` is the value of the function
+      with no `return` in the arm (Rust, Kotlin, Scala tail expressions) —
+      that is one expression, not a guard. Boundary:
+      `conditional-accretion` owns a pile of guards bolted on one after
+      another; a single guard whose `else` wraps the body is this rule's
+      alone, and six successive `if ...: return` guards with no `else` are
+      that rule's alone.
+    why: |
+      A guard clause tells the reader "this case is done, forget it"; an
+      `else` after it says "keep holding the condition in mind", for nothing.
+      Keeping special cases at the top and the main path at the left margin
+      is what lets a function be read top to bottom.
+    example_bad: |
+      def parse_path(path: str) -> Path:
+          if not path:
+              raise ValueError("path is empty")
+          else:
+              parts = path.split("/")
+              return Path(*parts)
+    example_good: |
+      def parse_path(path: str) -> Path:
+          if not path:
+              raise ValueError("path is empty")
+          parts = path.split("/")
+          return Path(*parts)

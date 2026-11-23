@@ -1,0 +1,335 @@
+name: Embedded SQL
+description: >
+  Rules for SQL that a program carries: query and DDL text in string
+  literals of the host language (`conn.execute("SELECT …")`, `sqlx::query!`,
+  a `const SCHEMA: &str = "CREATE TABLE …"`, a JDBC `prepareStatement`), and
+  `.sql` migration files. Each rule names a statement that the engine
+  accepts and runs, but whose answer differs from what the surrounding code
+  expects: rows silently missing, a count off by one per group, a value
+  picked from an arbitrary row, a schema that lets bad rows in.
+
+  Judge ONLY SQL text. On a file with no SQL string and no DDL every rule
+  below is inapplicable — report nothing from this rubric. Read the whole
+  statement before judging; a query assembled from fragments is judged on the
+  text it assembles. When a rule depends on a column's nullability or a
+  table's keys, look for the table's DDL or migrations in the same
+  repository before concluding. SQL built from untrusted input is
+  `security_common::no-sql-injection`, not this rubric.
+
+# No `language:` key: SQL lives inside every host language arc reviews, so this
+# rubric loads for all of them and each rule scopes itself to SQL text.
+# `.sql` files are not in `source_filter::SOURCE_EXTENSIONS`, so today a
+# migration file reaches these rules only when its SQL is inside a host-language
+# source file.
+
+rules:
+  - name: sql-null-compared-with-equality
+    status: experimental
+    why: "Any comparison with NULL is unknown, never true, so the filter drops every row the author meant to keep."
+    description: |
+      ANTI-PATTERN: a predicate tests for absence with an ordinary comparison
+      operator. In SQL, `x = NULL`, `x <> NULL`, `x != NULL` evaluate to
+      UNKNOWN for every row, and WHERE / ON / HAVING keep only TRUE rows, so
+      the query returns nothing (or, negated, everything is still dropped).
+      The same three-valued logic breaks `x NOT IN (SELECT col …)` when `col`
+      can be NULL: one NULL in the subquery makes every NOT IN unknown and the
+      anti-join returns the empty set.
+
+      Instantiated by (examples, not the definition):
+        • `WHERE deleted_at = NULL`
+        • `UPDATE jobs SET … WHERE owner <> NULL`
+        • `WHERE id NOT IN (SELECT parent_id FROM nodes)` with `parent_id`
+          nullable in the DDL
+        • a placeholder bound to a host `None` / `null` in `col = ?`, where
+          the code path is the one meant to find the missing rows
+
+      JUDGE: does a predicate compare a column with a NULL literal or a value
+      the host code can set to NULL, using `=`, `<>`, `!=`, `IN` or `NOT IN`?
+      For NOT IN, is the subquery's column nullable (no NOT NULL, not a
+      primary key) per the repository's DDL?
+      EXEMPT: `IS NULL`, `IS NOT NULL`, `IS [NOT] DISTINCT FROM`, `<=>`
+      (MySQL), `NOT EXISTS`, and NOT IN over a NOT NULL column or a literal
+      list without NULL.
+      BOUNDARY: dereferencing a nullable in host code is
+      `fp_lens::null-in-chain-no-maybe`; this rule is about SQL's own
+      three-valued comparison.
+      FIX: `IS NULL` / `IS NOT NULL`; `NOT EXISTS (SELECT 1 … WHERE …)` for
+      the anti-join; for a host value that may be absent, branch to the
+      `IS NULL` form or use `IS NOT DISTINCT FROM ?`.
+    severity: error
+    gate_question: |
+      Does any predicate compare with NULL (literal, or a bound value the code
+      can make NULL) through `=` / `<>` / `!=` / `IN`, or use NOT IN over a
+      subquery column the DDL allows to be NULL?
+
+      Yes → the predicate is never true for those rows: flag it.
+      No → not this rule.
+    example_bad: |
+      rows = conn.execute(
+          "SELECT id FROM orders WHERE shipped_at = NULL"   # always empty
+      ).fetchall()
+      orphans = conn.execute(
+          "SELECT id FROM users WHERE id NOT IN (SELECT referrer_id FROM users)"
+      ).fetchall()   # referrer_id is nullable: always empty
+    example_good: |
+      rows = conn.execute(
+          "SELECT id FROM orders WHERE shipped_at IS NULL"
+      ).fetchall()
+      orphans = conn.execute(
+          "SELECT u.id FROM users u WHERE NOT EXISTS "
+          "(SELECT 1 FROM users r WHERE r.referrer_id = u.id)"
+      ).fetchall()
+
+  - name: sql-outer-join-filtered-to-inner
+    status: experimental
+    why: "A WHERE condition on the optional side of a LEFT JOIN rejects the unmatched rows, so the outer join silently becomes an inner join."
+    description: |
+      ANTI-PATTERN: a query uses `LEFT [OUTER] JOIN b` (or RIGHT / FULL) to
+      keep left rows that have no match, then filters on a column of `b` in
+      WHERE. For an unmatched left row every `b` column is NULL, so any
+      condition on them other than an IS NULL test is unknown and the row is
+      dropped: the query returns exactly what an INNER JOIN would, and the
+      rows the outer join was written for are gone.
+
+      Instantiated by (examples, not the definition):
+        • `FROM users u LEFT JOIN orders o ON o.user_id = u.id
+           WHERE o.status = 'open'`
+        • `… LEFT JOIN plans p ON … WHERE p.tier > 1 OR …` where every
+          disjunct requires a non-NULL `p` column
+        • a query builder that adds `.leftJoin(b)` then `.where(b.col, …)`
+
+      JUDGE: in a query with an outer join, does WHERE (or a later INNER JOIN
+      condition) require a column of the optional side to be non-NULL? If so,
+      was keeping unmatched rows the intent (the outer join, a "including
+      those without" name, a caller that handles the missing side)?
+      EXEMPT: the condition sits in the join's ON clause; `WHERE b.key IS
+      NULL` (an anti-join, the point of the outer join); a condition wrapped
+      to accept NULL (`b.col = 'x' OR b.col IS NULL`, `COALESCE`).
+      BOUNDARY: miscounting over an outer join is
+      `sql-aggregate-over-outer-join-miscounts`.
+      FIX: move the condition into ON (`LEFT JOIN orders o ON o.user_id =
+      u.id AND o.status = 'open'`), or, if unmatched rows are not wanted,
+      write INNER JOIN so the text says so.
+    severity: error
+    gate_question: |
+      Does a WHERE condition require a non-NULL value from the optional side
+      of an outer join, while the outer join was meant to keep rows without a
+      match?
+
+      Yes → the outer join is an inner join in disguise: flag it.
+      The condition is in ON, is an IS NULL test, or the join is INNER → no.
+    example_bad: |
+      const q = `
+        SELECT u.id, u.name, o.total
+        FROM users u
+        LEFT JOIN orders o ON o.user_id = u.id
+        WHERE o.status = 'open'`;  // users with no open order vanish
+    example_good: |
+      const q = `
+        SELECT u.id, u.name, o.total
+        FROM users u
+        LEFT JOIN orders o ON o.user_id = u.id AND o.status = 'open'`;
+
+  - name: sql-aggregate-over-outer-join-miscounts
+    status: experimental
+    why: "COUNT(*) counts the NULL-padded row an outer join makes for a parent with no children, so zero becomes one, and a HAVING over inner-joined counts never sees the zeros."
+    description: |
+      ANTI-PATTERN: a per-parent count over an outer join counts rows rather
+      than matches. A parent with no children still yields one row with the
+      child columns NULL, so `COUNT(*)` (or `COUNT(1)`, `SUM(1)`) reports 1
+      where the truth is 0. The mirror image: a query that looks for groups
+      with "fewer than n" children (`HAVING COUNT(x) < n`) over an INNER
+      join, so the parents with zero children never form a group and are
+      missing from the answer.
+
+      Instantiated by (examples, not the definition):
+        • `SELECT c.id, COUNT(*) FROM customers c LEFT JOIN orders o ON …
+           GROUP BY c.id`
+        • `SELECT t.id FROM teams t JOIN members m ON … GROUP BY t.id
+           HAVING COUNT(m.id) < 2` — empty teams are not listed
+        • `AVG` / `SUM` of a child column over an outer join where the
+          caller treats NULL as 0 or the reverse without saying which
+
+      JUDGE: does an aggregate run over a join that can produce a parent row
+      with no match? If it is `COUNT(*)`-like, it overcounts the empties. If
+      the query selects groups below a threshold (`<`, `<=`, `= 0`), can a
+      parent with no rows at all reach the result?
+      EXEMPT: `COUNT(child.non_null_column)` over the outer join (counts
+      matches only); thresholds that exclude zero by design (`HAVING
+      COUNT(x) >= 1`); a join that cannot miss (an enforced NOT NULL
+      foreign key in the direction joined).
+      BOUNDARY: an outer join turned inner by a WHERE condition is
+      `sql-outer-join-filtered-to-inner`; a non-aggregated column next to an
+      aggregate is `sql-ungrouped-column-in-aggregate`.
+      FIX: count a non-null column of the optional side (`COUNT(o.id)`); for
+      "fewer than n", start from the parent table with a LEFT JOIN and count
+      the child key, or `NOT EXISTS` for the zero case.
+    severity: error
+    gate_question: |
+      Is a count taken over a join where a parent can have no matching rows,
+      and does it either count rows (`COUNT(*)`) on an outer join, or look
+      for small counts on an inner join that drops the zero groups?
+
+      Yes → the empties are counted as one, or missing: flag it.
+      No → not this rule.
+    example_bad: |
+      rows, err := db.Query(`
+          SELECT t.id, COUNT(*) AS members
+          FROM teams t LEFT JOIN members m ON m.team_id = t.id
+          GROUP BY t.id`)            // empty team reports 1 member
+    example_good: |
+      rows, err := db.Query(`
+          SELECT t.id, COUNT(m.id) AS members
+          FROM teams t LEFT JOIN members m ON m.team_id = t.id
+          GROUP BY t.id`)            // empty team reports 0
+
+  - name: sql-ungrouped-column-in-aggregate
+    status: experimental
+    why: "A selected column that is neither grouped nor aggregated takes its value from an arbitrary row of the group on engines that accept it."
+    description: |
+      ANTI-PATTERN: a grouped query selects a column that is neither in GROUP
+      BY nor inside an aggregate, and is not determined by the grouped
+      columns. Standard SQL rejects it; SQLite and MySQL without
+      ONLY_FULL_GROUP_BY accept it and return the value of some row of the
+      group, which one being unspecified. The result looks right in a small
+      test and changes with data order, index choice or engine version.
+
+      Instantiated by (examples, not the definition):
+        • `SELECT dept_id, name, MAX(salary) FROM emp GROUP BY dept_id` —
+          meant "the name of the top earner", gets any name
+        • `SELECT user_id, created_at, COUNT(*) FROM events GROUP BY user_id`
+        • `SELECT … , status … GROUP BY order_id` where `status` lives on a
+          joined child table
+
+      JUDGE: for each selected (or ORDER BY / HAVING) column of a grouped
+      query, is it in GROUP BY, inside an aggregate, or functionally
+      determined by the grouped columns (they include the primary key of
+      its table)? If none, flag it.
+      EXEMPT: columns of a table whose primary key is grouped (standard SQL
+      allows it); SQLite's documented bare-column-with-MIN/MAX behaviour when
+      the code relies on it and says so; `ANY_VALUE(col)` written on purpose.
+      FIX: group by the column too, aggregate it, or, for "the row holding
+      the max", a window function (`ROW_NUMBER() OVER (PARTITION BY … ORDER
+      BY …)`) or a join back on the max.
+    severity: error
+    gate_question: |
+      Does a grouped query select a column that is not grouped, not
+      aggregated and not determined by the grouped primary key?
+
+      Yes → its value comes from an arbitrary row: flag it.
+      No → not this rule.
+    example_bad: |
+      const TOP_EARNER: &str = "
+          SELECT dept_id, name, MAX(salary)
+          FROM emp GROUP BY dept_id";          // `name` is from any row
+    example_good: |
+      const TOP_EARNER: &str = "
+          SELECT dept_id, name, salary FROM (
+              SELECT dept_id, name, salary,
+                     ROW_NUMBER() OVER (PARTITION BY dept_id ORDER BY salary DESC) AS r
+              FROM emp)
+          WHERE r = 1";
+
+  - name: sql-table-without-key-constraints
+    status: experimental
+    why: "Without a primary key duplicate rows are legal, and without a foreign key a reference can point at nothing; the schema then stops guarding invariants the code assumes."
+    description: |
+      ANTI-PATTERN: a `CREATE TABLE` (in a migration or a schema string)
+      declares no primary key, or declares a column that references another
+      table's rows (`user_id`, `parent_id`, `<table>_id` holding that table's
+      key) without a `REFERENCES` / `FOREIGN KEY` constraint. The code then
+      relies on "each row is unique" and "the referenced row exists" while
+      nothing stops a retried insert from duplicating a row, or a delete
+      from orphaning its children. On SQLite a declared foreign key is
+      enforced only on connections that ran `PRAGMA foreign_keys = ON`; a
+      schema with REFERENCES but no connection that enables them is the same
+      defect.
+
+      Instantiated by (examples, not the definition):
+        • `CREATE TABLE tags (item_id INTEGER, tag TEXT)` — no key, no FK
+        • `ALTER TABLE orders ADD COLUMN customer_id BIGINT` with no
+          constraint, while `customers(id)` exists
+        • SQLite schema with `REFERENCES runs(id)` and an `open()` that never
+          enables `foreign_keys`
+
+      JUDGE: does the new or changed table have a primary key (or a UNIQUE
+      NOT NULL key that serves as one)? For each column whose name and use
+      say it holds another table's key, is there a foreign key, and on
+      SQLite, does the connection setup enable them?
+      EXEMPT: an append-only log or event table whose rows are deliberately
+      not unique, said in a comment; a reference to a table in another
+      database or service (no FK is possible); a staging table loaded and
+      dropped within one job.
+      BOUNDARY: SQLite concurrency settings (WAL, busy_timeout) are
+      `rust_best_practices::shared-store-missing-concurrency-pragma`; one
+      fact stored twice is `l5_architecture::l5-G-one-representation`.
+      FIX: declare the primary key (a composite one for a link table) and
+      `REFERENCES parent(id)` with the intended `ON DELETE`; enable
+      `foreign_keys` where the connection is opened.
+    severity: warning
+    gate_question: |
+      Does a table this change creates or alters lack a primary key, or hold
+      another table's key in a column without a foreign key (or with one
+      SQLite never enforces)?
+
+      Yes, and it is not a documented append-only log or cross-store
+      reference → flag it.
+      No → not this rule.
+    example_bad: |
+      CREATE TABLE run_steps (
+          run_id INTEGER,          -- points at runs(id), unchecked
+          step   TEXT,
+          state  TEXT
+      );                           -- no primary key: a retry duplicates a step
+    example_good: |
+      CREATE TABLE run_steps (
+          run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+          step   TEXT    NOT NULL,
+          state  TEXT    NOT NULL,
+          PRIMARY KEY (run_id, step)
+      );
+
+  - name: sql-multivalued-column
+    status: experimental
+    why: "Packing several values into one column, or one property into numbered columns, puts the list out of reach of keys, joins and indexes, so every reader re-parses it and updates race."
+    description: |
+      ANTI-PATTERN: one column holds a list, or one property is spread over
+      numbered columns. A delimited string (`"3,17,42"`, `"a;b;c"`) or a
+      JSON array queried with `LIKE '%x%'` cannot carry a foreign key, cannot
+      be joined or indexed per element, and a substring search matches `1`
+      inside `17`. Repeating columns (`phone1, phone2, phone3`) cap the count
+      and force every query to OR across them.
+
+      Instantiated by (examples, not the definition):
+        • DDL column written by `",".join(ids)` and read by `.split(",")`
+        • `WHERE tags LIKE '%' || ? || '%'` over a comma list
+        • `CREATE TABLE contact (…, phone1 TEXT, phone2 TEXT, phone3 TEXT)`
+        • `UPDATE t SET ids = ids || ',' || ?` — read-modify-write of a list
+
+      JUDGE: does the code write several values into one column (join with a
+      delimiter, append to a string) or query a column by element with LIKE
+      / string functions? Does the DDL repeat one property under numbered
+      names? Either is this rule.
+      EXEMPT: a document column (JSON / JSONB) read and written as a whole,
+      or queried with the engine's JSON operators and indexes (`@>`,
+      `json_each`); an opaque value that is never queried by element (a
+      stored payload).
+      BOUNDARY: one fact stored in two places is
+      `l5_architecture::l5-G-one-representation`; this rule is many facts in
+      one place.
+      FIX: a child table with one row per value (`item_tags(item_id, tag,
+      PRIMARY KEY (item_id, tag))`), queried with a join or EXISTS.
+    severity: warning
+    gate_question: |
+      Does one column hold several values that code splits or searches by
+      element, or does the schema repeat a property as `x1, x2, x3`?
+
+      Yes → flag it.
+      A whole-document JSON column queried with JSON operators → no.
+    example_bad: |
+      cur.execute("UPDATE items SET tags = ? WHERE id = ?", (",".join(tags), item_id))
+      cur.execute("SELECT id FROM items WHERE tags LIKE ?", (f"%{tag}%",))
+    example_good: |
+      cur.executemany("INSERT INTO item_tags (item_id, tag) VALUES (?, ?)",
+                      [(item_id, t) for t in tags])
+      cur.execute("SELECT item_id FROM item_tags WHERE tag = ?", (tag,))

@@ -1,0 +1,965 @@
+name: Rust Best Practices
+description: >
+  Common Rust correctness + idiom rules for L4 review. Function
+  bodies visible. Cap 10 issues. Flag concrete call sites, not
+  stylistic preference.
+
+# applicability — rubric_set_for filters on this (ruff-style config, not source)
+language: [rust]
+
+rules:
+  # NOTE: three former rules judge hazards that are not Rust's own and moved
+  #   to the language-neutral rubrics: `no-blocking-in-async` →
+  #   effect_state::blocking-call-on-event-loop, `must-use-result` →
+  #   l4_contracts::ignored-error-return, `unchecked-arithmetic-on-input` →
+  #   security_common::unchecked-arithmetic-on-input.
+  - name: no-unwrap-in-library
+    status: stable
+    description: |
+      ANTI-PATTERN: a recoverable failure is turned into a PANIC / process
+      abort in library code instead of being returned as a `Result` for the
+      caller to handle. The hazard is what the panic DESTROYS — it unwinds
+      (or aborts) the whole thread/process for a condition that had a legal
+      error path, taking an agent/server/batch down with it, and it discards
+      the error's cause into a backtrace instead of a typed value a caller
+      could branch on.
+
+      This is the anti-pattern, NOT any single token. It is instantiated by
+      ANY of these forms when the failing condition is reachable at runtime
+      (each is one EXAMPLE of the hazard, not the definition):
+        • `.unwrap()` / `.expect()` on a `Result`/`Option` whose `Err`/`None`
+          is a real runtime outcome — fallible IO, parse, lock (poisoning),
+          env, or a lookup that can legitimately miss;
+        • indexing / slicing that can be out of bounds — `v[i]`, `s[a..b]`,
+          `s[i..]` on a byte offset that may not land on a UTF-8 boundary —
+          where the index / length comes from input or runtime data;
+        • a reachable panic macro — `panic!` / `unreachable!` / `todo!` /
+          `unimplemented!`, or `assert!` used as control flow — on a branch
+          that caller input or runtime state can actually take.
+
+      JUDGE the site, not the spelling, through four steps:
+        1. Can this `None` / `Err` / out-of-bounds happen in the real world?
+           Think through all of it: IO and syscalls, external input (wire
+           bytes, recorded data, HTTP, another process's JSON), state that
+           changed between two calls, concurrency and ordering, config,
+           platform differences, containers (cgroup quota, cpuset, a masked
+           `/sys`).
+        2. It can → flag it: the `Result` must go out, with the raw input and
+           the real error, to the layer that can decide (startup, the
+           supervisor, the caller who asked).
+        3. It can't, but the compiler does not know → STILL flag it, with the
+           type / shape change that makes it unwritable: check-then-take
+           (`is_some()` then `unwrap()`, `contains_key` then `map[&k]`,
+           `is_empty()` then `max().unwrap()`) → one step (`let-else` /
+           `match` / `entry`); an id looked up again
+           (`get_mut(&id).expect("working order")`) → pass the entity found;
+           an `Option` field only one mode fills → two types; A changes state
+           then B finds the result (`switch(..)` then `find(..).expect(..)`)
+           → A returns it, or B's `Result` is passed on; a run-time
+           `NonZero::new(c).expect(..)` default → a typed `const`; slice to
+           array `try_into().unwrap()` → a reader returning `[u8; N]`.
+        4. Only when the type CANNOT be changed (a std trait signature wider
+           than the truth, e.g. `fmt::Write for String` returning
+           `fmt::Result`) is `.expect("<proof>")` exempt, and only if its
+           message is a proof a reviewer can check — why it cannot happen,
+           what guarantees it. `"checked"`, `"finished"`, `"not zero"` are
+           not proofs: flag those.
+
+      WHEN a panic is legitimate (the Linux kernel's rule: `BUG_ON` is
+      deprecated, `WARN` and handle the "impossible" case; `panic()` only when
+      essential boot init fails; user input never BUGs; an oops kills one
+      task, not the kernel):
+        • compile time (`const` evaluation) — a failure does not build;
+        • startup, before the main loop / serving starts — fail fast, but
+          only in the OUTERMOST startup code; a library called at startup
+          still returns `Result` and lets startup exit with the reason;
+        • steady state — never: return `Result`; an "impossible" case alerts
+          and isolates the smallest unit (this request / order / job /
+          connection) while the process keeps running;
+        • external input — never, at any time;
+        • where continuing would cause irreversible damage (a corrupted
+          ledger that keeps placing orders) — an explicit stop path (a kill
+          switch), not a stray panic; flag the stray panic and name the stop
+          path.
+
+      TRAP — flag it even at startup: a panic inside `tokio::spawn` /
+      `std::thread::spawn` does not stop the process; the task silently
+      vanishes (e.g. a signal handler registered with `.expect` inside the
+      spawned task: the process then never hears SIGTERM). What can fail must
+      happen before the spawn and go out with `?`.
+
+      EXEMPT:
+        • `#[cfg(test)]` / `testkit` code and test helpers;
+        • the outermost startup code failing fast before the steady state
+          (`fn main`, the startup entry before the main loop) — not a library
+          function it calls;
+        • `const` evaluation;
+        • `.expect("<proof>")` under step 4 above;
+        • `.unwrap_or(...)` / `.unwrap_or_else(...)` / `.unwrap_or_default()`
+          / `.ok()`-then-fallback — these do NOT panic, they substitute a
+          default, and belong to `default-substituted-for-absent-or-failed`.
+          Do NOT flag them here (e.g. `path.to_str().unwrap_or("")` is not a
+          panic and is out of scope for this rule).
+
+      BOUNDARY: this rule owns the PANIC form of mishandled absence/failure;
+      its silent twin (substitute a sentinel default and march on) is
+      `default-substituted-for-absent-or-failed`. Where the panicking
+      condition is driven by UNTRUSTED/EXTERNAL input (an attacker-controlled
+      length or byte offset), the same site is additionally a robustness/DoS
+      concern — see `security_common::validate-external-input` for the
+      validate-at-the-boundary angle; this rule owns the "return a `Result`
+      instead of aborting" fix.
+      FIX: return a typed error (propagate with `?`), or handle the
+      `None` / empty / out-of-bounds branch explicitly, or (step 3) change
+      the type / shape so the case cannot be written.
+    severity: error
+    gate_question: |
+      State, for this site: can the `None` / `Err` / out-of-bounds happen in
+      the real world, and through what (IO, external input, state changed
+      between two calls, concurrency, config, platform, container)?
+
+      It can → a finding: name the layer that can decide and pass the
+      `Result` to it.
+      It can't, and a type / shape change would make it unwritable → a
+      finding: name that change (one-step take, pass the entity, two types,
+      typed const, `[u8; N]` reader).
+      It can't, the type cannot be changed, and the `.expect` message is a
+      checkable proof → no finding.
+      It is `const` evaluation, test code, or the outermost startup code
+      before the steady state (and not inside a spawned task) → no finding.
+      Otherwise → a finding.
+
+  - name: default-substituted-for-absent-or-failed
+    status: stable
+    description: |
+      The silent twin of `no-unwrap-in-library`: instead of panicking,
+      an `Option`/`Result` is unboxed with a DEFAULT that stands in for a
+      `None`/`Err` which actually means a broken invariant or a failed
+      lookup — `x.unwrap_or(0)`, `.unwrap_or_default()`, `.ok()` then a
+      fallback, `if let Some(v) = x {…} else {<fabricate>}` — where the
+      value is the program's OWN data (a DB read, a parse of self-
+      serialized JSON/RPC, an id / identity / config-key resolution), NOT
+      validated external input. The tell: the default is a SENTINEL
+      indistinguishable from a real value (`0`, `""`, empty, `false`, or the
+      unchanged input passed straight through), so the program proceeds on
+      fabricated data and the failure detonates far away as corruption —
+      silently, because every default compiles.
+
+      The sentinel-in-the-type variant is the same crime one level up: a
+      genuinely-optional field typed `i64`/`String` with a doc comment like
+      "`0`/empty means not-set" instead of `Option<T>` — every consumer
+      re-invents the `== 0` check and some get it wrong.
+
+      FLAG `unwrap_or(<literal>)` / `unwrap_or_default()` / `.ok()`-then-
+      default whose receiver is own-data identity/persistence/parse, and
+      `i64`/`String` fields that encode optionality as a magic value.
+      FIX: model real absence as `Option<T>`; at the unbox, if `None`/`Err`
+      is a broken own-data invariant PROPAGATE the error with the record id
+      (per-record — do NOT abort the surrounding batch); if it is a
+      legitimate "not present yet" branch EXPLICITLY with `match`.
+      EXEMPT: a default that is a TRUE semantic equivalent the caller
+      genuinely wants (a real config fallback), and defaults on validated
+      external input. Dropping a result nobody needs (a reply to a caller
+      who already left) is the other legal case. Each exempt site still says
+      why in a line beside it.
+      DEGRADING is the caller's decision, not the library's: a library fn
+      that, on a failed read, silently substitutes a fallback — e.g.
+      `fn detect() -> Cpus` that counts every logical CPU as a physical core
+      when `/sys` is unreadable — FLAG it: it returns
+      `Result<_, TypedError>` and the caller chooses to degrade and records
+      why (log / alert), so nobody runs in degraded mode unknowingly.
+      BOUNDARY: this rule owns ONLY the SILENT sentinel-default path (a value
+      is fabricated and the program proceeds). A site that instead PANICS on
+      the `None`/`Err` — `.unwrap()` / `.expect()` / out-of-bounds index /
+      `panic!` — belongs to `no-unwrap-in-library`, NOT here. Mutually
+      exclusive: `.unwrap()` panics (that rule), `.unwrap_or(0)` substitutes
+      (this rule).
+    severity: error
+
+  # NOTE: the former `no-panic-on-input` rule (panic!/unreachable!/todo! and
+  # out-of-bounds indexing on caller-input-derived lengths) was MERGED UP into
+  # `no-unwrap-in-library` above — it was the same anti-pattern (a recoverable
+  # condition aborts the process) split by token. One rule now owns every
+  # panic form; the input-driven-panic facet cross-refs
+  # security_common::validate-external-input.
+
+  - name: error-not-stringly
+    status: stable
+    description: |
+      ANTI-PATTERN: a fallible API returns its error as an opaque STRING
+      (or an unstructured `Box<dyn Error>`) at a boundary where the caller
+      needs to DISCRIMINATE failures. The error's structure — which variant,
+      its source, whether it's retryable — is flattened into prose, so every
+      caller is forced to `.contains("not found")`-grep the message to
+      branch, and a reworded string silently breaks that grep. The set of
+      failures WAS closed and knowable; it just wasn't written as a type.
+
+      Instantiated by (examples, not the definition):
+        • `-> Result<_, String>` on a `pub fn`;
+        • `.map_err(|e| e.to_string())` / a `format!`-ed error at an API
+          boundary that discards a typed source;
+        • `Box<dyn Error>` returned where callers must tell failures apart.
+
+      JUDGE: do callers need to react DIFFERENTLY to different failures of
+      this call? If yes, the string erases the information they need — flag
+      it and model a `thiserror` enum (carry the source via `#[from]` /
+      `#[error(transparent)]`, not a `.to_string()`).
+      EXEMPT: the application top (`fn main`, a bin's `anyhow::Result`) whose
+      only consumer is a human reading a log, and truly one-off errors no
+      caller branches on. (Cross-language cousin:
+      `l4_contracts::untyped-error-origin`.)
+    severity: warning
+
+  - name: clone-in-hot-path
+    status: stable
+    description: |
+      ANTI-PATTERN: a hot path (loop body, per-item / per-request) makes an
+      avoidable OWNED COPY of a value it only reads, where a borrow would
+      serve — paying a heap allocation + memcpy every iteration for nothing.
+
+      Instantiated by (examples, not the definition): `.clone()` of a large
+      owned `Vec`/`String`/`HashMap`, `.to_vec()` / `.to_owned()` /
+      `.to_string()` inside the loop, `xs.iter().cloned().collect()` feeding
+      a read-only consumer.
+
+      JUDGE: is the copy loop-local, and is the value provably not mutated and
+      not required to outlive the iteration? Then a `&` / `&str` / slice
+      removes the allocation — flag it. If the value genuinely escapes or must
+      be owned (stored, sent across a thread, mutated), it is NOT this
+      anti-pattern; leave it.
+      BOUNDARY: a redundant copy of an EXISTING value belongs here; building a
+      NEW intermediate buffer (a `join` / `format!`) only to feed a streaming
+      sink is `hot-path-heap-thrash`.
+    severity: warning
+
+  # ── Performance & Concurrency (folded from review; arc_db origin) ──
+  - name: read-path-incidental-write
+    status: stable
+    description: |
+      A logically-read operation performs an incidental write —
+      bumping a hit counter, touching a last-accessed timestamp,
+      lazily backfilling a row — on the hot read path. Under
+      concurrency this upgrades every reader into a writer and
+      serializes them on the store's write lock.
+    severity: error
+    why: |
+      The classic example is a cache `lookup` that does
+      `UPDATE … SET hit_count = hit_count + 1` on every hit. Single-
+      threaded it is invisible; the moment N agents read concurrently
+      each "read" takes the write lock. With SQLite even WAL allows
+      only one writer, and the default rollback journal blocks
+      readers entirely — read throughput falls off a cliff at exactly
+      the scale that never appears in a unit test. The write is
+      usually a metric or a soft-TTL refresh: nice-to-have, not
+      correctness, and therefore the wrong thing to pay a global
+      serialization point for.
+    transformer: null
+    gate_question: |
+      Is the write on this read path required for CORRECTNESS, or is
+      it a metric / access-time / soft-refresh?
+
+      Required for correctness → it is not really a read; leave it,
+        but make the write-ness explicit in the API name + docs.
+      Metric / soft-refresh → decouple it: aggregate in memory and
+        flush in batches off the read path, OR sample it
+        probabilistically, OR drop exactness if the consumer only
+        needs an estimate. NEVER pay a per-read global lock for a
+        statistic. If exact accounting is a hard product requirement,
+        that is an explicit, documented tradeoff — not a default.
+    fix_pattern: decouple_metric_from_read
+    example_bad: |
+      pub fn lookup(conn: &Connection, k: &str) -> Option<Hit> {
+          let hit = query_row(conn, k)?;
+          // every concurrent reader now contends on the write lock
+          let _ = conn.execute(
+              "UPDATE cache SET last_hit=?, hits=hits+1 WHERE k=?",
+              params![now(), k]);
+          Some(hit)
+      }
+    example_good: |
+      pub fn lookup(conn: &Connection, k: &str) -> Option<Hit> {
+          query_row(conn, k)        // pure read, fully concurrent
+      }
+      // hit counts aggregated in a Mutex<HashMap> and flushed by a
+      // background batch writer, or sampled (~5%), or dropped —
+      // whichever the metric's accuracy budget allows.
+
+  - name: hot-path-heap-thrash
+    status: stable
+    description: |
+      A function on a per-item / per-request path materializes an
+      intermediate `String`/`Vec`/collection only to feed it
+      straight into a streaming consumer (hasher, serializer, writer,
+      another iterator), and/or sprays `.to_string()` / `.clone()`
+      to concatenate borrowable data.
+      BOUNDARY: this owns building a NEW intermediate buffer (a `join` /
+      `format!` / collected `Vec`) that a streaming sink could have consumed
+      piecewise; a redundant copy of an EXISTING value in a loop is
+      `clone-in-hot-path`.
+    severity: warning
+    why: |
+      Stream processors (hashers, encoders, `io::Write`) are state
+      machines that consume byte slices incrementally. Building the
+      whole concatenated buffer first is pure Python/dynamic-language
+      habit: it doubles the allocation and the pass over the data
+      for zero benefit. `.to_string()` on each component to `join`
+      them, then hashing the join, is the canonical tell. Borrow and
+      stream instead; allocate only what genuinely must outlive the
+      call.
+    transformer: null
+    gate_question: |
+      Does the intermediate buffer escape the function or get
+      consumed in place by a streaming sink?
+
+      Consumed in place → feed the sink the borrowed slices directly
+        (`hasher.update(a); hasher.update(SEP); hasher.update(b)`),
+        no join, no per-part owned copy.
+      Escapes / genuinely needs ownership → keep it, but justify the
+        allocation in a comment.
+
+      Minimize, don't fetishize: one tiny unavoidable conversion
+      (e.g. an integer's decimal text) is fine; a joined mega-buffer
+      + N `.to_string()`s is not.
+    fix_pattern: stream_dont_materialize
+    example_bad: |
+      let payload = [
+          hash(content), model.to_string(), rule.to_string(),
+          ver.to_string(), path.to_string(), prefix.to_string(),
+      ].join("\x1f");          // big String + 5 owned copies + a Vec
+      sha256_hex(&payload)     // then a second pass over it all
+    example_good: |
+      let mut h = Sha256::new();
+      for (i, p) in [hash(content).as_bytes(), model.as_bytes(),
+                     rule.as_bytes(), ver_text.as_bytes(),
+                     path.as_bytes(), prefix.as_bytes()]
+                    .iter().enumerate() {
+          if i > 0 { h.update(b"\x1f"); }
+          h.update(p);
+      }
+      format!("{:x}", h.finalize())
+
+  - name: shared-store-missing-concurrency-pragma
+    status: stable
+    description: |
+      A shared on-disk store (SQLite file, lockfile-backed store)
+      accessed by multiple connections/processes is opened with the
+      default settings instead of the pragmas its real concurrency
+      pattern needs (for SQLite: `journal_mode=WAL`, a `busy_timeout`,
+      `synchronous=NORMAL`).
+    severity: warning
+    why: |
+      Default SQLite uses a rollback journal: a single writer blocks
+      ALL readers for the duration of the write. Combined with any
+      incidental write on a read path (see read-path-incidental-write)
+      this is a guaranteed stall under concurrent access. WAL lets
+      readers proceed against one concurrent writer; `busy_timeout`
+      makes a contended writer wait rather than immediately return
+      SQLITE_BUSY. Opening a shared store without declaring its
+      concurrency posture is shipping a latent outage.
+    transformer: null
+    gate_question: |
+      Is this store ever opened by more than one connection or
+      process at once (worker pool, parallel CLI invocations,
+      a daemon + ad-hoc tools)?
+
+      YES → set the concurrency pragmas at open() in ONE place so
+        every caller inherits them. Pragmas should be best-effort
+        (a failure must not turn a working open into a hard error on
+        an old engine / odd filesystem).
+      Provably single-connection forever → fine, but say so in the
+        open() doc so the assumption is auditable.
+    fix_pattern: declare_concurrency_at_open
+    example_bad: |
+      pub fn open(path: &str) -> Result<Connection, DbError> {
+          let conn = Connection::open(path)?;   // default rollback journal
+          apply_schema(&conn)?;
+          Ok(conn)
+      }
+    example_good: |
+      pub fn open(path: &str) -> Result<Connection, DbError> {
+          let conn = Connection::open(path)?;
+          let _ = conn.pragma_update(None, "journal_mode", "WAL");
+          let _ = conn.busy_timeout(Duration::from_secs(5));
+          let _ = conn.pragma_update(None, "synchronous", "NORMAL");
+          apply_schema(&conn)?;
+          Ok(conn)
+      }
+
+  # ── API & Type Design (folded from review; arc_db origin) ──
+  - name: primitive-obsession-long-param-list
+    status: stable
+    description: |
+      A function takes many positional parameters (rule of thumb: > 4)
+      and several share the same primitive type (multiple `&str`, run
+      of `i64`). Two same-typed args transposed at a call site
+      compiles clean and tests often miss it.
+    severity: warning
+    why: |
+      `store(conn, cache_key, file_path, content, model_id,
+      rule_version, schema_version, response_json, tokens_in,
+      tokens_out, now, expires_at, content_only_key)` — swap
+      `tokens_in`/`tokens_out`, or `cache_key`/`content_only_key`,
+      and nothing catches it until production data is wrong. A
+      parameter object makes every argument named at the call site
+      and makes the transposition impossible to express.
+    transformer: null
+    gate_question: |
+      Count the parameters and the same-typed runs. > 4 params with
+      ≥ 2 of the same primitive type → introduce a parameter / domain
+      struct (`NewCacheEntry { cache_key, content_only_key, … }`);
+      the call site assigns by field name, the compiler enforces
+      completeness, adding a field doesn't silently shift positions.
+      ≤ 4 distinct-typed params → fine, leave it.
+    fix_pattern: introduce_parameter_object
+    example_bad: |
+      pub fn store(conn:&Connection, cache_key:&str, file_path:&str,
+        content:&str, model_id:&str, rule_version:&str,
+        schema_version:i64, response_json:&str, tokens_in:i64,
+        tokens_out:i64, now:i64, expires_at:Option<i64>,
+        content_only_key:&str) -> Result<(),DbError>
+    example_good: |
+      pub struct NewCacheEntry<'a> {
+          pub cache_key: &'a str,
+          pub content_only_key: &'a str,
+          pub file_path: &'a str,
+          pub content: &'a str,
+          pub model_id: &'a str,
+          pub rule_version: &'a str,
+          pub schema_version: i64,
+          pub response_json: &'a str,
+          pub tokens_in: i64,
+          pub tokens_out: i64,
+          pub expires_at: Option<i64>,
+      }
+      pub fn store(conn:&Connection, e:&NewCacheEntry<'_>, now:i64)
+        -> Result<(),DbError>
+
+  - name: stringly-typed-domain-value
+    status: stable
+    description: |
+      A parameter / field whose valid values are a small closed set
+      is typed as a bare string, with validity enforced only at
+      runtime (a DB `CHECK`, an `if`-ladder, an exception). The type
+      system is not being used to make the illegal state
+      unrepresentable.
+    severity: warning
+    why: |
+      `record(conn, run_id, issue_id, verdict: &str, …)` with
+      `CHECK (verdict IN ('accepted','ignored','disputed'))` — pass
+      `"accccepted"` and it compiles, runs, and only fails at the
+      SQLite boundary as an opaque IntegrityError. An enum with the
+      three variants moves the check to compile time, documents the
+      domain in the signature, and makes exhaustive handling
+      enforceable. (rusqlite: `impl ToSql`/`FromSql` for the enum so
+      the column stays text.)
+    transformer: null
+    gate_question: |
+      Is the set of valid values closed and known at compile time?
+
+      YES → model it as an enum; implement the store's
+        serialize/deserialize trait on it so persistence stays the
+        same text. The API takes the enum; illegal values can't be
+        constructed.
+      Open / caller-defined / free text → string is correct; keep it.
+    fix_pattern: enum_make_illegal_unrepresentable
+    example_bad: |
+      pub fn record(conn:&Connection, run_id:&str, issue_id:&str,
+                    verdict:&str, …) -> Result<(),DbError>
+      // valid set lives only in a SQL CHECK + a doc comment
+    example_good: |
+      pub enum Verdict { Accepted, Ignored, Disputed }
+      impl rusqlite::ToSql for Verdict { /* → 'accepted' … */ }
+      pub fn record(conn:&Connection, run_id:&str, issue_id:&str,
+                    verdict: Verdict, …) -> Result<(),DbError>
+
+  - name: migration-affix-in-name
+    # OPT-IN CODE-CONVENTION DEMO (off by default). Conventions are your own
+    # linters' job (ruff/eslint/clippy) — arc ships a few as before→after
+    # examples so you can write your own. Enable per-id via
+    # `[review] enable=[...]`. See docs/user-guide/code-conventions.md.
+    status: deprecated
+    description: |
+      Identifiers carrying a disambiguation affix that only existed
+      to coexist with another version during a transition —
+      `_core`, `_v2`, `_new`, `_impl`, `_rs`, `_legacy`, `2`. Once
+      the structural reason for the affix is gone (the old twin
+      deleted, the boundary moved to its own module), the affix is
+      pure noise that misdescribes the identifier as "a variant of"
+      something.
+    severity: info
+    why: |
+      `cache::lookup_core` made sense only while a `lookup`
+      `#[pyfunction]` lived in the same file. After the FFI wrapper
+      moved to its own module, `cache::lookup` IS the operation;
+      `_core` now tells the reader "there is a non-core lookup
+      somewhere" — a lie. Names should describe what the thing is in
+      its current structure, not the migration that produced it.
+      (This is the API-surface twin of the layer-knows-its-consumer
+      / no-archaeology rule.)
+    transformer: null
+    gate_question: |
+      For each affixed name: does the thing the affix distinguishes
+      it FROM still exist in the codebase?
+
+      NO → the affix is dead history. Strip it (module boundaries
+        already namespace it: `cache::lookup`, not
+        `cache::lookup_core`). It's a pure rename — verify no
+        external caller path breaks, do it as one mechanical sweep.
+      YES → keep it, but the affix should name the distinction
+        (`_async`, `_unchecked`), not the migration.
+    fix_pattern: drop_dead_disambiguation_affix
+    example_bad: |
+      // pyo3 wrapper long since moved to its own module
+      pub fn lookup_core(conn:&Connection, k:&str) -> …
+      pub fn store_core(conn:&Connection, …) -> …
+      pub fn stats_core(conn:&Connection) -> …
+    example_good: |
+      // module path already disambiguates: cache::lookup, cache::store
+      pub fn lookup(conn:&Connection, k:&str) -> …
+      pub fn store(conn:&Connection, …) -> …
+      pub fn stats(conn:&Connection) -> …
+
+  - name: unitless-primitive-quantity
+    # OPT-IN CODE-CONVENTION DEMO (off by default). Conventions are your own
+    # linters' job (ruff/eslint/clippy) — arc ships a few as before→after
+    # examples so you can write your own. Enable per-id via
+    # `[review] enable=[...]`. See docs/user-guide/code-conventions.md.
+    status: deprecated
+    description: |
+      A domain quantity with units or identity semantics (timestamp,
+      duration, id, byte count) crosses an API as a bare `i64`/`i32`/
+      `usize` with nothing in the type to say what it is. Soft smell,
+      but it lets a timestamp be passed where a count is expected.
+    severity: info
+    why: |
+      `lookup(conn, key, ttl_days: i64, now: i64)` — is `now` seconds,
+      millis, micros? Is `ttl_days` interchangeable with `tokens_in`?
+      The type says nothing; the reader greps for `* 86400` to find
+      out. A newtype (`struct UnixSecs(i64)`) makes mixing them a
+      compile error; at minimum a type alias (`type UnixSecs = i64;`)
+      makes the signature self-describing. Pick the weight that fits
+      — but a raw `i64` for a semantic quantity at a public boundary
+      is the dynamic-language tell.
+    transformer: null
+    gate_question: |
+      Does this integer carry units or identity (time, duration, id,
+      size) and cross a public boundary alongside other integers it
+      must NOT be confused with?
+
+      YES, mixing would be a real bug → newtype it (zero-cost,
+        compile-enforced).
+      YES but low collision risk / very local → at least a type
+        alias for self-documentation.
+      Pure loop counter / obvious-from-1-line-context → leave it.
+    fix_pattern: name_the_unit
+    example_bad: |
+      pub fn lookup(conn:&Connection, key:&str,
+                    ttl_days:i64, now:i64) -> Option<Hit>
+    example_good: |
+      /// Unix timestamp, seconds.
+      pub type UnixSecs = i64;
+      pub fn lookup(conn:&Connection, key:&str,
+                    ttl_days:i64, now:UnixSecs) -> Option<Hit>
+      // (or a `struct UnixSecs(i64);` newtype when confusion is a
+      //  plausible bug, not just a readability nit)
+
+  # NOTE: positional-tuple returns (`-> Result<Vec<(String,String)>>`)
+  # are already covered by `untyped-bag-across-boundary` in
+  # llm_generated_code_smells.yaml — not duplicated here.
+
+  # ── Module & Aggregate Cohesion (DDD boundaries) ──────────────────
+  - name: module-boundary-by-history-not-aggregate
+    status: stable
+    description: |
+      A module/file holds several unrelated domain entities — distinct
+      lifecycles, change frequencies, ownership — because the file
+      edge was drawn by where the code historically lived (a ported
+      monolith, "the old foo.py"), not by domain aggregate. Tell-tale:
+      one large file (hundreds+ lines) whose name is a generic bucket
+      (`storage`, `db`, `util`, `helpers`) re-exporting CRUD for 3-5
+      different tables/entities.
+    severity: warning
+    why: |
+      A 1400-line `db_storage.rs` carrying Runs + Verdicts + Findings
+      + Closures has near-zero cohesion: a change to verdict logic
+      forces a reader through run/closure code, merge conflicts
+      cross unrelated work, and the "where does X live" answer is
+      "grep, it's all in one place". DDD says the module boundary is
+      the aggregate root: one file owns one entity's table + its
+      row-mapping + its invariants, so lifetime, change-frequency and
+      ownership align with the file. Splitting by aggregate is not
+      cosmetic file-shuffling — it makes each unit independently
+      reviewable, testable, and (here) independently de-PyO3-able.
+    transformer: null
+    gate_question: |
+      List the distinct domain entities (tables / aggregate roots)
+      this module touches. More than one, with different
+      lifecycles/owners, and the file name is a generic bucket?
+
+      YES → split: one module per aggregate (`repo/runs.rs`,
+        `repo/verdicts.rs`, …), each owning that entity's queries +
+        row→domain mapping + invariant doc. A thin `mod.rs` just
+        re-declares them. Cross-entity *reads* (a derived view over
+        two tables) get their own module named for the view, not
+        dumped into either entity.
+      One aggregate, or genuinely-coupled values that always change
+        together → fine, leave it (cohesion is already high).
+    fix_pattern: split_module_per_aggregate
+    example_bad: |
+      // db_storage.rs — 1400 lines, one bucket, 4 aggregates
+      pub fn save_run(..)         pub fn record_verdict(..)
+      pub fn reindex_findings(..) pub fn closures_since(..)
+      // verdict change ⇒ scroll past runs+findings+closures
+    example_good: |
+      // repo/runs.rs        — runs table + row_to_run + invariants
+      // repo/verdicts.rs    — user_verdicts + row_to_verdict
+      // repo/findings.rs    — findings_index projection
+      // repo/closures.rs    — derived read over runs+verdicts
+      // repo/mod.rs         — `pub mod runs; pub mod verdicts; …`
+
+  - name: lint-suppression-masks-design-flaw
+    status: stable
+    description: |
+      A lint/warning is silenced with a suppression attribute
+      (`#[allow(clippy::too_many_arguments)]`, `#[allow(dead_code)]`,
+      `# noqa`, `# type: ignore`, `@SuppressWarnings`,
+      `// eslint-disable`) where the lint is correctly flagging a real
+      design problem and the suppression exists because fixing the
+      design is inconvenient — not because the lint is a genuine
+      false positive.
+    severity: warning
+    why: |
+      `#[allow(clippy::too_many_arguments)]` on a 13-parameter `fn` is
+      the canonical tell: the linter found a real defect (positional
+      same-typed args the compiler can't keep straight — swap two and
+      it still builds), and the suppression "resolves" it by deleting
+      the messenger. The smell compounds: the suppression is durable,
+      silent, and tells the next reader "this was looked at and is
+      fine" when the opposite is true. Suppressions are legitimate
+      ONLY for true false-positives, and then must carry an inline
+      justification naming WHY the lint is wrong here. A bare
+      suppression over a real design lint is technical debt with the
+      warning light unscrewed.
+    transformer: null
+    gate_question: |
+      For each suppression attribute: is the lint a genuine false
+      positive in this specific spot?
+
+      NO — the lint is right, the design has the flaw it names →
+        delete the suppression and fix the design (extract a
+        parameter/domain struct for too_many_arguments; remove or
+        wire up the dead_code; type the value for type:ignore).
+      YES — genuine false positive → keep the suppression but it MUST
+        have an adjacent comment stating exactly why the lint is
+        wrong here (e.g. "FFI signature fixed by the C ABI"), and be
+        as narrowly scoped as possible (item-level, not module/crate).
+      A suppression with no justification comment is, by default,
+        treated as masking — flag it.
+    fix_pattern: fix_the_design_not_the_linter
+    example_bad: |
+      #[allow(clippy::too_many_arguments)]   // no reason given
+      pub fn store(conn:&Connection, cache_key:&str, file_path:&str,
+        content:&str, model_id:&str, rule_version:&str,
+        schema_version:i64, response_json:&str, tokens_in:i64,
+        tokens_out:i64, now:i64, expires_at:Option<i64>,
+        content_only_key:&str) -> Result<(),DbError>
+    example_good: |
+      // lint stays ON; the design is fixed instead (see
+      // primitive-obsession-long-param-list)
+      pub fn store(conn:&Connection, e:&NewCacheEntry<'_>, now:UnixSecs)
+        -> Result<(),DbError>
+      // — or, for a TRUE false positive, narrowly scoped + justified:
+      #[allow(clippy::too_many_arguments)] // generated FFI shim;
+      // arg list is dictated by the upstream C signature, not ours.
+
+  - name: dom-parse-when-projecting-subset
+    status: stable
+    description: |
+      A document is deserialized into a dynamic DOM
+      (`serde_json::Value`, `serde_json::Map`, an untyped
+      `HashMap<String, Value>`) and then the code reads only a small,
+      fixed set of scalar fields out of each node via hard-coded
+      `.get("k").and_then(Value::as_str)` chains. The whole tree —
+      including large fields the code never touches — is allocated,
+      then dropped.
+    severity: warning
+    why: |
+      `serde_json::from_str::<Value>` builds the entire AST eagerly:
+      a `String`/`Vec`/`Map` node for every field present, however
+      large (agent transcripts, `history` blobs, nested state). When
+      the read pattern is a fixed projection of a few scalars, a
+      `#[derive(Deserialize)]` struct naming only those fields makes
+      serde skip-scan everything else with ZERO allocation. On a
+      high-throughput path over MB-scale blobs this is the difference
+      between O(payload) and O(projection) heap plus an extra pass —
+      and it deletes the `as_str().unwrap_or("").to_string()` dynamic
+      re-typing/clone dance too.
+
+      This is also the canonical LLM-codegen reflex: the model emits
+      `Value` / `json.loads`-to-dict because it is the most general
+      thing that compiles, not the shape the reads need. Same root as
+      hot-path-heap-thrash — a dynamic-language habit applied to a
+      statically-projectable problem.
+    transformer: null
+    gate_question: |
+      After the `Value`/untyped-map parse, does the code read only a
+      fixed, compile-time-known set of keys out of each node?
+
+      YES → replace with a `#[derive(Deserialize)]` struct (or
+        `HashMap<K, ThatStruct>`) holding exactly those fields;
+        `Option<T>` fields reproduce a missing-or-null key, serde
+        drops every unlisted field unallocated.
+      NO — keys are dynamic / unknown at compile time, or the value
+        is passed through / re-serialized whole → `Value` is the
+        right tool; keep it.
+
+      The tell is a `Value` immediately narrowed by a handful of
+      string-literal `.get(...)`s: the schema WAS known, it just
+      wasn't written down.
+    fix_pattern: typed_partial_deserialize
+    example_bad: |
+      let v: Value = serde_json::from_str(&blob)?;          // whole DOM
+      let map = match v { Value::Object(m) => m, _ => return };
+      for (id, issue) in map {                  // every `history` blob
+          let status = issue.get("status")      // allocated then dropped
+              .and_then(Value::as_str).unwrap_or("").to_string();
+          let file = issue.get("file")
+              .and_then(Value::as_str).unwrap_or("").to_string();
+          ...
+      }
+    example_good: |
+      #[derive(Deserialize)]
+      struct IssueProjection {              // serde skips every other
+          status: Option<String>,           // field with zero alloc
+          file: Option<String>,
+      }
+      let map: HashMap<String, IssueProjection> =
+          serde_json::from_str(&blob)?;
+      for (id, issue) in map {
+          let status = issue.status.unwrap_or_default();
+          let file = issue.file.unwrap_or_default();
+          ...
+      }
+
+  # ── Moved down from arc rot's L5 semantic signals (single-point patterns
+  #    belong to per-file L4, not the structural L5 tribunal — see
+  #    docs/design/l4-l5-signal-split.md). ─────────────────────────────────
+  - name: parse-dont-validate-weak-param
+    status: stable
+    description: |
+      A function takes a primitive / `String` parameter whose validity is a
+      precondition, and CORE logic then operates on the un-parsed value
+      (re-checking or assuming its shape). Parse-don't-validate: convert to a
+      domain type at the boundary so the inner code can't receive an invalid
+      one. ESSENTIAL right at an I/O edge; ROT when the untyped value flows
+      into core logic.
+    severity: warning
+    why: |
+      `fn run(path: &str)` that re-parses/re-validates `path` deep inside is
+      a missed `struct ValidatedPath`. Validate once at the edge, pass the
+      type inward — the compiler then enforces "valid" everywhere downstream.
+  - name: anonymous-aggregate-return
+    status: stable
+    description: |
+      A function returns a tuple / anonymous aggregate (`(A, B, C)`) that
+      callers index positionally (`.0`, `.1`). A name-less aggregate makes
+      every call site re-derive what each slot means and silently breaks on
+      reorder. ESSENTIAL for a trivial local pair; ROT when it crosses a
+      module boundary or has 3+ fields — return a named struct.
+    severity: warning
+    why: |
+      `-> (usize, usize, bool)` forces `let (n, _, ok) = f();` at every call
+      site; swap two fields and every caller compiles but lies. A named
+      struct documents the slots and makes reorder a type error.
+  - name: sum-as-product
+    status: stable
+    description: |
+      A struct carries a `bool` flag AND an `Option<T>` payload that is only
+      valid when the flag is set (or two `Option`s that are mutually
+      exclusive) — a sum type modelled as a product, so illegal combinations
+      (`flag=false` with `Some(payload)`) are representable. ESSENTIAL if the
+      fields are genuinely independent; ROT when the payload's validity is
+      gated by the flag — make it an `enum`.
+    severity: warning
+    why: |
+      `struct R { ok: bool, value: Option<V>, error: Option<E> }` admits
+      `ok=true, value=None` and `ok=false, value=Some` — both nonsense. A
+      `enum R { Ok(V), Err(E) }` makes the illegal states unconstructable.
+  - name: hidden-context-read
+    status: stable
+    description: |
+      Core logic reads ambient context directly — `env::var`, a global / a
+      `static`, the wall clock — instead of receiving it as a parameter. The
+      dependency is hidden from the signature, so the function is
+      non-deterministic and untestable without mutating global state.
+      ESSENTIAL at config bootstrap / `main`; ROT when buried in business
+      logic.
+    severity: warning
+    why: |
+      `fn price() { let rate = env::var("RATE")…; }` can't be unit-tested or
+      reasoned about — the input is invisible. Take `rate` (or a `Context`)
+      as a parameter; resolve env once at the edge.
+  - name: loop-implicit-state-machine
+    status: stable
+    description: |
+      A loop carries a few variables that are BOTH read as guards AND
+      reassigned across its branches — the branches are transitions of an
+      implicit state machine. ESSENTIAL if it is genuine iteration; ROT when
+      the named vars are really the fields of an `enum State` the code never
+      made explicit (so a missing transition is a silent bug, not a
+      non-exhaustive-match error).
+    severity: warning
+    why: |
+      `let mut phase = 0; let mut buf = …;` mutated across `if`/`match` arms
+      inside a loop is a hand-rolled FSM. An explicit `enum Phase` + a `match`
+      makes every transition visible and the compiler checks exhaustiveness.
+  - name: validated-type-open-fields
+    status: stable
+    description: |
+      ANTI-PATTERN: a type declares a VALIDATING constructor — `parse`, `of`,
+      or a `new` that returns `Result` — and so claims an invariant ("every
+      value of this type is a well-formed sha / a non-empty slug / a range with
+      start <= end"), yet leaves a field that code outside the type can set:
+      `pub`, `pub(crate)`, or a tuple newtype's `pub` inner. Anyone can write
+      `CommitSha(bytes)` / `Range { start: 9, end: 1 }` and walk around the
+      check; the invariant is left standing only in a comment, and every
+      consumer that trusted the type is now wrong.
+
+      Instantiated by (examples, not the definition):
+        • `pub struct Slug(pub String); impl Slug { pub fn parse(s) -> Result<Slug, E> }`;
+        • `pub struct Window { pub start: u32, pub end: u32 }` with
+          `pub fn new(start, end) -> Result<Window, E>` checking `start <= end`.
+
+      JUDGE: does a constructor of this type REFUSE some inputs? If yes, can a
+      value that constructor would refuse be built without it, through a field?
+      Then flag it.
+      EXEMPT: a transparent newtype with no validating constructor (every
+      inner value is legal, so there is nothing to bypass); a `new` that always
+      succeeds (it claims nothing); fields visible only inside the type's own
+      module.
+      BOUNDARY: this rule owns the FIELD that bypasses an existing check.
+      A value typed as a bare `String` with no newtype at all is
+      `parse-dont-validate-weak-param` / `stringly-typed-domain-value`; a
+      check done at the use site instead of once at the boundary is
+      `parse-dont-validate-weak-param`.
+    severity: warning
+    why: |
+      The type is the proof that the value was checked. An open field makes
+      the proof forgeable: `CommitSha(*b"not a sha…")` compiles, and the store
+      that trusted `CommitSha` writes garbage keyed by it.
+    gate_question: |
+      Does any constructor of this type return `Result` / refuse input?
+      YES → make every field private; give readers an accessor and callers
+        that genuinely mint values a NAMED constructor that says what it trusts
+        (`CommitSha::from_git_output`).
+      NO → the type is a transparent label; open fields are fine.
+    example_bad: |
+      pub struct Slug(pub String);
+      impl Slug {
+          pub fn parse(s: &str) -> Result<Slug, SlugError> { /* checks owner/name */ }
+      }
+      let bad = Slug("no slash".into()); // compiles; the check never ran
+    example_good: |
+      pub struct Slug(String);
+      impl Slug {
+          pub fn parse(s: &str) -> Result<Slug, SlugError> { /* … */ }
+          pub fn as_str(&self) -> &str { &self.0 }
+      }
+
+  - name: serde-default-fills-absence
+    status: stable
+    description: |
+      ANTI-PATTERN: a DOMAIN type — one the program's own logic reads and
+      decides on — carries `#[serde(default)]` (on the type or a field), so a
+      field ABSENT from the input is silently filled with its zero value:
+      `""`, `0`, `false`, an empty `Vec`, or whatever `Default` says. Absence
+      and "written as the zero value" become the same value; nothing
+      downstream can tell "the operator never set a limit" from "the limit is
+      0", or "no reviewer recorded" from "reviewer = empty string".
+
+      Instantiated by (examples, not the definition):
+        • `#[serde(default)] pub struct Plan { … }` on a struct the core decides on;
+        • `#[serde(default)] pub owner: String` on a record read back from storage;
+        • `#[serde(default = "fallback")]` where the fallback stands in for a
+          value the input was REQUIRED to carry.
+
+      JUDGE: is "missing" a different fact from "the zero value" for this
+      field? If yes and the type is domain (not a wire shape), flag it.
+      EXEMPT: a WIRE / exchange-format type whose job is to read what another
+      party sent — conventionally a `*wire*` module — which converts into the
+      domain type at the boundary, turning absence into `Option` or an error
+      there; a field whose default is a documented, genuinely-safe setting
+      (a tuning knob with a sensible default the operator is told about); a
+      collection field where "absent" and "empty" really are the same fact.
+      BOUNDARY: this is the DESERIALIZATION form of the sentinel family.
+      Substituting a default for a failed/absent value in CODE
+      (`.unwrap_or(0)`, `.unwrap_or_default()`) is
+      `default-substituted-for-absent-or-failed`; a missing CONFIG key
+      defaulted at lookup is `l4_contracts::silent-default-on-config-miss`;
+      an error collapsed into a sentinel is
+      `l4_contracts::missing-error-classification`.
+    severity: warning
+    why: |
+      `#[serde(default)] repo: String` reads a row written before the column
+      existed as `repo = ""`, and every later join on `repo` quietly matches
+      nothing. `repo: Option<RepoSlug>` makes the old row say "unknown", and
+      the compiler makes each reader decide what that means.
+    gate_question: |
+      Is this type the program's own model, or the shape of someone else's input?
+      Own model → make the field `Option<T>` (or fail the parse), no
+        `#[serde(default)]`.
+      Someone else's input → move the shape into its `wire` module and convert
+        into the domain type at the edge.
+    example_bad: |
+      #[derive(Deserialize)]
+      #[serde(default)]
+      pub struct RunRecord { pub run_id: String, pub finished_at: i64 }
+    example_good: |
+      #[derive(Deserialize)]
+      pub struct RunRecord { pub run_id: RunId, pub finished_at: Option<Timestamp> }
+
+  - name: default-derive-on-identity
+    status: stable
+    description: |
+      ANTI-PATTERN: a struct that carries an IDENTITY field (`id`, `*_id`,
+      `sha`, `*_sha`, `slug`, `session`, `fingerprint`) or a STATE field
+      (`status`, `state`, `verdict`, `outcome`, `phase`, `stage`, `kind`)
+      derives `Default`. `Foo::default()` fabricates a record nobody wrote:
+      its id is `""` (which is no one) and its state is an invented starting
+      point. Once `..Default::default()` fills the rest of a literal, or a
+      default value reaches storage, "really this value" and "never set" can
+      no longer be told apart.
+
+      Instantiated by (examples, not the definition):
+        • `#[derive(Default)] struct Finding { id: String, status: Status, … }`;
+        • `Task { title, ..Default::default() }` where `Task` has `task_id`.
+
+      JUDGE: does the struct name WHO or WHICH STEP a value is? Does
+      `Default` then produce a value that looks real? Flag it.
+      EXEMPT: a PATCH / delta type whose `Default` means "change nothing"
+      (every field `Option`, the zero value is the intent); a builder or
+      options struct whose identity field is `Option` and whose default is
+      documented as "none yet"; test-only code.
+      BOUNDARY: a sentinel invented at a call site
+      (`.unwrap_or_default()`) is `default-substituted-for-absent-or-failed`;
+      a sentinel invented on deserialization is `serde-default-fills-absence`.
+      This rule owns the TYPE that makes a fabricated identity constructible
+      in one call.
+    severity: warning
+    why: |
+      `Finding::default()` has `id: ""`, `status: New`. Persist it and the
+      board shows a new finding that no reviewer ever filed; key a map on it
+      and every default collides on `""`.
+    gate_question: |
+      Would a caller ever legitimately want this struct with an empty id / an
+      unstated status?
+      NO → remove `Default`; make callers state every field, or give the
+        genuinely-empty value its own named constructor (`Draft::new()`).
+      YES, it is a patch / options type → keep it, with identity as `Option`.
+    example_bad: |
+      #[derive(Default)]
+      pub struct Finding { pub id: String, pub status: Status, pub note: String }
+      let f = Finding { note: n, ..Default::default() }; // id "" and a made-up status
+    example_good: |
+      pub struct Finding { pub id: FindingId, pub status: Status, pub note: String }
+      let f = Finding { id, status: Status::New, note: n };

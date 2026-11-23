@@ -1,0 +1,464 @@
+name: Rust Ownership and Borrowing
+description: >
+  What code that fought the borrow checker looks like after it compiles. The
+  compiler already rejects the violations themselves; these rules name the
+  workarounds that pass it — a copy made to dodge a move, a pseudo-pointer the
+  checker cannot see, a check moved from compile time to run time. Source:
+  Effective Rust, Item 15 "Understand the borrow checker". Flag concrete
+  sites, not style.
+
+language: [rust]
+
+rules:
+  - name: clone-to-move-out-of-borrow
+    status: experimental
+    description: |
+      ANTI-PATTERN: a value is COPIED out of a place behind `&mut` only because
+      it could not be moved out, and the place is then overwritten, cleared or
+      reset. The copy exists to satisfy the borrow checker, not because two
+      live values are needed: one allocation + memcpy is paid for a value that
+      is thrown away on the next line.
+
+      Instantiated by (examples, not the definition):
+        • `let old = self.x.clone(); self.x = new;`
+        • `let batch = self.buf.clone(); self.buf.clear();`
+        • `if let Some(v) = self.slot.clone() { self.slot = None; … }`
+        • `let prev = state.clone(); *state = next;` inside a `&mut` method.
+
+      JUDGE: after the copy, is the original place written before it is read
+      again? Then the copy is a move in disguise — flag it and name the
+      one-step form: `std::mem::replace(place, new)`, `std::mem::take(place)`
+      (leaves `Default`, so a `Vec` loses its capacity — for a buffer that is
+      refilled, `mem::replace(place, Vec::with_capacity(n))`),
+      `Option::take()`, `Option::replace(new)`, `std::mem::swap`. If both the old and the new value stay live and are
+      read afterwards, two values really exist; leave it.
+      BOUNDARY: a copy of a value that is only READ in a loop is
+      `clone-in-hot-path`. A copy whose original is never used again at all
+      (no overwrite either) is not this rule; clippy's `redundant_clone`,
+      off by default, covers it.
+    severity: warning
+    gate_question: |
+      Between the `.clone()` and the next read of the original place, is the
+      place assigned, cleared or set to `None`?
+
+      Yes → the old value was being moved out: use `mem::replace` /
+        `mem::take` / `Option::take` and drop the clone.
+      No, both values are read later → two values exist; not this rule.
+    example_bad: |
+      fn flush(&mut self) -> Vec<Row> {
+          let rows = self.pending.clone();   // copies every row…
+          self.pending.clear();              // …then throws the originals away
+          rows
+      }
+    example_good: |
+      fn flush(&mut self) -> Vec<Row> {
+          std::mem::take(&mut self.pending)  // moves the rows out, leaves an empty Vec
+      }
+
+  - name: access-wider-than-used
+    status: experimental
+    description: |
+      ANTI-PATTERN: a function asks for more access to its argument than its
+      body uses. There are three levels — the owner (may move and drop),
+      `&mut` (may update), `&` (may read) — and a signature is a promise about
+      which one the callee needs. Asking for more forces the caller to give up
+      the value or clone it, or to hold an exclusive borrow that blocks every
+      other reader, for nothing.
+
+      Instantiated by (examples, not the definition):
+        • a parameter taken by value (`Vec<T>`, `String`, `BTreeMap<..>`, a
+          large struct) that the body only iterates or reads, so callers
+          write `f(x.clone())` to keep `x`;
+        • `&mut self` / `&mut T` on a function that never mutates through it;
+        • `&Vec<T>` / `&String` / `&PathBuf` where `&[T]` / `&str` / `&Path`
+          accepts strictly more callers at no cost;
+        • `&Option<T>` where `Option<&T>` lets the caller pass a borrowed or
+          computed value without owning an `Option<T>`.
+
+      JUDGE: read the body. Is the parameter moved into a field, returned,
+      sent to another owner, or consumed by a by-value API? Then by-value is
+      right. Is anything written through the `&mut`, or is it passed on as
+      `&mut`? Then `&mut` is right. Otherwise flag it with the narrowest form
+      that still compiles.
+      EXEMPT: a function whose signature is fixed by its use as a callback
+      (`.map_err(to_cap_error)`, a trait method, a serde `serialize_with`);
+      by-value taken to END the value's life (`close(self)`, `into_*`, a
+      typestate step); and `Copy` types, for which by-value IS the narrow
+      form.
+      BOUNDARY: this rule is about the signature. A needless copy at a call
+      site inside a loop is `clone-in-hot-path`.
+    severity: info
+    gate_question: |
+      What is the least access the body needs — read, update, or own?
+
+      Less than the signature asks → narrow the signature; the callers'
+        `.clone()` and `mut` bindings that existed only for it go away.
+      The signature is dictated by a trait or a callback position → exempt.
+    example_bad: |
+      fn total(rows: Vec<Row>) -> u64 {          // only reads
+          rows.iter().map(|r| r.bytes).sum()
+      }
+      let n = total(rows.clone());               // caller pays to keep `rows`
+    example_good: |
+      fn total(rows: &[Row]) -> u64 {
+          rows.iter().map(|r| r.bytes).sum()
+      }
+      let n = total(&rows);
+
+  - name: position-detached-from-its-owner
+    status: experimental
+    description: |
+      ANTI-PATTERN: a position — a `usize` index, a byte offset, a
+      `Range<usize>` — is stored APART from the collection or text it points
+      into, while that owner can still be reordered, shortened or replaced.
+      The position is a pointer the borrow checker cannot see: nothing stops
+      it from outliving, or going out of step with, what it points at. A stale
+      one does not fail to compile; it reads the WRONG element, or panics on
+      `v[i]` / `&s[a..b]`.
+
+      Instantiated by (examples, not the definition):
+        • a lookup map `BTreeMap<Key, usize>` into a `Vec<T>` that also has a
+          `remove` / `swap_remove` / `retain` / `sort` / `insert(0, ..)` path
+          which does not rewrite the map in the same function;
+        • an accessor that hands the raw index to callers (`fn index_of(..) ->
+          usize` next to `fn nth(usize)`), so a caller can hold one across a
+          mutation;
+        • a struct carrying `span: Range<usize>` into source text that is
+          passed separately, so a consumer can slice a different text with it;
+        • the tell-tale at the consumer: `start.min(src.len())`,
+          `src.get(span).unwrap_or("")` — code defending against a position
+          that "cannot" be stale.
+
+      JUDGE: (1) Can the owner change after the position is taken? An owner
+      that is immutably borrowed for as long as the position lives
+      (`rows: &'a [T]` beside `HashMap<&'a str, usize>`) or append-only cannot
+      — that is the SAFE form; leave it. (2) If it can change: does every
+      mutating path update the positions in the same function, and is the raw
+      position kept private? (3) Do the position and its owner travel
+      together, or can a caller pair the position with another owner?
+      FIX by owner, not by guard: keep both collections behind one type whose
+      mutators update both; hand out a key or a typed handle instead of a
+      `usize`; give the span's holder a method that takes the text and returns
+      the slice, so the pairing is made in one place.
+      BOUNDARY: a counter or a line number that is never used to index is not
+      a position. An index from untrusted input that can be out of bounds is
+      `no-unwrap-in-library`. A consumer that panics on (`v[i]`) or
+      substitutes `""` / `0` for a stale position is ALSO
+      `no-unwrap-in-library` / `default-substituted-for-absent-or-failed`;
+      report the detached position here, once. A forgotten STORED projection
+      (a table, a search index) is
+      `canonical-source-mutated-projection-not-rebuilt`; in-memory
+      collections inside one struct are reported here.
+    severity: warning
+    why: |
+      Storing an index is the usual escape from a self-referential or doubly
+      indexed structure, and it works because the checker stops seeing a
+      reference. That is also its cost: every guarantee the reference carried
+      is now the author's to keep by hand, in every mutator, forever.
+    gate_question: |
+      Can the owning collection or text be mutated or swapped while this
+      position is held?
+
+      No (borrowed immutably for the position's whole life, or append-only)
+        → safe; not this rule.
+      Yes → name the mutating path that leaves the position stale, and move
+        the pairing behind one type.
+    example_bad: |
+      struct Register { by_arrival: Vec<Guest>, by_name: BTreeMap<String, usize> }
+      impl Register {
+          fn deregister(&mut self, idx: usize) {
+              self.by_arrival.remove(idx);   // every later index is now off by one,
+          }                                  // and `by_name` still holds the old ones
+      }
+    example_good: |
+      impl Register {
+          fn deregister(&mut self, name: &str) -> Option<Guest> {
+              let idx = self.by_name.remove(name)?;
+              let guest = self.by_arrival.remove(idx);
+              self.by_name.values_mut().filter(|i| **i > idx).for_each(|i| *i -= 1);
+              Some(guest)                    // one mutator keeps both in step
+          }
+      }
+
+  - name: entity-cloned-into-two-collections
+    status: experimental
+    description: |
+      ANTI-PATTERN: one mutable entity is stored BY VALUE in two collections
+      (by arrival and by name, by id and by owner) so that each lookup is
+      cheap. There are now two copies of one fact; an update that reaches only
+      one of them leaves the other answering with the old value, and nothing
+      fails.
+
+      JUDGE: is the stored value ever updated after insertion (a `&mut`
+      accessor, a setter, a replace)? If it is immutable and small, two copies
+      are a fine, fast answer — leave it. If it can change, flag it and name
+      the single owner: one collection owns the values, the other maps to a
+      key into it (see `position-detached-from-its-owner` for what that key
+      must not be), or both hold a shared pointer to the one value. A shared
+      pointer ends the two-copies problem only: MEMBERSHIP is still two
+      facts, and a removal from one collection that skips the other leaves
+      the entity alive and findable there.
+      BOUNDARY: two collections holding DIFFERENT projections of an entity
+      (the full row here, a count there) are not copies of one fact. A
+      forgotten STORED projection (a table, a search index) is
+      `canonical-source-mutated-projection-not-rebuilt`; in-memory
+      collections inside one struct are reported here.
+    severity: warning
+    gate_question: |
+      After `insert`, can either copy be modified?
+
+      No → immutable duplicates; leave it.
+      Yes → which update path writes both? If none does, flag it.
+    example_bad: |
+      struct Register { by_arrival: Vec<Guest>, by_name: BTreeMap<String, Guest> }
+      impl Register {
+          fn set_address(&mut self, name: &str, addr: String) {
+              if let Some(g) = self.by_name.get_mut(name) { g.address = addr; }
+              // by_arrival still has the old address
+          }
+      }
+    example_good: |
+      struct Register { guests: BTreeMap<GuestId, Guest>, by_arrival: Vec<GuestId>, by_name: BTreeMap<String, GuestId> }
+
+  - name: runtime-borrow-where-ownership-would-do
+    status: experimental
+    description: |
+      ANTI-PATTERN: `Rc<RefCell<T>>` (or `Arc<Mutex<T>>` with no second
+      thread) is used to make the borrow checker stop complaining, for data
+      that has ONE owner in fact. The aliasing rule is not gone — it moved
+      from compile time to run time: a `borrow_mut()` while any other borrow
+      is alive panics, a second `lock()` on the same thread never returns
+      (std: it deadlocks or panics), and neither shows up until that path
+      runs.
+
+      Instantiated by (examples, not the definition):
+        • a tree (each node has one parent, one place it lives) whose children
+          are `Vec<Rc<RefCell<Node>>>` although nothing else holds a node;
+        • a struct field wrapped in `RefCell` only so a `&self` method can
+          mutate it, where the method could take `&mut self`;
+        • a `borrow_mut()` / lock guard kept alive across a call that can
+          reach the same cell again (a callback, a visitor, a recursive walk).
+
+      JUDGE: count the owners. Is the value reachable from two places that
+      both outlive one call (a real graph, a back-pointer, a cache shared by
+      callers)? Then shared ownership is the honest type — leave it, and
+      check only that no guard is held across a re-entrant call. One owner →
+      flag it: with plain ownership and `&mut` passed down, the re-entrant
+      borrow that panicked at run time no longer compiles.
+      EXEMPT: a recording test double behind a `&self` trait method; a
+      `thread_local!` cache.
+      BOUNDARY: a guard held across `.await` is
+      `effect_state::blocking-call-on-event-loop`. When
+      the complaint is that a caller cannot SEE the write — a `&self` method
+      that reads as pure and mutates — it is
+      `pure-function-mutates-input`; when both fit, report that one. This
+      rule reports the wrapper that single ownership makes unnecessary.
+    severity: warning
+    gate_question: |
+      How many owners does this value have that outlive a single call?
+
+      One → single ownership + `&mut`; the runtime check and its panic go.
+      Two or more → shared pointer is right; is any guard alive across a call
+        that can borrow the same cell again? If so, flag THAT line.
+    example_bad: |
+      struct Tree { branches: Vec<Rc<RefCell<Branch>>> }   // nothing else holds a Branch
+      fn prune(tree: &Tree) {
+          for b in &tree.branches {
+              let mut branch = b.borrow_mut();
+              visit(tree, &mut branch);        // visit() borrows every branch → panic
+          }
+      }
+    example_good: |
+      struct Tree { branches: Vec<Branch> }
+      fn prune(tree: &mut Tree) {
+          for branch in &mut tree.branches { trim(branch); }
+      }
+
+  - name: strong-back-reference
+    status: experimental
+    description: |
+      ANTI-PATTERN: a child holds its parent (or any two values hold each
+      other) through STRONG shared pointers — `Rc<_>` / `Arc<_>` in both
+      directions. The reference counts can never reach zero: the whole
+      structure leaks, and its `Drop` (closing files, releasing locks) never
+      runs.
+
+      JUDGE: follow the pointer types for a cycle: A owns `Rc<B>`, B holds
+      `Rc<A>`. A recursive TYPE is not a cycle (`struct Node { next:
+      Option<Rc<Node>> }`, a tree with shared subtrees): a strong cycle needs
+      a back edge that can be set after construction (`RefCell` / `Mutex` /
+      `OnceCell`). The edge that points AGAINST the direction of ownership
+      must be `Weak<_>`. Flag a strong one. Then look at each `Weak::upgrade()`: the
+      owner being gone is a real outcome and must be handled, not unwrapped.
+      BOUNDARY: `upgrade().unwrap()` / `.expect(..)` is reported under
+      `no-unwrap-in-library`, not here.
+    severity: error
+    gate_question: |
+      Does any chain of strong pointers lead from this value back to itself?
+
+      Yes → make the back edge `Weak`, and handle `upgrade()` returning None.
+    example_bad: |
+      struct Branch { leaves: Vec<Rc<RefCell<Leaf>>> }
+      struct Leaf   { owner: Rc<RefCell<Branch>> }          // cycle: never freed
+    example_good: |
+      struct Leaf   { owner: Weak<RefCell<Branch>> }
+      let Some(branch) = leaf.owner.upgrade() else { return Location::Unowned };
+
+  - name: reference-field-in-stored-struct
+    status: experimental
+    description: |
+      ANTI-PATTERN: a struct that is STORED — kept in a field of a long-lived
+      value, put in a collection that outlives the call, returned up several
+      layers — holds references, so it carries a lifetime parameter. The
+      parameter then spreads to every type that contains it and every function
+      that names it, and the value can never outlive, be sent away from, or be
+      built before the thing it borrows. The default that always works is a
+      struct that owns what it needs.
+
+      JUDGE: how long does the struct live? A view built and dropped inside
+      one call — a serialization shape, a prompt context, a parser cursor, a
+      bundle of borrowed arguments — is exactly what references are for; leave
+      it, however many fields it has. Flag it when the borrow is what forces
+      the awkward part: a lifetime threaded through three or more layers of
+      types, a second lifetime parameter added only to make it compile, a
+      caller that must keep a temporary alive in a `let` for no reason of its
+      own, or a `.clone()` at the top to get rid of the lifetime again.
+      BOUNDARY: a struct that borrows from ITSELF is
+      `self-reference-laundered-through-unsafe`.
+    severity: info
+    gate_question: |
+      Is this struct created and dropped within one call, or stored?
+
+      Within one call → a view; borrowing is right.
+      Stored → would owning the data (or an `Arc` of it) remove the lifetime
+        from this type and from everything that contains it? Then own it.
+    example_bad: |
+      struct Session<'a> { config: &'a Config, user: &'a str }
+      struct Server<'a>  { sessions: HashMap<Id, Session<'a>> }   // 'a now reaches main()
+    example_good: |
+      struct Session { config: Arc<Config>, user: String }
+      struct Server  { sessions: HashMap<Id, Session> }
+
+  - name: self-reference-laundered-through-unsafe
+    status: experimental
+    description: |
+      ANTI-PATTERN: a struct holds owned data AND a pointer into that same
+      data, and the borrow checker's refusal was silenced instead of
+      answered. A pointer at an inline field dangles on any move of the
+      struct. A pointer into a buffer the struct owns (`String`, `Vec`,
+      `Box`) survives a move but dangles when the buffer is reallocated,
+      replaced or dropped — and a forged `'static` can be copied out and
+      outlive the owner.
+
+      Instantiated by (examples, not the definition):
+        • `transmute` / a pointer cast that turns `&'a str` into
+          `&'static str` so it can sit beside the `String` it points into;
+        • a `*const T` / `NonNull<T>` field pointing at another field of the
+          same struct, without `Pin`.
+
+      JUDGE: does the pointer's target live inside the same value, or inside
+      something that value owns and may move or drop first? Flag it. Name the
+      safe form: store an offset (`Range<usize>`) and re-slice on read — see
+      `position-detached-from-its-owner` for keeping it honest; split into an
+      owner and a borrowing view built on demand; or use a crate that
+      encapsulates the unsafe part behind a heap allocation (`ouroboros`,
+      `self_cell`).
+      EXEMPT: FFI that hands a raw pointer to C for the duration of one call.
+    severity: error
+    gate_question: |
+      Can the owned data be reallocated, replaced or dropped — or, for a
+      pointer at an inline field, moved — while this pointer is still
+      readable?
+
+      Yes → undefined behaviour waiting for that to happen; replace the
+        pointer with an offset or a view type.
+    example_bad: |
+      struct Doc { text: String, title: &'static str }
+      let title: &'static str = unsafe { std::mem::transmute(&text[0..5]) };
+    example_good: |
+      struct Doc { text: String, title: Range<usize> }
+      impl Doc { fn title(&self) -> &str { &self.text[self.title.clone()] } }
+
+  - name: always-allocating-borrowed-or-owned
+    status: experimental
+    description: |
+      ANTI-PATTERN: a function usually returns its input unchanged and only
+      sometimes builds a new value, yet its return type is always the owned
+      form — so the common path pays an allocation and a copy to return what
+      the caller already had.
+
+      Instantiated by (examples, not the definition): `fn normalize(s: &str)
+      -> String` whose first branch is `return s.to_string()`; a truncating /
+      unquoting / escaping helper that is a no-op on most inputs.
+
+      JUDGE: is there a path that returns the argument's content untouched,
+      and is that path the frequent one or on a hot loop? Then
+      `std::borrow::Cow<'_, str>` (or `Cow<[T]>` / `Cow<Path>`) states both
+      cases in the type and the caller pays only when a change was made. If
+      every path builds a new value, or the function runs once per process,
+      the owned return is simpler — leave it.
+      BOUNDARY: a copy made at the CALL site of a read-only value is
+      `clone-in-hot-path`. A hand-written `enum { Borrowed(&T), Owned(T) }`
+      that repeats `Cow` is `reinvented-wheel`.
+    severity: info
+    gate_question: |
+      Does the frequent path return the input unchanged, and is the function
+      called per item / per line / per request?
+
+      Both yes → return `Cow`.
+      Otherwise → owned is fine.
+    example_bad: |
+      fn unquoted(raw: &str) -> String {
+          let Some(body) = raw.strip_prefix('"') else { return raw.to_string() };  // most paths
+          unescape(body)
+      }
+    example_good: |
+      fn unquoted(raw: &str) -> Cow<'_, str> {
+          let Some(body) = raw.strip_prefix('"') else { return Cow::Borrowed(raw) };
+          Cow::Owned(unescape(body))
+      }
+
+  - name: borrow-workaround-left-in-place
+    status: experimental
+    description: |
+      ANTI-PATTERN: scaffolding that was added while making a borrow error go
+      away stays in the code after the error is gone, where it reads as
+      meaning something.
+
+      Instantiated by (examples, not the definition):
+        • the same few lines wrapped in a bare `{ … }` block in several
+          places to end a borrow or a guard early — the block is a function
+          that was not extracted;
+        • a bare block around plain references that non-lexical lifetimes
+          already end at their last use;
+        • a ladder of single-use, fully annotated bindings (`x1`, `x2`, `x3`)
+          left from narrowing down which step the checker refused;
+        • `.collect::<Vec<_>>()` whose only job is to end an iterator's
+          borrow before a loop that does not need the borrow ended.
+
+      JUDGE: remove the scaffolding in your head — does the code still
+      compile and mean the same? Then flag it. A block that really bounds a
+      lock guard or a transaction is doing work: leave ONE such block; flag
+      the pattern when it repeats, and name the method to extract.
+      BOUNDARY: a `let` that keeps a temporary alive for a borrow that is
+      used later is the FIX the compiler suggests, not a leftover.
+    severity: info
+    gate_question: |
+      Would deleting this block / binding / collect change what compiles or
+      what runs?
+
+      No → leftover; remove it.
+      Yes, and the same block appears elsewhere → extract a method.
+    example_bad: |
+      // queue: RefCell<Vec<Job>>
+      {
+          let mut q = self.queue.borrow_mut();
+          q.push(job_a);
+      }
+      // … forty lines later …
+      {
+          let mut q = self.queue.borrow_mut();
+          q.push(job_b);
+      }
+    example_good: |
+      fn enqueue(&self, job: Job) { self.queue.borrow_mut().push(job); }

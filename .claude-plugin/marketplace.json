@@ -5,14 +5,14 @@
     "url": "https://github.com/leocaolab"
   },
   "metadata": {
-    "description": "A.R.C. — opinionated, self-healing code review for your LLM's code."
+    "description": "A.R.C. — code review for the code your coding agent writes."
   },
   "plugins": [
     {
       "name": "arc",
       "source": "./",
-      "description": "A.R.C. — an opinionated, self-healing code reviewer for your LLM's code. Two skills: arc-setup installs and configures arc stage by stage; arc-review drives review and auto-fix.",
-      "version": "1.1.1"
+      "description": "A.R.C. code review from your coding agent. Start with arc-setup: it installs the arc CLI and configures it in your repository. Then review, fix, rot, automate and maintain drive the arc CLI; plus the review methods behind it — taste, smell, error and breaker checks, type naming, comment hygiene, the coding convention and shift-left guides for 9 languages — reading the same rubrics arc's reviewer reads.",
+      "version": "1.3.0"
     }
   ]
 }

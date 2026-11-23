@@ -1,0 +1,256 @@
+name: Test Code Quality
+description: >
+  Assertion strength over line coverage. Applies to commits that touch
+  `tests/` or add test functions. Function testability (IO poisoning,
+  hidden deps, FFI ghost state) is NOT here — those are covered by
+  fp_lens.yaml (FP principles subsume them). This rubric is
+  strictly about how tests themselves are written.
+
+  Cap 5 issues per scan.
+
+  Two rules below DO look at the production code under test, but only at
+  the testability seam — when a test is being written/changed and the
+  code-under-test resists it because a collaborator (clock, env, rng,
+  data source) isn't injected. This is the TotT "construct with
+  collaborators" lens, distinct from fp_lens.yaml's
+  `hidden-io-in-pure-sig` (which judges the same shape as a PURITY
+  violation on all code). If both could fire, prefer this one on
+  test-touching commits; defer to fp_lens elsewhere.
+
+# ── AUDIT NOTE: every rule here is UNIVERSAL (language-agnostic) ──
+# `applies_to: test` scopes by role, not language — these hazards describe how
+# tests are written in ANY language. Prior wording leaked a few single-language
+# tokens (Python unittest `Mock`, `pytest.mark.integration`); those are
+# reframed with cross-language examples below.
+
+# applicability — rubric_set_for filters on this (ruff-style config, not source)
+applies_to: test
+
+rules:
+  # NOTE: the former `fixed-sleep-to-sync-concurrency` rule moved to
+  #   effect_state, because production code races the same way a test does.
+  # WHY: a test that patches out every dependency and only asserts
+  #      `assert_called_with` proves it knows its own structure, not that the
+  #      production path works — a self-fulfilling prophecy.
+  # SCOPE: universal (over-mocking / tautological verification is language-agnostic).
+  - name: mock-toxicity
+    status: stable
+    why: "An all-mocks test asserting only call-shape proves the test knows its own structure, not that the code works."
+    description: >
+      Anti-pattern: the test body is mostly mock/stub setup with every external
+      dependency patched out, and the only assertion checks the SHAPE of a call
+      into a mock rather than an observable result. This is a self-fulfilling
+      prophecy — it proves the test knows its own wiring, not that the
+      production path works. The token differs per stack, the hazard is one:
+        - Python `Mock` / `patch` + `assert_called_with`
+        - Java Mockito `verify(mock).foo(...)` with no result assertion
+        - JS/TS jest `expect(fn).toHaveBeenCalledWith(...)` and nothing else
+        - Rust `mockall` `.expect_foo().times(1)` as the sole check
+      FLAG a test whose assertions are entirely call-verification on mocks.
+      Retain the unit test, but ADD a real-dependency integration case
+      (in-memory DB, localhost server, tempfile) that exercises the actual
+      path. EXEMPT a genuine interaction test where the call itself IS the
+      contract (e.g. "must NOT call the payment API twice").
+    severity: critical
+
+  # WHY: exercising a parse / state-machine / numeric function with 3-5
+  #      hand-picked inputs leaves most of the input space untested.
+  # SCOPE: universal (property/boundary testing exists in every ecosystem).
+  - name: happy-path-only-enumeration
+    status: stable
+    why: "3-5 hand-picked inputs for a parse/state-machine/numeric function leave the input space untested."
+    description: >
+      Anti-pattern: a change modifies a parse / state-machine / numerical
+      function, but the new or existing tests exercise it with only a few
+      hand-picked inputs (`1`, `0`, `-1`) — no property-based test, no fuzz, no
+      boundary values — so most of the input space is untested. FLAG such a
+      function whose tests enumerate a handful of literals. The fix is a
+      property/generator strategy that covers the state space and boundaries:
+      `hypothesis` (Python), `proptest` / `quickcheck` (Rust), `jqwik` (Java),
+      `fast-check` (JS/TS), `gopter` (Go). EXEMPT a function with a genuinely
+      small closed input set (a handful of enum variants), where enumeration IS
+      exhaustive.
+    severity: warning
+
+  # WHY: high-blast-radius code tested only for its happy return value hides
+  #      panics / deadlocks — the test still passes when the function crashes.
+  # SCOPE: universal.
+  - name: assertion-strength-mismatch
+    status: stable
+    why: "Testing high-blast-radius code only for its happy return value lets a panic or deadlock pass silently."
+    description: >
+      Anti-pattern: the code under test has a high blast radius (an accept
+      loop, a lock acquisition, an FFI handoff, a state transition) but the
+      test asserts only the happy return value — so if the function panics,
+      deadlocks, or corrupts a counter on some input, the test still passes.
+      FLAG a high-consequence unit whose assertions cover only the nominal
+      result. The fix is to add assertions for the failure modes that matter:
+      "did NOT panic", "did NOT deadlock within N seconds", "state counter
+      matches exactly", "no partial write left behind". EXEMPT a pure,
+      low-consequence function whose return value fully captures its behavior.
+    severity: warning
+
+  # WHY: a commit that fixes a bug without adding a test leaves the fix
+  #      unguarded — the next refactor can silently re-introduce the bug.
+  # SCOPE: universal.
+  - name: missing-regression-test-for-bugfix
+    status: stable
+    why: "A bugfix with no accompanying test is unguarded — the next refactor can silently reintroduce the bug."
+    description: >
+      Anti-pattern: the commit message or diff implies a fix ("fix", "bug",
+      "regression", "off-by-one") but no test file is added or changed, so the
+      fix has no guard and a later refactor can silently re-introduce the bug.
+      FLAG a fix-shaped change to production code with no corresponding test
+      change. The fix is a regression test that FAILS against the pre-fix
+      behavior and passes after. EXEMPT changes with no observable behavior to
+      pin (a pure comment/rename/formatting fix, a dependency bump), and fixes
+      whose guard is genuinely already added in the same diff.
+    severity: error
+
+  # WHY: a test that reaches a real network / cloud API / localhost port with
+  #      no integration marker breaks on the first CI run without that service.
+  # SCOPE: universal (the isolation-marker mechanism is per-ecosystem, the
+  #        hazard is not — prior wording named only the Python marker).
+  - name: test-depends-on-external-service
+    status: stable
+    why: "An unmarked test that hits a real network/cloud/localhost service breaks on the first serviceless CI run."
+    description: >
+      Anti-pattern: a test reaches over the network, to a real cloud API, or to
+      a specific localhost port, without any marker or fixture that isolates it
+      from the default unit run — so it breaks on the first CI run that lacks
+      the service. FLAG such a test with no isolation gate. The gate mechanism
+      is per-ecosystem (the hazard is not):
+        - Python `@pytest.mark.integration` or a container fixture
+        - Rust `#[ignore]` or a `cfg`/feature gate
+        - JUnit `@Tag("integration")`
+        - Go a build tag or a `testing.Short()` skip
+        - jest a separate `testEnvironment` / project
+      The fix is to mark/gate the test so the default unit run skips it, or to
+      stand up the dependency via a container/in-memory fixture. EXEMPT a test
+      already carrying such a marker or fixture.
+    severity: warning
+
+  # WHY: code that reaches for a non-deterministic collaborator (clock, rng,
+  #      env, singleton) inside its own body is either flaky or forced to mutate
+  #      process-global state — untestable without racing every other test.
+  # SCOPE: universal (dependency-injection testability seam; TotT lens).
+  - name: dependency-not-injected
+    status: experimental
+    why: "Code that reads a clock/rng/env/singleton internally is flaky or forced to mutate process-global state under test."
+    description: >
+      The code exercised by this test reaches for a non-deterministic or
+      external collaborator INSIDE its own body instead of receiving it as
+      a parameter: a wall clock (`Date.now()` / `SystemTime::now` /
+      `Instant::now` / `time.time()`), randomness (`rand` / `thread_rng` /
+      `random()`), an environment read (`env::var` / `getenv` /
+      `os.environ`), or a global singleton / static cache. The test cannot
+      pin the value, so it is either flaky (real clock / random) or forced
+      to mutate process-global state (env / singleton), which races every
+      other test in the suite — and a memoizing cache (`OnceLock` /
+      lazy-static) freezes whatever the first test happened to see.
+      Inject the collaborator: take the timestamp / rng / env value /
+      clock trait as an argument and read it ONCE at the imperative-shell
+      boundary; the core stays a deterministic function of its inputs.
+      Contrast the right shape — a function that takes the resolved env
+      value as a parameter is testable across every branch with no env
+      mutation at all. (TotT: "Time is Random"; "Construct With
+      Collaborators, Call With Work"; "Use Dependency Injection to Avoid
+      Singletons".)
+    severity: error
+
+  # WHY: a unit that opens its own file/socket/global stream and then transforms
+  #      the bytes can't be tested without real IO — coverage stalls on it.
+  # SCOPE: universal (functional-core / imperative-shell seam; TotT lens).
+  - name: data-source-not-injected
+    status: experimental
+    why: "A unit that acquires its own input (opens the file, connects the socket) then transforms it cannot be tested without real IO."
+    description: >
+      The unit under test ACQUIRES its own input and then transforms it in
+      the same function — it opens the file, connects the socket, or pulls
+      from a global stream / queue, then parses / folds / decides on the
+      bytes that come back. A test cannot exercise the logic without a real
+      file on disk or a live server (this is why coverage on such functions
+      stalls — the test has to stand up a tempfile or a fake port just to
+      reach the first branch). Separate acquisition from logic: have the
+      function take the data as an already-obtained value or stream
+      (`&str` / `impl Read` / an iterator of records / a slice of parsed
+      rows) and move the open / connect / fetch out to the caller
+      (functional core, imperative shell). The transform is then driven by
+      an in-memory fixture stream with no IO. Where a crate already splits
+      `parse_str(s)` from `load_path(p)`, the parser tests trivially and
+      the loader stays a thin wrapper — do that everywhere. (TotT:
+      "Functional Core, Imperative Shell"; "Construct With Collaborators,
+      Call With Work".)
+    severity: warning
+
+  # WHY: a hand-written fixture or payload freezes the shape the test author
+  #      believed in; when the real producer emits something else, the test
+  #      stays green and proves nothing about the code path users hit.
+  # SCOPE: universal (decoder fixtures, recorded wire messages, security-rule
+  #        emulator payloads alike).
+  - name: test-input-not-from-the-real-producer
+    status: stable
+    why: "A hand-written fixture freezes an imagined shape, so the test stays green while the real producer emits something else."
+    description: >
+      A test feeds the code under test an input whose shape is produced
+      elsewhere in the same system — a decoder's or renderer's fixture of
+      what another process / language serializes, a security-rules emulator
+      test's document payload of what the client writes, a mocked API
+      response of what our own route returns — and the input is WRITTEN BY
+      HAND in the test instead of being produced by the real producer (its
+      constructor, its type, its serializer run once and recorded). When the
+      two disagree (the fixture encodes a set as `{x: true}`, the runner
+      emits `{"__type__": "set", ...}`; the rules test writes `{email,
+      timestamp}`, the client writes `{email, createdAt}`) the test is green
+      and the production path is broken. FLAG a test input that mirrors
+      another component's output by hand when that component is in the same
+      repository. FIX: build the input with the producer's own function or
+      type (call the client's payload builder; import the type so the
+      compiler checks the literal), or generate the fixture by running the
+      producer and commit the recording with the command that regenerates
+      it. EXEMPT inputs that are deliberately malformed to test rejection,
+      and inputs whose producer is outside the system (a third-party API
+      recorded from the wire).
+    severity: warning
+
+  # WHY: a test whose failure path cannot be reached stays green when the code
+  #      under test breaks — it reports coverage and proves nothing.
+  # SCOPE: universal (every test framework has the same five holes).
+  - name: never-failing-test
+    status: experimental
+    why: "A test whose failure path is structurally unreachable stays green when the code under test breaks."
+    description: >
+      Anti-pattern: a test that would STILL PASS if the behaviour it names
+      were broken, because nothing in it can fail on that behaviour. The
+      shapes:
+        (a) no assertion or expectation at all — the test only calls;
+        (b) every assertion sits inside a branch the test's own data or
+            environment decides (`if result:`, `if os == "linux":`, `if
+            len(rows) > 0:`), so the bad case takes the branch that asserts
+            nothing;
+        (c) an expected exception caught by hand with no `fail()` after the
+            call (`try: parse("x") except ValueError: pass`), or a `catch`
+            that swallows the assertion error itself;
+        (d) an early `return` / bare skip on a runtime condition that is not
+            reported as a skip, so the run counts it as a pass;
+        (e) the assertion compares the test's own constructed value with
+            itself or with a value derived from it (`assert expected ==
+            expected`, the expectation computed by calling the code under
+            test).
+      FLAG the test and name which shape makes its failure path
+      unreachable. The fix is an assertion that the broken behaviour WOULD
+      trip: the framework's expected-exception form (`pytest.raises`,
+      `assertThrows`, `expect(...).toThrow()`, `#[should_panic(expected =
+      ...)]`, `require.Error`), an unconditional assertion, a reported skip
+      (`pytest.skip`, `t.Skip`, `Assume`), an expectation written out
+      independently of the code under test. EXEMPT: a smoke test whose
+      stated contract is "does not panic / throw" (said in its name or a
+      comment), where completing IS the assertion; table-driven loops whose
+      `if got != want { t.Errorf(...) }` is the assertion, not a branch
+      around one; property tests whose assertion lives in the property.
+      Boundary: `assertion-strength-mismatch` owns a test that CAN fail but
+      only checks the happy return value (`assert lock.acquire() is True`
+      fails when acquire fails — that rule's alone; `try: parse("x")
+      except ValueError: pass` cannot fail — this rule's alone);
+      `mock-toxicity` owns assertions that only verify calls into mocks.
+    severity: error

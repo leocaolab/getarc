@@ -1,0 +1,154 @@
+name: Go Best Practices
+description: >
+  Go correctness + idiom rules for L4 review. Function bodies visible.
+  Cap 10 issues. Flag concrete call sites, not stylistic preference.
+  Targets the failure modes Go's design invites: error-context loss,
+  resource leaks, nil-map and channel footguns, untyped interface{} at
+  boundaries.
+
+  Every rule here is LANGUAGE-SPECIFIC: it anchors on a genuine Go
+  idiom (the multi-return `error` model + `_` discard, goroutine /
+  channel / `context` concurrency, `defer`, the nil-map footgun,
+  `interface{}`/`any`, `sync.Mutex` no-copy). Some hazards RHYME with
+  a universal base-rubric rule (noted per rule as "kin:"); the Go form
+  is distinct enough that this file is its correct home — do NOT fold
+  those into the base rubric.
+
+# applicability — rubric_set_for filters on this (ruff-style config, not source)
+language: [go]
+
+rules:
+  # NOTE: three former rules judged hazards that are not Go's own, and moved
+  #   to the language-neutral rubrics with their criterion restated as a
+  #   structural fact: `ignored-error-return` → l4_contracts::ignored-error-return,
+  #   `goroutine-without-lifecycle` → effect_state::background-task-without-owner,
+  #   `context-without-deadline-on-io` → effect_state::remote-call-without-timeout.
+  # tag: language-specific — `fmt.Errorf("...: %w", err)` + errors.Is/As is
+  #   the Go error-wrapping idiom. kin (universal): l4_contracts::incomplete-error-context
+  #   (context-on-error is a general hazard), but `%w` chain unwrapping is Go-specific.
+  - name: error-returned-without-context
+    status: stable
+    description: |
+      ANTI-PATTERN: an error crosses a layer boundary naked, so the caller
+      (and the log) cannot tell WHICH operation failed — several distinct
+      operations return the same error type and the origin is lost.
+      Prefer `fmt.Errorf("doing X: %w", err)` so the chain carries the
+      operation + the wrapped cause (unwrappable via errors.Is / errors.As).
+      FLAG `return err` at a boundary where multiple distinct operations could
+      produce the same error type.
+      EXEMPT: thin pass-through helpers; sites where the immediate caller
+      already adds context.
+    severity: warning
+
+  # tag: language-specific — the pre-Go-1.22 range/loop-variable capture
+  #   footgun. kin (weak/universal): closures capturing a mutable loop var
+  #   exist in other langs, but the Go 1.22 per-iteration exemption is Go-specific.
+  - name: loop-var-captured-in-closure
+    status: stable
+    description: |
+      ANTI-PATTERN: a deferred / stored / goroutine closure captures a loop
+      variable by reference, so every iteration observes the SAME final value
+      instead of its own — the classic `for _, v := range xs { go func(){ use(v) }() }`
+      bug where all goroutines see the last element.
+      FLAG capture of a range/loop variable inside `go func`, `defer func`, or a
+      closure appended to a slice / stored past the iteration.
+      EXEMPT: Go 1.22+ per-iteration semantics where the closure is invoked
+      synchronously within the iteration.
+    severity: error
+
+  # tag: language-specific — `sync.Mutex`/`RWMutex`/`WaitGroup` are no-copy
+  #   types (go vet's `copylocks`); this is a pure Go footgun, no base-rubric kin.
+  - name: mutex-copied-by-value
+    status: stable
+    description: |
+      ANTI-PATTERN: a struct holding a `sync.Mutex` / `sync.RWMutex` /
+      `sync.WaitGroup` is copied by value, which copies the lock's internal
+      state — the copy and the original guard nothing in common, so mutual
+      exclusion silently breaks and races appear.
+      FLAG a value receiver `(s T)` on a method that locks `s.mu`, or passing /
+      returning such a struct by value.
+      EXEMPT: the zero-value construction before any lock is taken.
+    severity: error
+
+  # tag: language-specific — `defer close/unlock immediately after acquire` is
+  #   the Go release idiom. kin (universal hazard): resource leak (RAII in
+  #   Rust/C++, try-with-resources in Java); the `defer`-guarantee form is Go's.
+  - name: resource-not-deferred-close
+    status: stable
+    description: |
+      ANTI-PATTERN: a resource that must be released (os.File, http.Response.Body,
+      sql.Rows, net.Conn, a lock) is acquired but its release is not guaranteed on
+      every exit path — an early `return` (often the error branch) between
+      acquisition and a manual Close leaks it. The Go idiom is `defer x.Close()`
+      immediately after the error check, so no later branch can skip it.
+      FLAG an acquire whose Close is missing, or placed after code that can `return`.
+      EXEMPT: ownership explicitly transferred to a caller (documented).
+    severity: error
+
+  # NOTE: the former `panic-in-library-code` rule (a recoverable condition
+  #   crashing the process — `panic()` / input-reachable index-out-of-range /
+  #   nil deref — in non-main, non-test code) was MERGED UP into the
+  #   language-agnostic `fp_lens::partial-function-as-total`, which fires on Go
+  #   directly and now carries the Go panic form + its `init()`/unrecoverable
+  #   EXEMPTs. One rule owns "recoverable absence crashes instead of being
+  #   typed" across all languages; the per-Go spelling was a pure duplicate.
+
+  # tag: language-specific — `interface{}`/`any` + type assertions is the Go
+  #   dynamic escape hatch. kin (universal):
+  #   llm_generated_code_smells::untyped-bag-across-boundary (the real owner of
+  #   the untyped-boundary hazard) / rust stringly-typed-domain-value; the Go
+  #   empty-interface form is distinct.
+  - name: interface-any-at-boundary
+    status: stable
+    description: |
+      ANTI-PATTERN: an exported signature accepts or returns `interface{}` / `any`
+      (or `map[string]interface{}`) where a concrete type or a small named
+      interface would state the contract — so every caller must type-assert, and
+      a wrong assertion panics at runtime. The weak type pushes the failure out
+      of the compiler and into each call site.
+      FLAG `any` in an exported signature. The token `any` is the example; the
+      hazard is the untyped boundary it creates.
+      EXEMPT: genuinely generic plumbing (encoding, logging k/v, reflection-based
+      libraries) and post-generics cases better served by type parameters.
+    severity: warning
+
+  # tag: language-specific — the nil-map-write panic is a pure Go footgun
+  #   (a nil map reads fine but panics on write); no base-rubric kin.
+  - name: write-to-possibly-nil-map
+    status: stable
+    description: |
+      ANTI-PATTERN: a map is written to on a path where it may still be the nil
+      zero value (`var m map[K]V` with no `make` / literal init reaching the
+      write) — reading a nil map is fine, but writing one panics at runtime, so
+      the bug hides until that path executes.
+      FLAG `m[k] = v` where `m` could be nil on some path.
+      EXEMPT: maps provably initialized on all paths reaching the write.
+    severity: error
+
+  # tag: language-specific — package-level sentinel + errors.Is / typed error +
+  #   errors.As is the Go error-identity idiom. kin (universal):
+  #   l4_contracts::untyped-error-origin (error identity via string); Go form distinct.
+  - name: sentinel-error-compared-by-string
+    status: stable
+    description: |
+      ANTI-PATTERN: error IDENTITY is decided by matching the message text
+      (`if err.Error() == "not found"`) or by an `errors.New(...)` minted fresh
+      per call site — so a reworded message silently breaks the control flow, and
+      wrapped errors never match. The Go idiom is a package-level sentinel
+      compared with `errors.Is`, or a typed error matched with `errors.As`.
+      FLAG string comparison of error messages for control flow.
+      EXEMPT: logging / user-facing message formatting.
+    severity: warning
+
+  # tag: language-specific — unbuffered channels + goroutine handshakes are the
+  #   Go synchronization primitive; deadlock-on-error-path is a pure Go footgun.
+  - name: unbuffered-channel-send-without-receiver
+    status: stable
+    description: |
+      ANTI-PATTERN: a send blocks forever because no receiver is guaranteed on
+      that path — a send on an unbuffered (or full) channel whose receiving
+      goroutine may already have returned on the error path, or a WaitGroup /
+      channel handshake whose counts can't balance when a branch bails early.
+      FLAG an unbuffered `ch <- v` whose receiver may be gone.
+      EXEMPT: channels with a documented buffering / select-with-default fallback.
+    severity: warning

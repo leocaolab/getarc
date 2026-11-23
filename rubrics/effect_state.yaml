@@ -1,0 +1,650 @@
+name: Effect and State Discipline
+description: >
+  The «effect & state discipline» lens — resource, concurrency and cancellation
+  hazards, reframed through the Haskell north-star (bracket / bounded effect
+  graph / async-exception propagation). Universal across the imperative
+  languages arc reviews (Python / Go / Java / JS / TS / C / C++); several rules
+  are INERT in RAII / GC-scope languages (Rust `Drop`, Haskell `bracket`) and
+  say so. Rules are `experimental` until they earn a measured delta over a
+  bare critic (see docs/features/rubric-management) — candidates, not yet
+  promoted; `shared-mutable-state-in-decision-layer` went in `stable`, adopted
+  by the maintainer from a real review (pyre b/542, 2026-10-19).
+  Rules 7–10 were stable rules locked in one language's rubric (or, for the
+  sleep rule, in tests only); they moved here with their status when their
+  criterion was restated as a structural fact.
+
+rules:
+  # ── 1. RESOURCE OWNED BUT NOT RELEASED (sharpened: ownership vs release) ──
+  - name: resource-owned-but-not-released
+    status: experimental
+    severity: error
+    why: >
+      A unit borrows an exclusive / finite resource (lock, file, socket, DB
+      connection, subprocess, HTTP client) but does not guarantee its release
+      on every exit path. Haskell's `bracket` in imperative clothing.
+    description: |
+      ANTI-PATTERN: a unit (function / class) ACQUIRES more releasable resources
+      than it RELEASES. Count OWNERSHIP vs RELEASE — the discriminator is not
+      "is there a `with`/`finally` somewhere" but "does EVERY resource this unit
+      owns reach a release on every path". Two shapes, both fire:
+        (a) NO cleanup scope at all — `lock.acquire()` / `open(f)` /
+            `conn = connect()` / `Popen(...)` with no `with`/`finally`/`defer`
+            and an error / early-return path that skips the release.
+        (b) CLEANUP THAT DOESN'T RELEASE — the subtle one LLMs write: a
+            cleanup EXISTS but does not cover every owned resource, OR the
+            mechanism used does not actually release. Real examples:
+              - `with sqlite3.connect(...) as conn:` — sqlite3's context
+                manager COMMITS/ROLLS BACK but never CLOSES the connection;
+                the conn leaks despite the `with`.
+              - a class whose `__init__` creates a subprocess AND two
+                `httpx.Client`s, whose `stop()`/`__exit__` only kills the
+                subprocess — the two clients are never `.close()`d. Owns 3,
+                releases 1.
+      The tell is an OWNERSHIP/RELEASE mismatch: enumerate what the unit
+      acquires, then what it releases; a shortfall on any path is the finding.
+      BOUNDED-UNIVERSALITY: INERT in RAII / GC-scope languages — Rust's `Drop`
+      (a `MutexGuard` / `File` releases at scope end) and Haskell's `bracket`
+      guarantee release at the type level. DO NOT fire in Rust.
+      EXEMPT: ownership is RETURNED to the caller to release; a process-lifetime
+      singleton (a global pool held for the process's life).
+    gate_question: >
+      Enumerate the releasable resources this unit OWNS (lock/file/socket/conn/
+      process/client) and the releases it performs. Does every owned resource
+      reach a release on every path — INCLUDING async cleanup (`aclose`) and
+      resources a present `with`/context-manager does NOT actually close? A
+      shortfall → fire. (RAII/GC-scope language such as Rust → do NOT fire.)
+    example_bad: |
+      # owns 3 resources, releases 1 — the two httpx clients leak
+      def __init__(self):
+          self._process = subprocess.Popen(...)
+          self._client = httpx.Client()
+          self._async_client = httpx.AsyncClient()
+      def stop(self):
+          self._process.terminate()          # only the subprocess
+      # and: with sqlite3.connect(p) as conn:  ← commits, never closes conn
+    example_good: |
+      def stop(self):
+          self._process.terminate()
+          self._client.close()               # every owned resource released
+      async def aclose(self):
+          self.stop(); await self._async_client.aclose()
+
+  # ── 2. UNBOUNDED CONCURRENCY FAN-OUT ──
+  - name: unbounded-concurrency-fan-out
+    status: experimental
+    severity: error
+    why: Spawning one concurrent task per item with no bounded pool starves resources under load.
+    description: |
+      ANTI-PATTERN: spawning a concurrent task PER ITEM of an unbounded source
+      (a loop doing `asyncio.create_task` / `Thread(...)` / `executor.submit` /
+      `go` / `spawn` per element, or one task per inbound request) with NO
+      bounded pool / semaphore / bounded channel, so load fans out to resource
+      exhaustion (OOM, fd / thread explosion). Tokens are examples only — the
+      hazard is unbounded concurrent spawn.
+      EXEMPT (do NOT fire): a VISIBLE limiter — a semaphore, a fixed-size
+      worker/thread pool (`ThreadPoolExecutor(max_workers=N)`), a bounded
+      channel/queue, an `errgroup`/`Semaphore`-limited group.
+    gate_question: >
+      Does this spawn one concurrent task per item of an unbounded source with
+      no visible bounded pool / semaphore? If yes → fire.
+    example_bad: |
+      # one unbounded background thread per request
+      @app.get("/stream")
+      def stream(req):
+          threading.Thread(target=generate, daemon=True).start()
+    example_good: |
+      with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+          futures = [pool.submit(work, item) for item in batch]
+
+  # ── 3. CANCELLATION SIGNAL SWALLOWED ──
+  - name: cancellation-signal-swallowed
+    status: experimental
+    severity: error
+    why: A swallowed cancellation signal makes graceful shutdown / timeout hang.
+    description: |
+      ANTI-PATTERN: a cancellation / interrupt signal is CAUGHT and SWALLOWED
+      instead of propagated — a `catch`/`except` that eats `CancelledError`
+      (Python asyncio), a cancelled `context` (Go), an `AbortSignal` (JS),
+      `InterruptedException` (Java) — and neither re-raises nor honours the
+      cancellation, so shutdown / timeout deadlocks.
+      EXEMPT: the handler does cleanup and THEN re-raises / re-propagates
+      (`except CancelledError: cleanup(); raise`), OR it is a top-level handler
+      that HONOURS the signal by stopping the work (a graceful-shutdown handler).
+    gate_question: >
+      Is a cancellation/interrupt signal caught and dropped without being
+      re-propagated or honoured (the work keeps going)? If yes → fire.
+    example_bad: |
+      try: await task
+      except asyncio.CancelledError: pass      # swallowed — shutdown hangs
+    example_good: |
+      except asyncio.CancelledError:
+          await cleanup(); raise               # honoured, then propagated
+
+  # ── 4. EXCEPTION LOGGED AND RETHROWN ──
+  - name: exception-logged-and-rethrown
+    status: experimental
+    severity: warning
+    why: >
+      Logging AND rethrowing in one handler duplicates the stack trace at every
+      layer and mixes a side effect into a layer that admits it can't handle.
+    description: |
+      ANTI-PATTERN: the SAME catch/except block BOTH logs the error AND
+      re-throws/re-raises it. If this layer rethrows it has admitted it cannot
+      handle the error; producing a side effect (a log line) here duplicates the
+      trace up the stack and muddies which layer owns the failure. Effect
+      purity: do not emit an effect in a layer that punts.
+      EXEMPT: the log ADDS context the upper layers lack (an input value, a
+      correlation id, a resource name) — genuine enrichment, not a bare
+      restatement. Logging then RETURNING a handled value (not rethrowing) is
+      also fine — that layer handled it.
+    gate_question: >
+      Does one catch/except block both log the error and rethrow it, with no
+      added context? If yes → fire (low severity).
+
+  # ── 5. PURE LOGIC TRAPPED IN AN EFFECTFUL SCOPE (separate fetch from decide) ──
+  - name: pure-logic-in-effectful-scope
+    status: experimental
+    severity: warning
+    why: >
+      Functional-core discipline: a pure decision does not belong inside an
+      effectful scope. Wrapping a compare / predicate in an async runtime / lock
+      / transaction forces every reader (and every LLM edit) to reason about that
+      machinery to touch an `==`, and makes the logic untestable without mocking
+      the whole scope. Separate FETCH (effectful) from DECIDE (pure).
+    description: |
+      ANTI-PATTERN: a PURE sub-computation — an equality/comparison, a
+      predicate, a partition, arithmetic — is COMPUTED INSIDE a high-power
+      effectful scope (an `async` / `await` / `block_on` body, a spawned task,
+      a held lock, a DB transaction) when it consumes only already-materialized
+      values and needs NONE of that scope's power: no `await` on ITS OWN inputs,
+      no I/O, no shared state. The tell: you could cut the compare/predicate out
+      and run it on plain in-memory values with the runtime / lock / tx deleted.
+      Remedy: the effectful scope FETCHES (materializes the data), then hands it
+      to a SYNC PURE function that DECIDES — the decision leaves the runtime and
+      becomes unit-testable with in-memory values.
+      This is a UNIVERSAL judgment — apply it to EVERY unit, not just flagged
+      ones; there is no cheap signal for it, the reading of the body IS the test.
+      EXEMPT (do NOT fire): the computation genuinely uses the scope's power — it
+      awaits on its own input, interleaves with the I/O, or reads the shared
+      state the lock guards; then it belongs inside.
+    gate_question: >
+      Inside the async / block_on / spawned / locked / transaction scope, is
+      there a pure sub-computation (compare, predicate, partition, arithmetic)
+      that touches no await / I/O / shared-state and uses only already-fetched
+      values? If yes → lift it to a sync pure fn (the scope fetches, the fn
+      decides). If it truly needs the await result inline → do NOT fire.
+    example_bad: |
+      // a pure hash-compare trapped inside the async runtime + db loop
+      let (kept, skipped) = rt.block_on(async {
+          for unit in items {
+              let stored = store::hash_of(db, &unit.path).await?;          // FETCH (needs await)
+              if stored.as_deref() == Some(hash(&unit.content).as_str()) { // DECIDE (pure!)
+                  skipped.push(unit)
+              } else { kept.push(unit) }
+          }
+          (kept, skipped)
+      });
+    example_good: |
+      // the scope only fetches; the pure decision is a sync fn, testable alone
+      let with_hashes = rt.block_on(async {
+          let mut v = Vec::new();
+          for unit in items { v.push((unit, store::hash_of(db, &unit.path).await?)); }
+          v
+      });
+      let (kept, skipped) = partition_changed(with_hashes);  // pure — no runtime
+
+  # ── 6. SHARED MUTABLE STATE PARKED IN A DECISION LAYER (the mirror of 5) ──
+  # Source: pyre b/542 (2026-10-19) — `Gate` / `KeyedGate` (a lock around a Vec)
+  # defined in the pure `plan/` layer, built and shared only by `io/`.
+  - name: shared-mutable-state-in-decision-layer
+    status: stable
+    severity: warning
+    why: >
+      A decision layer is pure so that its answers depend on its inputs alone.
+      Cross-thread shared mutable state is STATE, not a decision — what it holds
+      depends on interleaving — so a layer that defines it is no longer pure,
+      whatever it imports. It belongs to the layer that shares it.
+    description: |
+      ANTI-PATTERN: a layer that presents itself as pure decision (a `plan` /
+      `policy` / `core` / `decide` module: no IO, no clock, no threads) still
+      DEFINES state shared and mutated across threads — a lock around a
+      collection (`Mutex<Vec<…>>`), an atomic, a concurrent map — typically a
+      "gate" / "registry" / "limiter" type that only the effectful layer builds
+      and shares. "Pure" means more than no IO, no clock, no spawn: it also
+      means no shared mutable state. Move the type to its user (the IO /
+      runtime layer that shares it); the decision layer keeps only the pure
+      part — given the current values, admit or refuse — as a function over
+      plain values, called by the owner under its own lock.
+      The mirror of `pure-logic-in-effectful-scope` (a decision trapped inside
+      an effectful scope); this is effectful state parked inside the decision
+      layer.
+      EXEMPT (do NOT fire): immutable shared data (`Arc<Config>`, a table, a
+      `const`); single-threaded state the decision layer owns and threads
+      through by value or `&mut` (an accumulator passed in and returned).
+    gate_question: >
+      Does a module that presents itself as pure decision define a lock, an
+      atomic or a concurrent collection that is shared across threads? If yes →
+      fire: move the type to the layer that shares it, keep the decision as a
+      pure function over plain values.
+    example_bad: |
+      // plan/gate.rs — the "pure decisions" layer
+      pub struct Gate { held: Mutex<Vec<Key>> }    // only io/ builds and shares it
+      impl Gate { pub fn try_enter(&self, k: Key) -> bool { .. } }
+    example_good: |
+      // plan/gate.rs keeps the decision, over plain values
+      pub fn admits(held: &[Key], k: &Key) -> bool { !held.contains(k) }
+      // io/gate.rs owns the shared state and asks the decision under its lock
+      struct Gate { held: Mutex<Vec<Key>> }
+
+  # ── 7. SHARED MUTABLE STATE WITH NO SYNCHRONIZATION ──
+  # Source: the Effective-books survey (research/2026-11-21-effective-books),
+  # found by all five groups under different names.
+  - name: unsynchronized-shared-write
+    status: experimental
+    severity: error
+    why: >
+      Two concurrent executors touching one mutable location with nothing that
+      orders a write against the other access is a data race: updates are lost,
+      a reader sees a torn or stale value, and in C / C++ the program has no
+      defined meaning at all. It passes every single-threaded test and fails
+      only under load.
+    description: |
+      ANTI-PATTERN: one mutable location (a field, a captured variable, a
+      global / static, a map or slice element) is reachable from TWO OR MORE
+      executors that can run at the same time (threads, goroutines, pool
+      tasks, a signal handler, workers sharing memory), at least one of them
+      WRITES it, and some write is not ordered against the other side's access
+      by a lock, an atomic, or a channel / join hand-off.
+      How to judge: name the executors that reach the location and where each
+      one runs; name the write; then look for the thing that orders them. No
+      such thing on some write / access pair → fire.
+      Shapes per language (tells, not the definition):
+        • Go: a `go func(){ … }` closure writes a captured outer variable that
+          the spawner, or another goroutine, also reads or writes with no
+          `sync.Mutex` / `sync/atomic` / channel between them; a plain map
+          written from several goroutines (the runtime aborts the process on
+          concurrent map writes). Go's idiom is to hand the value over a
+          channel instead of sharing it.
+        • Java / Kotlin / C#: a plain (non-`volatile`, non-`final`,
+          non-atomic) field written in one thread and polled in another — the
+          `boolean stopRequested` loop that never sees the stop; a lazily
+          built field published without `volatile` or a lock (double-checked
+          locking on a plain field); a `HashMap` / `ArrayList` mutated from
+          pool tasks.
+        • C / C++: any data race is undefined behaviour, not merely a lost
+          update — the compiler may hoist the load out of the loop so it never
+          ends. `volatile` is NOT synchronization in C or C++; a `volatile`
+          flag shared between threads still fires. A C++ `const` member
+          function that fills a `mutable` cache with no lock fires: `const`
+          promises callers concurrent calls are safe.
+        • Python: threads share objects; a field assigned in a
+          `threading.Thread` / `ThreadPoolExecutor` task body and read
+          elsewhere with no lock. The GIL makes ONE bytecode step atomic,
+          not a sequence of them — a race built from individually atomic
+          steps (`+=`, `if k not in d: d[k] = …`) is
+          `check-then-act-on-shared-state`, not this rule.
+        • JS / TS: single-threaded; fires only on memory shared between
+          workers (`SharedArrayBuffer`) without `Atomics`.
+        • Rust: safe Rust rejects data races at compile time — fire only on
+          `unsafe` code, `static mut`, or a hand-rolled `Sync` impl.
+      Boundary with the neighbours (one site, one rule):
+        • `check-then-act-on-shared-state` — there EVERY single access is
+          already safe (locked, atomic, GIL-atomic, or in an external store)
+          and the race is that two of them were not bundled; here some
+          access is not synchronized at all.
+        • `shared-mutable-state-in-decision-layer` asks WHERE shared state
+          lives, not whether it is synchronized.
+        • `java::volatile-on-compound-operation` owns a compound update of a
+          Java `volatile` field.
+      EXEMPT (do NOT fire): data written before the other executors start and
+      only read afterwards, with a happens-before edge (written before
+      `Thread.start` / `go`, `std::call_once`, `sync.Once`, a `final` field
+      set in the constructor); disjoint slots — each task writes only its own
+      `results[i]` and the reader waits on `wg.Wait()` / `join` first;
+      `thread_local` / per-goroutine state; state a framework confines to one
+      thread (a UI thread, an asyncio event loop) when the code stays on it.
+    gate_question: >
+      Which executors can reach this mutable location at the same time, which
+      of them writes it, and what (lock / atomic / channel / join) orders that
+      write against the others' accesses? Two or more concurrent executors, a
+      write, and nothing ordering them → fire. (Safe Rust → do not fire.)
+    example_bad: |
+      // Go: every handler goroutine bumps the same counter with no ordering
+      var hits int
+      for _, r := range reqs {
+          go func(r Req) { serve(r); hits++ }(r)
+      }
+      // Java: the worker may never observe the stop
+      class Worker implements Runnable {
+          private boolean stopRequested;
+          public void run() { while (!stopRequested) step(); }
+          public void stop() { stopRequested = true; }   // called from another thread
+      }
+    example_good: |
+      var hits atomic.Int64
+      for _, r := range reqs {
+          go func(r Req) { serve(r); hits.Add(1) }(r)
+      }
+      class Worker implements Runnable {
+          private volatile boolean stopRequested;          // a single write, a single read: visibility is enough
+          public void run() { while (!stopRequested) step(); }
+          public void stop() { stopRequested = true; }
+      }
+
+  # ── 8. LOCK (OR TRANSACTION) HELD WHILE CONTROL LEAVES THE UNIT ──
+  # Source: the Effective-books survey (research/2026-11-21-effective-books);
+  # go-rust-c, java-kotlin-csharp and general groups, under three names.
+  - name: lock-held-across-callout
+    status: experimental
+    severity: warning
+    why: >
+      While a lock or transaction is held, every other party that needs it
+      waits on whatever runs inside. Code the unit does not control can call
+      back into the object and find its invariants half-updated, take a second
+      lock in the opposite order and deadlock, or block for as long as it likes
+      while everyone queues behind it.
+    description: |
+      ANTI-PATTERN: inside a held lock or an open transaction, control passes
+      to code this unit does not control in behaviour or in duration:
+        (a) FOREIGN CODE — a callback or listener passed in or registered, a
+            method a subclass can override, an interface / trait-object /
+            virtual call whose implementation is not known here;
+        (b) UNBOUNDED WAIT — network or disk IO, a send on a bounded channel,
+            waiting on another task's result, a second lock, waiting for a
+            user (a DB transaction left open across a prompt or an HTTP call).
+      The question is not whether the called code is slow today but whether
+      THIS unit can promise it never re-enters, never locks, never blocks.
+      Shapes per language (tells, not the definition):
+        • Java / Kotlin / C#: a `synchronized` block or method (or
+          `lock.lock()` … `unlock()`, C# `lock (…)`) that iterates listeners,
+          calls a non-final / `open` / `virtual` method, or does IO.
+        • Go: between `mu.Lock()` and `mu.Unlock()` (or under `defer
+          mu.Unlock()`), a call through an interface value or a func field, a
+          channel send, a `Lock` on a second mutex.
+        • Python: inside `with lock:` a call to a stored callback, a method
+          meant to be overridden, a request / file / queue `put` that can
+          block.
+        • Rust: while a `MutexGuard` / `RwLock*Guard` is alive, a call
+          through `dyn Fn` / a trait object / a generic callback, a blocking
+          send, a second `lock()`. A blocking guard held across `.await` is
+          `rust::no-blocking-in-async` — do not fire this rule for it.
+        • C / C++: between `pthread_mutex_lock` and unlock, or under a
+          `std::lock_guard` / `unique_lock`, a call through a function
+          pointer, `std::function`, or a virtual function, or blocking IO.
+      Boundary with the neighbours: `pure-logic-in-effectful-scope` fires on
+      PURE computation kept inside a lock (it needs none of the lock); this
+      rule fires on FOREIGN or BLOCKING calls made inside it.
+      `java::synchronized-on-public-lock` is about WHO can take the lock, not
+      what runs under it.
+      EXEMPT (do NOT fire): the callee is this unit's own non-overridable
+      function with no IO and no locking; the pattern of copying what is
+      needed under the lock (a snapshot of the listener list) and calling out
+      AFTER releasing it; a nested lock taken in a lock order the code
+      documents and every site follows.
+    gate_question: >
+      While this lock / transaction is held, does any call go to code this
+      unit does not control (callback, listener, overridable / interface /
+      trait-object method) or wait without a bound (IO, channel send, second
+      lock, another task, a user)? If yes → fire; move the call after the
+      release, working from a snapshot taken under the lock.
+    example_bad: |
+      synchronized (this) {
+          state = next;
+          for (Listener l : listeners) l.onChange(next);   // foreign code under the lock
+      }
+    example_good: |
+      List<Listener> snapshot;
+      synchronized (this) {
+          state = next;
+          snapshot = List.copyOf(listeners);
+      }
+      for (Listener l : snapshot) l.onChange(next);       // called after release
+
+  # ── 9. CHECK-THEN-ACT ON STATE SOMEONE ELSE CAN CHANGE ──
+  # Source: the Effective-books survey (research/2026-11-21-effective-books);
+  # the general group's G1, the Python group's read-modify-write.
+  - name: check-then-act-on-shared-state
+    status: experimental
+    severity: error
+    why: >
+      A decision made on a value read a moment ago is only valid if nobody
+      changed the value in between. When another executor can, two callers
+      both see "absent" and both insert, both read 5 and both write 6 — the
+      duplicate, the lost update, the double initialisation — even though
+      every single read and write was itself safe.
+    description: |
+      ANTI-PATTERN: code READS state that another executor can change (a
+      shared field or collection, a file system path, a DB row, a cache
+      entry), DECIDES on what it read, then WRITES or ACTS on that same state,
+      and nothing makes read and write one atomic unit — no single lock held
+      across both, no transaction with a locking read (`SELECT … FOR
+      UPDATE`), no version column / compare-and-swap, no atomic primitive
+      that does both (`INSERT … ON CONFLICT`, `O_CREAT | O_EXCL`,
+      `computeIfAbsent`, `setdefault`, `sync.Once`, `OnceLock`,
+      `fetch_add`).
+      Shapes: hand-written lazy init (`if inst is None: inst = build()`);
+      "check for a duplicate, then insert" to keep something unique;
+      read-modify-write of a counter; `exists()` then `open()` / `mkdir`; a
+      lock taken for the read, released, and taken again for the write.
+      How to judge: find the read the decision rests on; find the write it
+      leads to; ask whether another executor can change the state between
+      them. Yes, and nothing binds the two → fire.
+      Shapes per language (tells, not the definition):
+        • Python: the GIL makes one bytecode step atomic, not two —
+          `self.n += 1`, `if k not in d: d[k] = []` from several threads
+          still race. In asyncio, a check and an act separated by an `await`
+          race too: another task runs at the `await`.
+        • JS / TS: single-threaded, but a check before an `await` and an act
+          after it interleave with every other pending task.
+        • Go: `if _, ok := m.Load(k); !ok { m.Store(k, v) }` on a `sync.Map`
+          (use `LoadOrStore`); a `Lock` / `Unlock` around the check and
+          another around the act.
+        • Java / Kotlin / C#: `if (!map.containsKey(k)) map.put(k, v)` on a
+          `ConcurrentHashMap` (use `putIfAbsent` / `computeIfAbsent`); a
+          get-then-set on an atomic where `compareAndSet` / `updateAndGet`
+          belongs.
+        • Rust: two separate `.lock()` calls for the check and the act; a
+          `load` then `store` on an atomic where `fetch_*` /
+          `compare_exchange` belongs; `Path::exists` then `File::create`.
+        • C / C++: `access()` then `open()` (a TOCTOU on the file system); a
+          `std::atomic` read followed by a separate write.
+        • SQL from any language: `SELECT` to see if a row exists, then
+          `INSERT`, in autocommit or at an isolation level that allows it.
+      Boundary with the neighbours (one site, one rule):
+        • `unsynchronized-shared-write` — there some access is not
+          synchronized at all; here every single access is safe and the race
+          is the gap between them.
+        • `java::volatile-on-compound-operation` owns a compound update of a
+          Java `volatile` field.
+        • `l4_contracts::derived-write-not-atomic-with-base` is two WRITES
+          that do not commit together; this is a READ whose decision guides a
+          write.
+      EXEMPT (do NOT fire): state only one executor can reach (a local
+      variable, an object not yet published, a single-writer design the code
+      documents); the check and act under ONE lock / guard / transaction; an
+      optimistic write that fails or retries when the state moved (CAS loop,
+      version check, a unique constraint the insert relies on and whose
+      violation is handled).
+    gate_question: >
+      Does the code read state another executor can change, decide on it, and
+      then write or act on that same state, with no single lock, locking
+      transaction, CAS / version check or atomic primitive spanning both
+      steps? If yes → fire.
+    example_bad: |
+      # two requests with the same email both see "none" and both insert
+      if not db.query(User).filter_by(email=e).first():
+          db.add(User(email=e)); db.commit()
+      // Java: two threads both miss, both build, one result is lost
+      if (!cache.containsKey(k)) cache.put(k, load(k));
+    example_good: |
+      # the database decides, atomically; the duplicate is a handled outcome
+      try:
+          db.add(User(email=e)); db.commit()        # UNIQUE(email)
+      except IntegrityError:
+          db.rollback(); raise EmailTaken(e)
+      cache.computeIfAbsent(k, this::load);
+
+  # ── 7. BLOCKING CALL ON AN EVENT LOOP (was rust_best_practices::no-blocking-in-async) ──
+  - name: blocking-call-on-event-loop
+    status: stable
+    severity: error
+    why: >
+      An event loop runs many tasks on one thread by letting each give the
+      thread back while it waits; a call that holds the thread instead starves
+      every other task on it, and the stall only shows under concurrent load.
+    description: |
+      ANTI-PATTERN: code running on a cooperative scheduler's thread — an async
+      executor, an event loop, a reactor — makes a call that holds the OS
+      thread for an unbounded time instead of yielding, so every other task
+      multiplexed onto that thread stops until the call returns. The whole
+      premise of the loop (many tasks per thread) is defeated at that one call.
+
+      Instantiated by (examples, not the definition):
+        • Rust: `std::fs` / `std::net` / `reqwest::blocking` / a synchronous DB
+          driver or `std::thread::sleep` inside an `async fn`; a
+          `std::sync::Mutex` guard (or any blocking / `!Send` guard) held ACROSS
+          an `.await`; `block_on` nested inside async code.
+        • Python: `requests.get`, `time.sleep`, a sync DB driver or
+          `subprocess.run` inside an `async def`.
+        • JS / TS: `fs.readFileSync`, `child_process.execSync`, or a long CPU
+          loop in a request handler or any callback the event loop runs.
+        • Java: `.block()` / `Future.get()` / blocking JDBC on a Reactor /
+          Netty / Vert.x event-loop thread.
+        • C / C++: a blocking `read` / `recv` / `sleep` inside a libuv /
+          libevent / Asio callback or a C++20 coroutine.
+        • any language: a long CPU-bound loop with no yield point.
+
+      JUDGE: can this call hold the OS thread for an unbounded time while the
+      scheduler is trying to drive other tasks on it? If yes, flag it; move the
+      call to a worker (`spawn_blocking`, `asyncio.to_thread` /
+      `run_in_executor`, a worker thread, a blocking-capable scheduler), use
+      the async equivalent, or release the guard before the suspension point.
+      BOUNDED-UNIVERSALITY: INERT in Go — the runtime parks a goroutine blocked
+      in a syscall and keeps scheduling the others, so there is no cooperative
+      thread to starve.
+      EXEMPT: blocking work before the first suspension in a task that then
+      runs alone; code already on a worker pool; single-threaded throwaway
+      contexts where starvation cannot matter.
+    universality: [rust, python, typescript, javascript, java, c, cpp]
+
+  # ── 8. BACKGROUND TASK WITHOUT OWNER (was go::goroutine-without-lifecycle + ts::floating-promise) ──
+  - name: background-task-without-owner
+    status: stable
+    severity: error
+    why: >
+      A task nobody awaits, cancels or hears from fails without anyone knowing,
+      leaks when the code that started it returns early, and lets the caller
+      race ahead of work it assumed was done.
+    description: |
+      ANTI-PATTERN: code starts a concurrent unit of work — a thread, a
+      goroutine, an async task, a promise — and keeps NO handle on it that
+      anyone uses: nothing waits for it, nothing can cancel it, and nothing
+      receives its failure. Three consequences, any one is enough:
+        - its failure vanishes (an unhandled rejection, a panic in a spawned
+          task, an exception inside a submitted future nobody `get`s);
+        - it outlives its purpose and leaks — blocked forever on a channel,
+          a socket, a timer — after the starter returned or errored;
+        - the starter proceeds as if the work were done when it is not.
+
+      Instantiated by (examples, not the definition):
+        • Go: `go func() { ... }()` whose body can block (channel op, network,
+          `<-time.After`) with no context, WaitGroup / errgroup or done channel.
+        • TS / JS: a promise-returning call in statement position with no
+          `await` / `return` / `.then` / `.catch`. `void p()` does NOT fix it:
+          `void` discards the rejection too.
+        • Rust: `tokio::spawn(...)` / `thread::spawn(...)` whose `JoinHandle`
+          is dropped, so a panic or `Err` inside it is never observed.
+        • Python: `asyncio.create_task(...)` whose result is not kept — the
+          loop holds only a weak reference, so the task can be collected
+          mid-flight — or a `Thread(...).start()` never joined.
+        • Java: `executor.submit(...)` whose `Future` is discarded (its
+          exception is swallowed inside the future); `new Thread(r).start()`.
+        • C++: a `std::thread` still joinable when its owner returns early
+          (its destructor calls `std::terminate`); a discarded `std::async`
+          future, whose destructor blocks — the "async" call ran synchronously.
+        • C: `pthread_create` with neither `pthread_join` nor `pthread_detach`.
+
+      JUDGE: follow the handle. Does anything wait for this task, cancel it,
+      or receive its failure on every path out of the starter — including the
+      early-return and error paths? No → flag it. Handing the task to an owner
+      that does (a task group, a supervisor, a pool that is shut down and
+      awaited, a scope such as `std::jthread` / structured concurrency) counts.
+      EXEMPT: fire-and-forget that provably completes without blocking and
+      cannot fail, documented as such; a call into a helper that itself
+      attaches the failure handler.
+      BOUNDARY: one task per item of an unbounded source is
+      `unbounded-concurrency-fan-out`; this rule owns a task whose outcome
+      nobody holds, however many are started.
+    example_bad: |
+      async function save(order) {
+        db.insert(order)            // rejection unhandled; save() returns first
+        return "ok"
+      }
+    example_good: |
+      async function save(order) {
+        await db.insert(order)
+        return "ok"
+      }
+
+  # ── 9. REMOTE CALL WITHOUT TIMEOUT (was go::context-without-deadline-on-io) ──
+  - name: remote-call-without-timeout
+    status: stable
+    severity: warning
+    why: A remote peer that stops answering holds a caller with no deadline forever.
+    description: |
+      ANTI-PATTERN: a call that waits on another process over the network — an
+      HTTP / RPC request, a database query, a queue read — is issued with NO
+      bound on how long it may wait, so a slow or hung peer stalls the caller
+      (and the request, worker or lock it holds) indefinitely.
+
+      Instantiated by (examples, not the definition):
+        • Go: `context.Background()` / `context.TODO()` handed straight into a
+          network / DB / RPC call at a request-handling layer.
+        • Python: `requests.get(url)` without `timeout=`;
+          `urllib.request.urlopen(url)` without `timeout`.
+        • JS / TS: `fetch(url)` with no `AbortSignal` / timeout.
+        • Java: an `HttpClient` request without `.timeout(...)`, an
+          `HttpURLConnection` without connect / read timeouts.
+        • Rust: a `reqwest` client built without `.timeout(...)` and a call not
+          wrapped in `tokio::time::timeout`.
+        • C / C++: a blocking `connect` / `recv` with no `SO_RCVTIMEO`, `poll`
+          timeout, or library-level timeout.
+
+      JUDGE: on the path of this call, does anything bound the wait — an
+      explicit timeout, a deadline inherited from the caller's request
+      context, a client configured with a default timeout? None → flag it.
+      EXEMPT: process-lifetime operations (startup, background workers that own
+      their own cancellation), top-of-main contexts, a call whose caller
+      already carries a deadline that reaches it.
+      BOUNDARY: a timeout or cancellation that IS raised and then caught and
+      dropped is `cancellation-signal-swallowed`.
+
+  # ── 10. FIXED SLEEP TO SYNC CONCURRENCY (was test_quality::fixed-sleep-to-sync-concurrency) ──
+  - name: fixed-sleep-to-sync-concurrency
+    status: stable
+    severity: error
+    why: "A fixed-duration sleep to wait for concurrent work races the work: it passes on a quiet machine and fails under load."
+    description: |
+      ANTI-PATTERN: code — production or test — waits for concurrent or
+      background work to finish (a thread, an async task, a spawned process, a
+      server coming up, a debounce, a replica catching up) by sleeping a
+      hardcoded duration instead of waiting on the actual completion signal.
+      The sleep RACES the work rather than observing it: it passes on a quiet
+      machine and fails under load (in a test: flakes in CI; in production:
+      reads half-written state, or talks to a server that is not up yet).
+      Applies to any concurrency primitive, not just async:
+        - Python `time.sleep(...)` / `asyncio.sleep(...)`
+        - Rust `tokio::time::sleep(...)` / `std::thread::sleep(...)`
+        - Go `time.Sleep(...)`
+        - JS/TS `await new Promise(r => setTimeout(r, 200))`
+        - Java `Thread.sleep(...)`
+        - C / C++ `sleep` / `usleep` / `std::this_thread::sleep_for(...)`
+      FLAG a fixed wait used to synchronize with work. The fix is explicit
+      completion waiting: join / await the task, an event / notify
+      (`asyncio.Event`, `tokio::sync::Notify`, a condition variable, a
+      channel), a readiness probe, or bounded polling of the real condition
+      with a timeout cap.
+      EXEMPT: a sleep that IS the behavior (a rate limiter's delay, a retry
+      backoff, a poll interval between checks of the real condition), and in a
+      test, a sleep that is the thing under test (verifying a rate limiter
+      actually delays).

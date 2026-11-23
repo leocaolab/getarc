@@ -1,0 +1,290 @@
+name: Structural design review (de-anchored, no line-level rule)
+description: |
+  The STRUCTURAL / DESIGN pass, authored as a rubric so it rides the ONE
+  review path (reviewer guide + injected rubric) instead of a bespoke
+  second persona. It is the de-anchored counterpart to the line-level
+  rubrics: a separate rubric-driven reviewer already checked this file
+  against specific correctness rules — these rules name the things NO
+  line-level rule expresses, read from the whole file as a whole.
+
+  Every finding MUST name a SPECIFIC rationale AND a CONCRETE cost (a real
+  drift / bug / maintenance hazard), quoting the offending lines. A
+  genuinely clean, well-factored file yields no findings — do not
+  manufacture findings to fill the array.
+
+# `structural` scope: loaded ONLY by the de-anchored review pass, never pulled
+# into the per-file L4 rubric set nor the L5 judge.
+applies_to: structural
+
+rules:
+
+  # ───────── god-module / mixed responsibilities ─────────
+  - name: god-module
+    status: stable
+    severity: warning
+    description: |
+      god-module / mixed responsibilities: one file (or function) doing
+      several unrelated jobs (e.g. serde shapes + domain model + IO +
+      business policy all in one module). `evidence` MUST enumerate the
+      distinct jobs and quote the lines that host each.
+    why: A unit with several unrelated reasons to change is the highest-churn,
+      hardest-to-test, hardest-to-own part of the system.
+    gate_question: |
+      Is one file or function doing several unrelated jobs (serde + domain +
+      IO + policy)? If yes → structural finding (name each job, propose the
+      split boundary).
+    example_bad: |
+      // one module: the wire DTO, the domain type, the DB read, AND the
+      // pricing policy — four reasons to change in one file
+      struct RowDto { .. }          // serde shape
+      struct Order { .. }           // domain model
+      fn load(db) -> Vec<RowDto>    // IO
+      fn discount(o: &Order) -> f64 // business policy
+    example_good: |
+      // split by responsibility: wire, domain, adapter, policy each own a file
+      // wire.rs: RowDto   domain.rs: Order   store.rs: load()   pricing.rs: discount()
+
+  # ───────── redundant or duplicate types ─────────
+  - name: redundant-or-duplicate-type
+    status: stable
+    severity: warning
+    description: |
+      redundant or duplicate types: a private DTO whose fields are identical
+      to a public domain type, with a mechanical field-for-field copy between
+      them; two structs that are one concept under two names. `evidence` MUST
+      show both types and the mechanical copy between them.
+    why: One concept under two names doubles every change and lets the two
+      drift apart silently; the mechanical copy is pure ceremony.
+    gate_question: |
+      Is there a private DTO field-for-field identical to a public domain
+      type (with a mechanical copy between them), or two structs that are one
+      concept under two names? If yes → structural finding.
+    example_bad: |
+      struct Order { id: u64, total: i64 }        // public domain type
+      struct OrderRow { id: u64, total: i64 }     // private DTO — identical
+      fn to_row(o: &Order) -> OrderRow { OrderRow { id: o.id, total: o.total } }
+    example_good: |
+      // one type carries the concept; no field-for-field twin, no copy
+      struct Order { id: u64, total: i64 }
+
+  # ───────── inconsistent idioms across the file ─────────
+  - name: inconsistent-idioms
+    status: stable
+    severity: warning
+    description: |
+      inconsistent idioms across the file: some errors via a derive macro and
+      some hand-rolled; some data assembled declaratively and some
+      imperatively for no reason. `evidence` MUST cite the two sites that
+      differ and show they solve the same problem two ways.
+    why: Two idioms for one job forces every reader to learn both and every
+      change to pick one, and the divergence hides which is canonical.
+    gate_question: |
+      Does the file solve the SAME problem two different ways for no reason
+      (some errors derived + some hand-rolled; some data declarative + some
+      imperative)? If yes → structural finding.
+    example_bad: |
+      #[derive(thiserror::Error)] enum EA { .. }   // one error idiom
+      impl std::error::Error for EB {}             // ...and a hand-rolled one
+      impl std::fmt::Display for EB { .. }         // for the same kind of error
+    example_good: |
+      // one error idiom across the file
+      #[derive(thiserror::Error)] enum EA { .. }
+      #[derive(thiserror::Error)] enum EB { .. }
+
+  # ───────── dead or needless abstraction ─────────
+  # "Testable once split" is not a fact of its own: pyre b/541 (2026-10-19).
+  - name: dead-or-needless-abstraction
+    status: stable
+    severity: warning
+    description: |
+      dead or needless abstraction: a type/variant nothing constructs, or a
+      split-out piece (an indirection, a helper, a "pure" function, a
+      plan/decide module) that holds no fact of its own — no decision whose
+      edges are worth testing by themselves, no owner other than its one
+      caller. "It can be tested once it is split out" is NOT such a fact: a
+      split carries its own fact, or it is splitting for its own sake. One
+      user alone is not the smell; one user AND no fact of its own is.
+      `evidence` MUST show the abstraction, the count of its real users, and
+      the fact it owns (or that it owns none).
+    why: A piece with no fact of its own (or a variant nothing builds) is cost
+      with no leverage — a hop to read through, and tests that pin the seam
+      instead of what the code means.
+    gate_question: |
+      Is there a type/variant nothing constructs, or a split-out piece that
+      owns no fact of its own (no independent decision, no separate owner —
+      only "now it is testable")? If yes → structural finding (inline it /
+      delete it).
+    example_bad: |
+      trait Widen { fn widen(&self) -> i64; }   // one impl, one call site
+      impl Widen for i32 { fn widen(&self) -> i64 { *self as i64 } }
+      enum Mode { A, B }                          // nothing ever builds Mode::B
+      fn next_after(k: Kind) -> Next { .. }       // split out only to be tested;
+                                                  // its one caller re-matches Next
+    example_good: |
+      // call it directly; drop the variant nothing constructs
+      let x: i64 = (n as i32) as i64;
+      enum Mode { A }
+
+  # ───────── one variant's consequences scattered ─────────
+  # Source: pyre b/541 (2026-10-19) — classify, count and log level in one file,
+  # the next step in another, then converted again into a ControlFlow.
+  - name: variant-consequences-scattered
+    status: stable
+    severity: warning
+    description: |
+      one variant's consequences scattered: what a variant of ONE enum means —
+      which counter it bumps, which log level it logs at, what happens next —
+      is written as SEVERAL matches over that enum (or over values converted
+      one-to-one from it), spread across functions or files: classify in one
+      match, count in a second, pick the log level in a third, decide the next
+      step in a fourth in another module, then convert that into yet another
+      control-flow value. Reading what one variant does means visiting every
+      match; adding a variant means editing all of them. Write each variant's
+      whole consequence in ONE place — one match whose arms say everything
+      that variant means — and test that place.
+      EXEMPT: matches owned by different owners (a parser's and a renderer's
+      match over one syntax tree); a conversion at a real boundary into
+      another owner's type.
+      `evidence` MUST list each match over the enum (file:line) and what each
+      one decides.
+    why: The meaning of one variant is smeared across sites; a new variant
+      needs N coordinated edits, and the tests pin the seams between the
+      pieces instead of what a variant means.
+    gate_question: |
+      Is one enum's per-variant consequence (counter, log level, next step, …)
+      decided by more than one match over it, across functions or files? If
+      yes → structural finding (name the one place it belongs).
+    example_bad: |
+      // listener.rs
+      let kind = classify(&err);                    // match 1: error → Kind
+      stats.bump(counter_for(kind));                // match 2: Kind → counter
+      match kind { Kind::Transient => debug!(..), Kind::Fatal => error!(..) }  // match 3
+      // plan.rs
+      pub fn next_after(k: Kind) -> Next { match k { .. } }                    // match 4
+      // listener.rs again: Next → ControlFlow
+    example_good: |
+      // one place says everything a failure kind means; that is what is tested
+      impl Kind {
+          fn consequence(self) -> Consequence {     // { counter, level, next }
+              match self {
+                  Kind::Transient => Consequence { counter: Counter::Retried, level: Level::Debug, next: Next::Retry },
+                  Kind::Fatal     => Consequence { counter: Counter::Fatal,   level: Level::Error, next: Next::Stop },
+              }
+          }
+      }
+
+  # ───────── abstraction wider than its difference ─────────
+  # Source: pyre b/544 (2026-10-19) — a `Sharing` trait with 4 associated types
+  # and 10 methods mirroring Arc/Rc, Mutex/RefCell, AtomicBool/Cell, for one
+  # real difference: how the shared state is borrowed.
+  - name: abstraction-wider-than-its-difference
+    status: stable
+    severity: warning
+    description: |
+      abstraction wider than its difference: an abstraction hides a REAL
+      difference between two or more variants (a thread-shared and a
+      thread-local flavour, say), but its surface is far wider than that
+      difference — several associated types and many methods that mirror the
+      variants pair by pair (`Arc`/`Rc`, `Mutex`/`RefCell`, `AtomicBool`/`Cell`)
+      when what actually differs is ONE operation. The abstraction is shaped
+      like its implementations instead of like the difference. One difference
+      gets one variation point (one method, one type parameter); everything
+      else is written once on top of it.
+      Boundary vs `dead-or-needless-abstraction`: that one has no second
+      variant or no fact of its own; this one has a real second variant, but
+      the surface is many times the difference.
+      EXEMPT: the variants genuinely differ at each of those members.
+      `evidence` MUST count the surface (associated types + methods), count
+      the places the variants truly differ, and name the one variation point.
+    why: A surface that mirrors its implementations doubles every change,
+      hides which part actually varies, and makes the next variant mirror all
+      of it again.
+    gate_question: |
+      How many places do the variants behind this abstraction truly differ,
+      and how wide is its surface (associated types + methods)? If the surface
+      is far wider than the difference → structural finding (name the one
+      variation point).
+    example_bad: |
+      trait Sharing {                 // mirrors Arc/Rc, Mutex/RefCell, AtomicBool/Cell
+          type Ptr<T>; type Lock<T>; type Flag; type Guard<'a, T>;
+          fn share<T>(t: T) -> Self::Ptr<T>;
+          fn lock<T>(l: &Self::Lock<T>) -> Self::Guard<'_, T>;
+          fn set(f: &Self::Flag); fn get(f: &Self::Flag) -> bool;
+          // … six more, one per mirrored operation
+      }
+    example_good: |
+      // the one real difference — how the shared state is borrowed — is the
+      // one variation point; everything else is written once on top of it
+      trait Lend { fn with<R>(&self, f: impl FnOnce(&mut State) -> R) -> R; }
+
+  # ───────── mechanism beyond the fact ─────────
+  # Source: pyre b/543 (2026-10-19) — an in-memory client with two async
+  # runtimes per connection, a Mutex<Option<half>> and a watch, for one
+  # blocking two-way pipe. Where it is spent: pyre b/538 (every after-hook copies
+  # the whole body again, on the hot path) against b/541 (three layers for the
+  # rare accept-failure branch).
+  - name: mechanism-beyond-the-fact
+    status: stable
+    severity: warning
+    description: |
+      mechanism beyond the fact: the code uses more machinery than the fact it
+      expresses needs. Count it — runtimes, threads, locks, channels / watches,
+      halves taken out of an `Option` and put back — against the fact said in
+      one sentence ("a blocking two-way pipe", "one value handed to one
+      reader"). When the count exceeds what the fact needs, first ask whether
+      a more direct shape exists (a pair of blocking pipes, one owned value
+      moved across, one channel). Every extra mechanism brings a failure mode
+      the fact never had: a lock held across an await, a runtime dropped
+      inside another, a half taken twice, a shutdown signal nobody sends.
+      Spend the complexity where the work is: rare error branches and test
+      seams stay the simplest code that works — no messenger types or clones
+      built ahead at every boundary for imagined failures or tests — while the
+      hot path (copies, locks, allocations per request) is where care pays.
+      Over-built cold paths next to a wasteful hot path is this smell too.
+      EXEMPT: a boundary the code does not control forces the mechanism (a
+      caller-dictated async interface), and what is there is the minimum that
+      boundary needs — name the boundary.
+      `evidence` MUST state the fact in one sentence, list the mechanism with
+      counts, and name the more direct shape (or quote the hot-path waste
+      beside the cold-path machinery).
+    why: Machinery beyond the fact is where concurrency bugs live, and it
+      buries the simple fact so the reader can no longer see it.
+    gate_question: |
+      Say in one sentence the fact this code expresses. How many runtimes,
+      threads, locks and channels does it use for it? Is there a more direct
+      shape with fewer? Is the effort upside down — elaborate machinery on a
+      rare branch, while the hot path copies or allocates what it need not?
+      If yes → structural finding.
+    example_bad: |
+      for hook in &after { resp.body = hook(resp.body.clone()); } // hot path: whole body copied per hook
+      // …while the rare accept failure gets its own classify / plan / convert layers
+      struct MemClient {                        // fact: a blocking two-way pipe
+          rt_read: Runtime, rt_write: Runtime,  // two runtimes per connection
+          read: Mutex<Option<ReadHalf<Duplex>>>, // taken out, put back
+          closed: watch::Receiver<bool>,
+      }
+    example_good: |
+      for hook in &after { hook(&mut resp.body); }   // hot path: no copy
+      // rare failure: one match, written plainly
+      // the fact, directly: one blocking pipe per direction
+      struct MemClient { to_server: PipeWriter, from_server: PipeReader }
+
+  # ───────── free review: the reviewer's own judgment ─────────
+  - name: free-review
+    status: stable
+    severity: warning
+    description: |
+      Free review — anything a thoughtful engineer would flag that no specific
+      rule above (line-level or structural) names. This is the default rule
+      that lets you use your own judgment. Not a licence to nitpick, though:
+      the noise gate still binds — name a SPECIFIC rationale AND a CONCRETE
+      cost, quoting the offending lines. `evidence` MUST quote the lines and
+      state the concrete cost.
+    why: The problems worth a human's time are open-ended; a fixed list can't
+      name them all, so this rule anchors the reviewer's free judgment — under
+      the same concrete-cost discipline as every other rule.
+    gate_question: |
+      Is there a structural / design problem a thoughtful engineer would flag
+      that none of the rules above name — with a SPECIFIC rationale and a
+      CONCRETE cost you can quote? If yes → structural finding. If you cannot
+      name a concrete cost, stay silent.

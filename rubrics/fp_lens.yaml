@@ -1,0 +1,291 @@
+name: FP-Lens Review
+description: >
+  The FUNCTIONAL-PROGRAMMING lens — applied to code in ANY language
+  (Rust, TypeScript, Python, Go, Java, ...). Every rule here is a
+  UNIVERSAL functional-discipline hazard, independent of language.
+  arc's own code (functional-core / imperative-shell) is built on
+  exactly these principles, and the codebases arc reviews are judged
+  against the same discipline whatever language they are written in.
+
+  The functional principles this lens enforces, in whatever language:
+
+    - Effects belong in the type / signature — a function that reaches out
+      to the filesystem, network, clock, or randomness must SAY so; it may
+      not masquerade as a pure transform.
+    - Referential transparency — same inputs, same outputs. No hidden
+      dependence on mutable module/global state or on ambient effects.
+    - Totality / honest absence — a function whose type promises a value
+      must deliver one on every input, OR its type must admit absence
+      (Option / Maybe / Either / Result). Partial operations
+      (head / first / `arr[0]` / `.unwrap()` / `fromJust` / dictionary
+      lookup) called as if total are the archetype.
+    - Explicit sequencing — an expression that looks pure must not secretly
+      depend on the ORDER of side effects.
+    - Exhaustive case analysis — a match / branch over a discriminated
+      union must cover every shape.
+
+  These are not "the target language is laxer than a pure FP language" complaints —
+  filter those OUT (e.g. "this language allows mutation by default" applies
+  to the whole language, not this code; dead signal). Report ONLY when the
+  functional-discipline break causes a concrete runtime misuse, silent
+  failure, corruption, or race in THIS specific code under review.
+
+  Cap 6 issues per scan. Prefer silence when code is clean.
+
+# applies to any language — this is a viewpoint, not a language rubric.
+# (no `language:` filter ⇒ loaded for every reviewed file, like the base rubrics.)
+
+rules:
+  # tag: universal (functional lens) — totality / honest absence. The
+  #   archetype is a partial operation (head / first / fromJust / `.unwrap()` /
+  #   `arr[0]` / dict lookup) invoked as if total. Cross-language family:
+  #   rust_best_practices::no-unwrap-in-library (the Rust panic/abort form).
+  #   This rule is the language-agnostic home for the Go panic-in-library
+  #   spelling too (fires on Go directly — no separate go rule needed).
+  - name: partial-function-as-total
+    status: stable
+    description: >
+      ANTI-PATTERN (totality violation): a function's signature promises it
+      always returns a value, but the body has implicit partial paths — it
+      returns null / None / nil / undefined on a missing key, falls through
+      to a throw instead of returning, `return;`s out of a loop with no
+      `else`, or calls a partial operation as if total (`head` / `first` /
+      `arr[0]` / `.unwrap()` / `fromJust` / `x[k]` on an absent key /
+      `panic!` / `unreachable!` on input the type permits). Functional
+      discipline would make absence explicit in the type (Option / Maybe /
+      Either / Result); without it callers treat the result as total and
+      crash or silently ignore the failure case.
+      Flag when the caller dereferences / uses the result without an explicit
+      absence check. This is the SINGLE-call contract; chained dereferences
+      are `null-in-chain-no-maybe`. In Go the same hazard is a `panic()` or an
+      input-reachable crash (index-out-of-range, nil map / pointer deref)
+      escaping a non-main, non-test function where a returned `error` is the
+      contract.
+      EXEMPT: a crash that is a genuinely unrecoverable invariant violation
+      documented with an adjacent comment; an `init()` / bootstrap
+      misconfiguration that must abort; and test helpers.
+    severity: error
+
+  # tag: universal (functional lens) — effect placement. A function that
+  #   LOOKS pure performs IO. Overlaps: referential-transparency-violation
+  #   (its nondeterminism twin) and impure-higher-order-target (same crime in
+  #   HOF position). This is exactly arc's functional-core / imperative-shell rule.
+  - name: hidden-io-in-pure-sig
+    status: stable
+    description: >
+      ANTI-PATTERN (effect-placement violation): a function named / signed
+      like a pure transform (`compute_*`, `format_*`, `parse_*`, `to<Foo>`,
+      `as<Bar>`) reaches out to the filesystem / network / random / clock
+      inside — the effect is hidden from its type and its name. Functional
+      discipline keeps effects in the signature (an `IO` / effectful type, a
+      passed-in dependency); a pure-looking effectful function passes tests
+      locally then breaks in CI, races with other calls, or yields
+      non-deterministic output.
+      Call this out especially when the function is consumed by higher-order
+      code (map / reduce / memoization / cache key) that ASSUMES determinism.
+    severity: error
+
+  # tag: universal (functional lens) — referential transparency. Same inputs,
+  #   different outputs. Overlaps hidden-io-in-pure-sig (this is the observable
+  #   symptom; that is the mechanism) — flag whichever the evidence best fits.
+  - name: referential-transparency-violation
+    status: stable
+    description: >
+      ANTI-PATTERN (referential-transparency violation): the same inputs
+      produce DIFFERENT outputs, because the function secretly depends on
+      module-level mutable state, the clock, randomness, or a cache.
+      Functional discipline confines anything non-deterministic to an
+      effectful type so callers can see it.
+      Flag when such a function is used where referential transparency is
+      assumed — in an assertion, a test, a memo key, or a cache lookup — since
+      those silently corrupt or flake when the output is not a pure function
+      of the input.
+    severity: error
+
+  # tag: universal (functional lens) — honest absence in a CHAIN. Overlaps
+  #   l4_contracts nullable/absence handling; the functional framing is the
+  #   Option/Maybe bind (`>>=` / `fmap`) that this code skips. Sibling of
+  #   partial-function-as-total (that is single-call; this is chaining).
+  - name: null-in-chain-no-maybe
+    status: stable
+    description: >
+      ANTI-PATTERN (unguarded absence in a chain): a lookup that can miss —
+      `.get(...)` / `.find(...)` / `.first()` / array indexing / `Map.get` —
+      returns a nullable mid-chain, and the NEXT step dereferences it
+      (`.field`, `.method()`, indexing) with no absence check in between.
+      Functional discipline threads the optional through a bind / map
+      (Option / Maybe / Result) so the missing case is handled once and
+      cannot be forgotten. Without it the chain throws
+      NullPointerException / "Cannot read property of undefined" /
+      nil-pointer-dereference / "unwrap on None".
+      Different from partial-function-as-total: this is about *chaining* a
+      nullable into a dereference, not the single-call contract.
+    severity: error
+
+  # tag: universal (functional lens) — explicit state threading. A function
+  #   both mutates shared state AND returns a value, hiding the effect.
+  #   Overlaps referential-transparency-violation / hidden-io-in-pure-sig;
+  #   this facet is the UNDECLARED mutation of caller-visible state.
+  - name: state-leak-across-returns
+    status: stable
+    description: >
+      ANTI-PATTERN (hidden state mutation): a function mutates shared state
+      (a module / file global, an instance field on self / this, a passed-in
+      map / list / struct) AND returns a value — so it does two jobs while
+      looking like it does one, and the caller cannot tell what changed
+      without reading the body. Functional discipline threads state
+      explicitly (a State-style pass-through, or return the new state) so the
+      mutation is visible in the type.
+      Flag when the mutation is NOT documented in the doc-comment AND the
+      function name does not signal it (`update_*` / `set_*` / `apply*`).
+    severity: warning
+
+  # tag: universal (functional lens) — explicit sequencing. A "pure-looking"
+  #   expression secretly depends on the ORDER of side effects (incl. lazy
+  #   evaluation / single-consumption iterators). Overlaps state-leak; this
+  #   facet is order/timing dependence, not just the mutation itself.
+  - name: effect-order-dependent-expression
+    status: stable
+    description: >
+      ANTI-PATTERN (implicit effect sequencing): an expression that LOOKS
+      pure actually depends on the sequencing of side effects — a
+      comprehension / loop body that mutates as it goes, a kwargs / options
+      map shared and mutated across calls, a generator / stream / iterator
+      consumed in one branch only, a lazy sequence forced twice. Functional
+      discipline makes sequencing explicit (do-notation / an explicit fold /
+      a fresh value per step) so evaluation order can't silently change the
+      result. These bugs manifest as "works the first time, breaks on retry /
+      replay / reordering".
+    severity: warning
+
+  # tag: universal (functional lens) — exhaustive case analysis. A branch over
+  #   a discriminated union LOOKS total but misses a variant. Cross-language
+  #   family: non-exhaustive match / missing-enum-case; here judged when the
+  #   scrutinee is a genuine sum type (enum / sealed class / tagged / Literal union).
+  - name: total-seeming-pattern-match
+    status: stable
+    description: >
+      ANTI-PATTERN (non-exhaustive case analysis): an `if / elif / else`
+      chain or a `match` / `switch` / `when` that LOOKS exhaustive but does
+      not cover every shape of the input — an implicit absence fall-through,
+      an unhandled subclass, a new enum / sealed-class variant added
+      elsewhere and never wired in here. Functional discipline treats a
+      non-exhaustive case as an error; in laxer languages the unhandled
+      branch silently returns a default or falls through, so a later-added
+      variant is silently mishandled.
+      Flag when the input is a discriminated union (enum, sealed class
+      hierarchy, sum type, Literal union, tagged union) — the case where a
+      missing branch is a latent correctness bug, not a style nit.
+    severity: warning
+
+  # tag: universal (functional lens) — purity of higher-order arguments. The
+  #   callable handed to a combinator does IO / reads mutable state. This is
+  #   hidden-io-in-pure-sig / referential-transparency-violation SPECIFICALLY
+  #   in higher-order position, where the impurity corrupts the combinator.
+  - name: impure-higher-order-target
+    status: stable
+    description: >
+      ANTI-PATTERN (impure higher-order argument): a function passed to a
+      higher-order combinator (map / filter / reduce / sort comparator /
+      memoization / cache key / stream operator) performs IO or depends on
+      mutable state — but the combinator assumes its argument is pure.
+      Functional discipline keeps the combinator's callable pure so results
+      are order- and repetition-independent; an impure target silently
+      corrupts caches, breaks parallelism, or re-orders effects (a sort
+      comparator that isn't a pure total order can even crash or loop).
+    severity: error
+
+  # tag: universal (functional lens) — declare the dataflow, don't script it.
+  #   The whole-function SHAPE sibling of hidden-io-in-pure-sig (that is one fn
+  #   LYING about purity in its signature) and of effect_state::
+  #   pure-logic-in-effectful-scope (that is a pure BIT trapped in one effectful
+  #   scope; this is the whole function interleaving FETCH + DECIDE). Per-file
+  #   defect with a LOCAL fix (extract a pure fn) — it runs in `arc local-review`, NOT
+  #   the system-level refactor.yaml (which only runs under `arc refactor`).
+  #   This is the GENERAL "business logic ⊥ IO/infra" rule; l4_contracts::
+  #   domain-rule-in-persistence-layer is one narrow specialisation of it (a DAO
+  #   hardcoding a business predicate) — the general principle lives HERE.
+  - name: core-buried-outward
+    status: experimental
+    severity: error
+    description: |
+      ANTI-PATTERN (imperative scripting — the opposite of functional dataflow):
+      pure business logic (the DECIDE) is inlined inside a function that also
+      does the IO to obtain its data (the FETCH) OR runs the INFRASTRUCTURE
+      plumbing around it, so "what the data means" is tangled with "how to fetch
+      it" and "how the machinery runs" in one procedural recipe nobody can read.
+      Two flavours of the thing tangled INTO the business logic — both count:
+        • IO — data crossing the process boundary: DB / network / filesystem /
+          env / clock reads (an `.await` on a store, an `fs::` call);
+        • INFRASTRUCTURE — plumbing that runs the system but carries no business
+          meaning: async-runtime control (`block_on` / `spawn` / a reactor),
+          connection / pool management (`db.acquire()`), serialization glue,
+          retry / timeout / circuit-breaker machinery, DAG / pipeline wiring.
+      Tell: in the same body, alongside that IO/infra, the function runs
+      non-trivial business logic — filtering, hashing, comparison, status
+      routing, `if`/`else`/`match` decisions, transforming iteration. The
+      sharpest form is the read → decide → write-back "IO sandwich": a loop that
+      fetches, branches on the fetched value, then mutates/persists in one pass.
+      Remedy: keep the IO/infra in the effectful function, but EXTRACT the DECIDE
+      into a PURE function that takes the already-materialized data and touches
+      no IO/infra. It does NOT have to move to a "core" crate — purity is the
+      property, not a location; the pure fn may live right beside its caller.
+      EXEMPT: a genuinely data-DEPENDENT fetch (the next read's key is computed
+      from the previous read's result, so it cannot be batched ahead) — the
+      interleave is essential there; and a function that is only fetch (no logic)
+      or only logic (no fetch).
+    why: |
+      Interleaving mixes "how to fetch" with "what the data means": the business
+      logic can no longer be unit-tested in pure memory (you must mock the whole
+      runtime / DB), can't be read without tracing IO lifetimes, and hands an LLM
+      an effectively infinite action space to edit through. Separated, the DECIDE
+      is a pure function testable with in-memory values.
+    gate_question: |
+      Does this function perform real IO AND make business-rule decisions (more
+      than a trivial nil-check) on the fetched data? If yes → refactoring axis:
+      the fetch phase stays, the decision phase MUST be extracted into a pure
+      function (which may live in the same module — purity, not relocation).
+
+  # tag: universal (functional lens) — a decider needs no power to execute.
+  #   The EXECUTE-side complement of core-buried-outward (that separates the
+  #   FETCH from the decision; this separates the decision from the WRITE),
+  #   bracketing a pure core between two shells: fetch → decide(plan) → execute.
+  - name: decision-executes-its-own-effect
+    status: experimental
+    severity: warning
+    description: |
+      ANTI-PATTERN (a decider that also wields the effect): a function works out
+      that the world must change — "this issue should be closed", "this row must
+      be upserted", "this file must be deleted" — from NON-TRIVIAL logic, and
+      then, in the same function, EXECUTES that change via IO (`db.insert`,
+      `fs::remove`, an HTTP write). Decision and execution are fused, so the
+      interesting logic (which of N outcomes, under which conditions) cannot be
+      exercised without performing the effect.
+      PRECISION — the boundary is I/O, not "execution". Pure CPU / memory work
+      is ALWAYS allowed inline: loops, sorting, hashing, regex, AST walks,
+      building an in-memory collection. Only steps that cross the process
+      boundary are the effect that must be deferred — network, disk / DB,
+      filesystem, a syscall (clock, randomness), a subprocess. A decider may
+      compute all it likes; it may not touch the outside world.
+      Remedy: the decision function returns a DECLARATIVE value describing the
+      intended change — an `enum Command { CloseIssue(Id), UpdateHash(Id, Hash) }`
+      or a list of such — and the imperative shell caller reads that plan and
+      performs the IO. Fetch → decide(→ plan) → execute(plan): a pure core
+      between two shells; the routing is unit-testable, every effect funnels
+      through one auditable executor.
+      EXEMPT: a TRIVIAL single decision driving a single local effect, where a
+      Command indirection would add more machinery than it removes — that
+      indirection is itself an over-powered construct (see `least-power`); and a
+      function whose only job IS execution, with no non-trivial decision to lift.
+    why: |
+      Fusing the decision with its execution makes the branching logic untestable
+      without a live DB / FS and grows God functions that both reason and act. A
+      returned plan is a pure value: the routing tests with in-memory inputs, and
+      the shell that performs the effects stays small enough to read at a glance.
+    gate_question: |
+      Does this function make a NON-TRIVIAL decision (multi-outcome / state
+      routing, not a single nil-check) about what the outside world should
+      become, AND immediately execute it via IO? If yes → refactoring axis:
+      return a declarative Command / plan and let the shell caller perform the
+      IO. If the decision is trivial, or the plan would be more machinery than
+      the effect it wraps → do NOT fire.

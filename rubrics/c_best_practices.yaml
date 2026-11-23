@@ -1,0 +1,336 @@
+name: C Best Practices
+description: >
+  C correctness rules for L4 review, from Effective C (Seacord, 2nd ed.,
+  No Starch 2024): memory lifetime, buffer bounds, integer conversions and
+  undefined integer results, status returns, format strings. Function bodies
+  visible. Flag concrete sites, not style.
+
+  The file loads for C and C++ because most of these hazards are the same in
+  both (C++ calls the same C library and shares its integer and object
+  model). A rule whose C++ form has its own home in `cpp_best_practices`
+  narrows itself to C with `universality: [c]`. Note that `.h` files are
+  reviewed as C, so a C++ header named `.h` gets the C-only rules too: judge
+  such a file by the language it is actually written in.
+
+language: [c, cpp]
+
+rules:
+  # Kin: security_common::validate-external-input owns "input consumed before
+  #   validation"; this rule owns the write whose bound is not tied to the
+  #   destination, whether or not any input is involved.
+  - name: unbounded-buffer-write
+    status: experimental
+    description: |
+      ANTI-PATTERN: data is written into a fixed-size buffer, and the number
+      of bytes (or elements) written is not bounded by the size of that
+      destination on the path to the write. A longer source overruns the
+      buffer: stack or heap corruption, the classic overflow exploit.
+
+      Instantiated by (examples, not the definition):
+        • `strcpy` / `strcat` / `sprintf` / `vsprintf` / `gets` /
+          `scanf("%s")` into an array;
+        • `memcpy(dst, src, n)` where `n` comes from the source or the input,
+          not from `sizeof dst` or a checked capacity;
+        • a loop that advances a destination pointer or index until the
+          SOURCE ends, with no check against the destination's end;
+        • C++: `std::copy` / `std::transform` into `v.begin()` of a vector
+          that was never sized for it; `v.data()` / `&v[0]` handed to a C API
+          that writes more than `v.size()` elements.
+
+      JUDGE: on every path to the write, is the amount written provably
+      ≤ the destination's capacity — by construction (`malloc(strlen(s)+1)`
+      then `strcpy`), by a bound argument (`snprintf(b, sizeof b, …)`,
+      `strncpy` plus explicit termination), or by a check before the write?
+      If not, flag the write and name the destination and the unbounded
+      length.
+      EXEMPT: a source whose length is a compile-time constant shorter than
+      the destination; `std::back_inserter` / a container that grows.
+      BOUNDARY: a size expression that measures the wrong object
+      (`sizeof` of a pointer) is `sizeof-of-wrong-object`.
+    why: |
+      Effective C, chapters "Characters and Strings" (String-Handling
+      Functions) and "Input/Output" (reading lines and formatted text). An
+      out-of-bounds write is the most common memory-safety CVE class in C.
+    example_bad: |
+      char name[32];
+      strcpy(name, req->user);          /* req->user can be any length */
+    example_good: |
+      char name[32];
+      int n = snprintf(name, sizeof name, "%s", req->user);
+      if (n < 0 || (size_t)n >= sizeof name) return E_NAME_TOO_LONG;
+    severity: error
+
+  # C++ form (dangling reference / view / iterator, use after move) lives in
+  #   cpp_best_practices, so this rule is C only.
+  # Kin: effect_state::resource-owned-but-not-released is the leak (released
+  #   too late or never); this is the opposite, used after release.
+  - name: object-used-outside-its-lifetime
+    status: experimental
+    universality: [c]
+    description: |
+      ANTI-PATTERN: an object's lifetime has ended, and the code still reads,
+      writes or frees it through a pointer that outlived it: use after free,
+      double free, use of the old block after `realloc` moved it, or a pointer
+      to an automatic variable used after its scope or function returned.
+      The memory may already hold another object; the result is corruption
+      that surfaces far from the cause.
+
+      Instantiated by (examples, not the definition):
+        • `free(p); log(p->name);`
+        • two exit paths that each `free` the same pointer;
+        • `q = p; p = realloc(p, n); use(q);`
+        • returning, or storing in a longer-lived struct, the address of a
+          local array or variable;
+        • a struct still listed in a container after its owner freed it.
+
+      JUDGE: follow each pointer from where its object dies (free, realloc,
+      scope exit, ownership handed to a callee that frees) to its later uses.
+      Is any use reachable after the death? Flag it and name both sites.
+      EXEMPT: `free(p); p = NULL;` followed only by NULL checks; ownership
+      transferred (`list_push(l, p)`) and `p` not touched afterwards; an
+      object with static storage duration.
+    why: |
+      Effective C, chapters "Objects, Functions, and Types" (Storage
+      Duration) and "Dynamically Allocated Memory" (Memory States).
+    severity: error
+
+  # Kin: integer-operation-with-undefined-result is arithmetic whose result
+  #   is undefined; this is a conversion whose result is defined but wrong.
+  - name: narrowing-numeric-conversion
+    status: experimental
+    description: |
+      ANTI-PATTERN: a number is converted to a narrower type, or between
+      signed and unsigned, and its range on this path has not been shown to
+      fit the target type. The conversion silently truncates or changes
+      sign, and the changed value is then used as a length, an index, an
+      allocation size, a field written to a file or the wire, or one side
+      of a comparison.
+
+      Instantiated by (examples, not the definition):
+        • `int n = strlen(s);` / `uint16_t len = payload_size;` with no prior
+          bound;
+        • `if (i < n)` where `i` is `int` and `n` is `size_t`, so a negative
+          `i` compares as a huge unsigned value;
+        • `int got = read(fd, buf, sizeof buf);` stored into a `size_t` before
+          the `-1` case is handled;
+        • a `double` converted to an integer type without checking it is in
+          range (undefined when it is not).
+
+      JUDGE: does the source's possible range exceed the target's, with
+      nothing on the path (a mask, a clamp, an explicit range check, a type
+      that already bounds it) establishing it fits, AND does the converted
+      value then control memory, a comparison, or an encoded field? Then flag
+      it and name the source range and the target type.
+      EXEMPT: `(uint8_t)(x & 0xff)` and similar where the operand is visibly
+      bounded; conversions of loop counters bounded by a small constant.
+    why: |
+      Effective C, chapter "Arithmetic Types" (Arithmetic Conversion, Safe
+      Conversions) and "Expressions and Operators" (Relational Operators).
+    severity: warning
+
+  # Kin: rust_best_practices::must-use-result and
+  #   go_best_practices::ignored-error-return state the same principle for
+  #   Result and the `error` return. C has neither: failure is an in-band
+  #   value (NULL, -1, EOF, a short count, a truncation length), so the
+  #   hazard is not only discarding it but USING it as if it were success.
+  #   C and C++ are homed here; those two rules stay with their languages.
+  - name: ignored-return-status
+    status: experimental
+    description: |
+      ANTI-PATTERN: a function reports failure through its return value (the
+      C library, POSIX, and project functions following the same convention),
+      and on some path that value is never compared against its failure
+      value before the program proceeds as if the call worked. Two shapes:
+        (a) DISCARDED — the call stands alone as a statement (`fclose(f);`,
+            `write(fd, buf, n);`, `pthread_mutex_lock(&m);`);
+        (b) USED UNCHECKED — the returned value is used as a success value:
+            `p = malloc(n); p->x = 0;`, `n = read(...); buf[n] = 0;`
+            (n may be -1), `snprintf` whose return (the length it wanted)
+            is ignored, so truncation goes unnoticed.
+      Also this rule: `p = realloc(p, n)` — on failure it returns NULL and the
+      only pointer to the old block is lost.
+
+      JUDGE: if this call FAILED, would the program now continue on a false
+      premise (a NULL dereference, data not written, a partial read treated
+      as whole, a lock not held)? If yes, flag it. A short count from
+      `read` / `write` on a stream or socket is a failure to handle too.
+      EXEMPT: an explicit `(void)f();` with an adjacent comment saying why
+      the failure cannot matter; `printf` to stdout in a command-line tool.
+      BOUNDARY: a call whose return is a pure result with no failure value
+      (C++ `std::remove` without `erase`) is not this rule.
+    why: |
+      Effective C, chapters "Getting Started" (Function Return Values),
+      "Dynamically Allocated Memory" and "Input/Output" (Opening and Creating
+      Files).
+    example_bad: |
+      buf = realloc(buf, cap * 2);      /* NULL on failure: old buf leaked */
+      buf[len++] = c;                   /* and dereferenced */
+    example_good: |
+      char *grown = realloc(buf, cap * 2);
+      if (grown == NULL) return E_NOMEM; /* buf still valid, caller frees it */
+      buf = grown;
+    severity: error
+
+  - name: externally-controlled-format-string
+    status: experimental
+    description: |
+      ANTI-PATTERN: the format-string argument of a printf-family function
+      (`printf`, `fprintf`, `snprintf`, `syslog`, `err`, or a project wrapper
+      that forwards to one) is not a string literal but data that can come
+      from outside the program: a request field, a file's contents, a
+      message, an error text received from elsewhere. A `%n` in that data
+      writes memory; `%s` / `%x` read the stack.
+
+      JUDGE: trace the format argument back. Is it anything other than a
+      literal or a constant chosen from a fixed table in the program? Then
+      flag it; the fix is `printf("%s", msg)`.
+      EXEMPT: a format built by the program only from literals; a wrapper
+      declared with `__attribute__((format(printf, …)))` called with a
+      literal.
+      BOUNDARY: external data used as SQL or a shell command is
+      `security_common::no-sql-injection` / `no-shell-injection`.
+    why: |
+      Effective C, chapter "Getting Started" (Formatted Output).
+    severity: error
+
+  - name: read-of-uninitialized-object
+    status: experimental
+    description: |
+      ANTI-PATTERN: an object with automatic storage duration, or memory from
+      `malloc` / `realloc` / C++ `new T` of a built-in or aggregate type, is
+      read on some path before anything writes it. Its value is indeterminate
+      (for some types reading it is undefined behaviour), so the program's
+      result depends on whatever was in that memory.
+
+      Instantiated by (examples, not the definition):
+        • `int rc; if (ok) rc = run(); return rc;`
+        • a struct filled field by field where one branch skips a field that
+          is read later;
+        • `malloc` followed by `strcat` (reads the garbage before the first
+          NUL);
+        • C++: a constructor whose initializer list leaves a built-in member
+          unset, which a method later reads.
+
+      JUDGE: for each such object, is there a path from its creation to a
+      read that has no write in between? Flag the read and name the path.
+      EXEMPT: an out-parameter the callee is documented to write on every
+      success path, used only after checking that success; a large buffer
+      left uninitialized on purpose, written before every read, with a
+      comment saying so.
+    why: |
+      Effective C, chapter "Objects, Functions, and Types" (Declaring
+      Variables); also Effective C++ (initialize objects before use).
+    severity: error
+
+  # Kin: rust_best_practices::unchecked-arithmetic-on-input (opened to C/C++
+  #   separately) owns an input-controlled magnitude that sizes memory; that
+  #   case is usually unsigned and wraps with a DEFINED result. This rule owns
+  #   operations whose result is UNDEFINED, input or not — which lets the
+  #   compiler delete the code that was meant to catch them.
+  - name: integer-operation-with-undefined-result
+    status: experimental
+    description: |
+      ANTI-PATTERN: an integer operation can reach an operand range where C
+      and C++ leave the result undefined, and nothing on the path excludes
+      that range:
+        • signed `+`, `-`, `*` that can overflow, including the overflow
+          check written AFTER the operation (`if (a + b < a)` on signed
+          values), which the optimizer may remove because overflow "cannot
+          happen";
+        • a shift by a count that can be negative or ≥ the width of the
+          (promoted) left operand, or a left shift of a negative value;
+        • `/` or `%` where the divisor can be zero, or `INT_MIN / -1`;
+        • `abs(INT_MIN)`.
+
+      JUDGE: can the operands on this path reach the undefined range? If
+      nothing (a prior range check, the operand's type, a constant) rules it
+      out, flag the operation. The fix checks BEFORE the operation
+      (`if (b > INT_MAX - a)`), uses `__builtin_*_overflow` / C23
+      `ckd_add`, or moves to an unsigned type where wrapping is intended.
+      EXEMPT: unsigned arithmetic (wrapping is defined); operands bounded by
+      small constants.
+    why: |
+      Effective C, chapters "Arithmetic Types" (Integers) and "Expressions
+      and Operators" (Arithmetic and Bitwise Operators).
+    example_bad: |
+      int total = used + extra;
+      if (total < used) return E_OVERFLOW;   /* may be optimized away */
+    example_good: |
+      if (extra > INT_MAX - used) return E_OVERFLOW;
+      int total = used + extra;
+    severity: error
+
+  # C only: cpp_best_practices owns "a macro where a language construct
+  #   fits" for C++, where inline functions and templates replace most macros.
+  - name: unsafe-function-like-macro
+    status: experimental
+    universality: [c]
+    description: |
+      ANTI-PATTERN: a function-like macro whose expansion changes meaning
+      depending on how it is called:
+        • an argument that appears more than once in the expansion, so an
+          argument with a side effect (`MAX(i++, j)`) runs twice;
+        • an argument or the whole expansion not parenthesized, so
+          operator precedence at the call site regroups it
+          (`#define SQ(x) x * x` with `SQ(a + 1)`);
+        • a multi-statement macro not wrapped in `do { … } while (0)`, so
+          under an `if` without braces only its first statement is
+          conditional.
+
+      JUDGE: write one plausible call site where the expansion does
+      something other than the macro's evident intent. If you can, flag the
+      macro; prefer a `static inline` function when nothing needs the macro
+      (no `#x`, `__FILE__`, type-genericity).
+      EXEMPT: a macro called only with constants or plain identifiers whose
+      double evaluation is harmless and documented.
+    why: |
+      Effective C, chapter "Preprocessor" (Macro Definitions, Macro
+      Replacement).
+    severity: warning
+
+  # Kin: unbounded-buffer-write owns a write whose length is not tied to the
+  #   destination; this rule owns a size expression that measures the wrong
+  #   object, which can under-clear or under-allocate with no overflowing write.
+  - name: sizeof-of-wrong-object
+    status: experimental
+    description: |
+      ANTI-PATTERN: a `sizeof` expression used as a size measures something
+      other than the object it sizes:
+        • `sizeof` of an array parameter, which has decayed to a pointer
+          (`void f(int a[16]) { memset(a, 0, sizeof a); }` clears 8 bytes);
+        • `malloc(sizeof(p))` / `malloc(sizeof(struct node *))` where the
+          pointee was meant;
+        • `sizeof` of a different type than the one assigned
+          (`struct big *b = malloc(sizeof(struct small));`).
+
+      JUDGE: does the measured type equal the type of the memory being
+      allocated, copied or cleared? If not, flag it; `malloc(n * sizeof *p)`
+      and passing the element count alongside an array parameter keep the
+      two tied.
+      EXEMPT: `sizeof(void *)` used deliberately for an array of pointers.
+    why: |
+      Effective C, chapter "Expressions and Operators" (sizeof Operator).
+    severity: error
+
+  # Kin: security_common::validate-external-input owns unvalidated input in
+  #   general; this rule fires on an unbounded stack size whatever its
+  #   source, including one computed inside the program.
+  - name: unbounded-stack-allocation
+    status: experimental
+    description: |
+      ANTI-PATTERN: a variable-length array or `alloca` is sized by a
+      run-time value with no upper bound on the path. A large value
+      overflows the stack — a crash, or with a guard page skipped, a write
+      into other memory — and the failure cannot be detected the way a NULL
+      from `malloc` can.
+
+      JUDGE: is there a bound check (`if (n > MAX) return …`) before the
+      VLA declaration or `alloca` call, small enough for the thread's stack?
+      If not, flag it; use a fixed-size array with a checked bound, or the
+      heap.
+      EXEMPT: a VLA parameter type (`void f(size_t n, int a[n])`), which
+      allocates nothing.
+    why: |
+      Effective C, chapters "Objects, Functions, and Types" (Variably
+      Modified Types) and "Dynamically Allocated Memory" (alloca, VLAs).
+    severity: warning
