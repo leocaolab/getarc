@@ -1,6 +1,6 @@
 ---
 name: coding-convention
-description: 写代码的方法 —— 先写四张表: 归属 (正面: 每一方拥有哪些事实、决定什么; 反面: 它不知道、不决定、不等什么; 边界: 两方之间只越过什么), 再退一步写流转 (每个事实从产出到落下经过哪些阶段和状态机, 一行只有一个类型); 类型、判断函数、注释从表里翻译出来; 修一个发现时先找到那个事实的那一行。末尾一节是查的时候对照的规则 (注释、类型、命名、品位、错误)。不分仓库、不分语言。写或改代码之前加载 (和对应语言的 shift-left-* 一起); 派 agent 写代码时在 brief 里链接这个 skill, 不转述。Triggers include writing or editing any source file, designing a type or module, fixing a review finding, "注释不对", "comment 不对", "起个名字", "coding convention", "编码规范".
+description: "写代码的方法 —— 先写四张表: 归属 (正面: 每一方拥有哪些事实、决定什么; 反面: 它不知道、不决定、不等什么; 边界: 两方之间只越过什么), 再退一步写流转 (每个事实从产出到落下经过哪些阶段和状态机, 一行只有一个类型); 类型、判断函数、注释从表里翻译出来; 修一个发现时先找到那个事实的那一行。末尾一节是查的时候对照的规则 (注释、类型、命名、品位、错误)。不分仓库、不分语言。写或改代码之前加载 (和对应语言的 shift-left-* 一起); 派 agent 写代码时在 brief 里链接这个 skill, 不转述。Triggers include writing or editing any source file, designing a type or module, fixing a review finding, \"注释不对\", \"comment 不对\", \"起个名字\", \"coding convention\", \"编码规范\"."
 ---
 
 # 先建模, 再写代码

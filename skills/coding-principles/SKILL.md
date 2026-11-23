@@ -1,6 +1,6 @@
 ---
 name: coding-principles
-description: A high-level coding standard — ~26 language-neutral axioms, each distilled from a recurring failure or a review-rubric axis. These are the SOURCE: shift-left-<lang> instantiates them per language, the review rubrics detect their violation. Load when writing, reviewing, or reasoning about a design — the "why" under every specific rule.
+description: "A high-level coding standard — ~26 language-neutral axioms, each distilled from a recurring failure or a review-rubric axis. These are the SOURCE: shift-left-<lang> instantiates them per language, the review rubrics detect their violation. Load when writing, reviewing, or reasoning about a design — the \"why\" under every specific rule."
 ---
 
 # Coding principles (the standard)
