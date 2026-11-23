@@ -5,10 +5,8 @@ description: >-
   binary from getarc, LLM providers in tars, `arc init` roles, optional merge gate /
   deploy / coding-agent hooks, then a smoke test. Probes what is already there,
   does only what is missing, verifies each stage with one command, and stops with
-  the real error when one fails. Run it first, before the skills that drive the
-  arc CLI (review, fix, rot, automate, maintain). Use when the user says "install
-  arc", "set up arc", "装 arc", "配 arc", or another arc skill found arc missing or
-  unconfigured.
+  the real error when one fails. Use when the user says "install arc", "set up
+  arc", "装 arc", "配 arc", or another arc skill found arc missing or unconfigured.
 allowed-tools: "Bash Read Edit Write"
 ---
 
@@ -84,9 +82,14 @@ first (installs nothing), show the person the version and `missing_verbs`.
   worked; do not substitute old verbs.
 
 **3 `tars`.** `probe.py --stage tars` lists the providers and, per provider, whether its
-env var is set / its CLI is on PATH. If there is no tars config or no provider, ask
-which model access the person has, then propose one `[providers.<id>]` block per
-provider (format and fields: `$S/reference.md` § tars providers; types: `openai`, `openai_compat`,
+env var is set / its CLI is on PATH. If there is no tars config or no provider and
+`claude` is on PATH, the default is Claude Code itself: propose the two `claude_cli`
+blocks of `$S/reference.md` § No API key (`claude_critic` on opus, `claude_fixer` on
+sonnet with `tools = "default"`). They sign in with the person's `claude login`, so no
+key is asked for; mention that a fixer from another family would keep the review more
+independent, and move on. Without `claude`, the same holds for `codex` (`codex_cli`).
+With neither, ask which model access the person has, then propose one `[providers.<id>]`
+block per provider (format and fields: `$S/reference.md` § tars providers; types: `openai`, `openai_compat`,
 `anthropic`, `gemini`, `bedrock`, `vllm`, `mlx`, `llamacpp`, `claude_cli`, `claude_sdk`,
 `codex_cli`, `opencode`, `antigravity`). Writing the tars config is global: show the
 block and ask. An API-key provider uses
@@ -143,7 +146,12 @@ their agent from `$S/reference.md` § Bridge and the `~/.arc/client.toml` line
   `~/.arc/machine.toml`. Both need an `origin` whose default branch they review against,
   and someone to name as the runner: an agent session (Claude Code, Codex, agy) or a
   `gh` login, else they refuse with `cannot tell who is submitting`. The person pushes
-  the result with `git push`.
+  the result with `git push`. When the probe's `gh_authed` is false, say what that
+  costs: inside an agent session nothing; from a plain terminal, `local-review` and
+  `fix` refuse; `arc submit` (team edition) cannot run. To fix it the person installs
+  GitHub's CLI (https://cli.github.com — `brew install gh`, or their distribution's
+  package) and runs `gh auth login` themselves: it is interactive and signs them in,
+  so never run it for them.
 - `review_service_here` false (the usual case) only means no team-edition review service
   serves this repo from this machine, so nothing here would review a PR `arc submit`
   opens. Say so plainly; it does not stop the personal edition.

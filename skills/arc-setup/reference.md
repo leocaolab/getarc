@@ -15,6 +15,28 @@ Where arc looks: `--tars_home DIR` reads `DIR/config.toml`; `--tars-config FILE`
 the file directly; with neither, `$TARS_HOME/config.toml`, else `~/.tars/config.toml`.
 Pass the same flag to every arc call.
 
+### No API key: the default when `claude` is on PATH
+
+Both roles run through Claude Code and sign in with the person's `claude login`:
+
+```toml ignore: ~/.tars/config.toml, tars's file, not arc's
+[providers.claude_critic]
+type = "claude_cli"
+default_model = "opus"
+
+[providers.claude_fixer]
+type = "claude_cli"
+default_model = "sonnet"
+tools = "default"                   # REQUIRED for a Fixer; the default "disabled" cannot edit
+timeout_secs = 900                  # default 300
+```
+
+`[roles]`: `default`/`critic`/`critic_l4`/`critic_l5` = `claude_critic`, `fixer` = `claude_fixer`.
+With `codex` instead, the same two blocks with `type = "codex_cli"`, a Codex model id
+as `default_model`, and on the fixer `sandbox = "workspace-write"` in place of `tools`.
+
+### Every type
+
 ```toml ignore: ~/.tars/config.toml, tars's file, not arc's
 [providers.gemini_flash]            # an API-key provider
 type = "gemini"
