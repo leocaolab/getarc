@@ -12,6 +12,6 @@ The user guide lives on the website, in English and Chinese:
 - [Custom rubrics](https://arc-site.hucao1.workers.dev/docs/guides/custom-rubrics/) · [Troubleshooting](https://arc-site.hucao1.workers.dev/docs/faq/troubleshooting/)
 - Team edition: [the merge gate](https://arc-site.hucao1.workers.dev/docs/guides/merge-gate/) — writing `merge.yml` · [Releases and deploys](https://arc-site.hucao1.workers.dev/docs/guides/release/)
 
-Install and a quick start are in the [README](README.md#install).
+Install and a quick start are in the [README](README.md#get-started).
 
 `arc <command> --help` is the source of truth for flags.
