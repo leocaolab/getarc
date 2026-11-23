@@ -211,6 +211,44 @@ a person, or the next LLM sent to change it. Every jump between levels of abstra
 scatters the reader's attention, and where attention breaks is exactly where bugs and
 hallucinations get in. The clearer the code, the more precisely the next agent changes it.
 
+## What the review catches
+
+A three-function Python file an agent wrote, reviewed through Claude Code:
+
+```text
+$ arc local-review
+- finding F-3 — calc.py:14 [l4_contracts::pure-function-mutates-input]
+  reviewer: `median` advertises itself as a read-only statistic yet `xs.sort()`
+  reorders the caller's list in place. A caller computing `median(records)` silently
+  loses its own ordering. Use `ys = sorted(xs)` and index `ys`.
+    13 | def median(xs):
+  > 14 |     xs.sort()
+
+- finding F-4 — calc.py:15 [structural::free-review]
+  reviewer: For an even-length input this does not return the median.
+  `median([1, 2, 3, 4])` returns 3, while the median is 2.5 …
+
+[A.R.C.] 5 finding(s) open — fix them in this working tree and run `arc local-review` again, or run `arc fix`
+```
+
+![Two panels. Left, "Agent's review (unsystematic)": a robot sprays a codebase wall with a machine gun, leaving scattered holes labelled MISSING BUG, SECURITY HOLE, LOGIC ERROR MISSED, MAJOR OMISSION. Right, "Our systematic review (thorough)": a code-review engine and robotic rollers lay uniform coverage over the wall.](agent-vs-arc.png)
+
+Ask an agent to "review this" and you get buckshot: it sees one small block at a time,
+follows no fixed rule set and remembers nothing it checked last time, so a few shots land,
+the bugs live in the gaps, and a re-run hits different holes. arc reviews the other way:
+
+- **Rubrics pin the rules.** Each rule names one hazard, so one smell is one finding.
+- **Deterministic detectors go first**, so the model confirms a signal instead of
+  re-deriving it.
+- **Findings are records**, with a status and an append-only history across review
+  rounds. Each one is answered — fixed or won't fix — instead of scrolling away.
+
+Beyond each change, `arc rot` measures the whole repository for structural rot —
+god-modules, the same idiom in three or more files, one concept modelled as several
+same-named types, dependencies pointing the wrong way — and returns suggestions, not a
+refactor button. `arc rot --no-judge` gives the deterministic signals alone, cheap enough
+to trend in CI.
+
 ## From watching the screen to autopilot
 
 With arc, the way we develop changed. Using an agent used to feel like day-trading: eyes
