@@ -9,6 +9,23 @@ kept in `<repo>/.arc/` (SQLite) with an append-only history.
 
 One binary. macOS (Apple Silicon) and Linux x86_64. Bring your own model.
 
+### Let your coding agent set it up
+
+Paste this into Claude Code, Codex or another coding agent, in the repository you
+want arc on:
+
+<!-- The one source of this prompt: the arc site's homepage and the arc user guide copy it word for word. -->
+```text
+Install the arc-setup skill. If you're in Claude Code, run `claude plugin marketplace add leocaolab/getarc`, then `claude plugin install arc@getarc`. If you're in another agent, run `npx skills add leocaolab/getarc --skill arc-setup` and select your agent. Use one installation method. You can read the skill directly at https://github.com/leocaolab/getarc/blob/main/skills/arc-setup/SKILL.md (raw: https://raw.githubusercontent.com/leocaolab/getarc/main/skills/arc-setup/SKILL.md). Then use the arc-setup skill to install and configure arc in this repository.
+```
+
+The [arc-setup skill](skills/arc-setup/SKILL.md) checks what is already there and
+walks the stages in order: the binary, your LLM providers in tars, `arc init`'s
+roles, optional hooks, then a first run. It asks before anything global or
+outward and stops with the real error when a stage fails.
+
+Or install the binary yourself:
+
 ```bash
 curl -fsSL https://github.com/leocaolab/getarc/releases/latest/download/install.sh | sh
 ```
@@ -68,20 +85,6 @@ arc --version
 
 No other platform has a build, an Intel Mac included. If you need one,
 [open an issue](https://github.com/leocaolab/getarc/issues).
-
-### Or let your coding agent set it up
-
-Paste this into Claude Code, Codex or another coding agent, in the repository you
-want arc on:
-
-```text
-Set up A.R.C. (arc) in this repository with the arc-setup skill. If you're in Claude Code, run `claude plugin marketplace add leocaolab/getarc`, then `claude plugin install arc@getarc`. If you're in another agent, run `npx skills add leocaolab/getarc --skill arc-setup` and select your agent. Use one installation method. You can read the skill directly at https://github.com/leocaolab/getarc/blob/main/skills/arc-setup/SKILL.md (raw: https://raw.githubusercontent.com/leocaolab/getarc/main/skills/arc-setup/SKILL.md). Then use the arc-setup skill to install and configure arc here.
-```
-
-The [arc-setup skill](skills/arc-setup/SKILL.md) checks what is already there and
-walks the stages in order: the binary, your LLM providers in tars, `arc init`'s
-roles, optional hooks, then a first run. It asks before anything global or
-outward and stops with the real error when a stage fails.
 
 ---
 
@@ -249,7 +252,7 @@ unpack it and run `claude --plugin-dir ./arc-skills` (the skills are then `arc-s
 
 | Skill | What it does |
 |---|---|
-| [`arc-setup`](skills/arc-setup/SKILL.md) | installs and configures arc, stage by stage |
+| [`arc-setup`](skills/arc-setup/SKILL.md) | installs and configures arc, stage by stage; use it first |
 | [`review`](skills/review/SKILL.md) | runs `arc local-review`, real findings first; read-only |
 | [`fix`](skills/fix/SKILL.md) | runs `arc fix` on the local PR; pushes nothing |
 | [`rot`](skills/rot/SKILL.md) | works through `arc rot`'s suggestions as refactors; asks first |

@@ -5,8 +5,10 @@ description: >-
   binary from getarc, LLM providers in tars, `arc init` roles, optional merge gate /
   deploy / coding-agent hooks, then a smoke test. Probes what is already there,
   does only what is missing, verifies each stage with one command, and stops with
-  the real error when one fails. Use when the user says "install arc", "set up
-  arc", "装 arc", "配 arc", or another arc skill found arc missing or unconfigured.
+  the real error when one fails. Run it first, before the skills that drive the
+  arc CLI (review, fix, rot, automate, maintain). Use when the user says "install
+  arc", "set up arc", "装 arc", "配 arc", or another arc skill found arc missing or
+  unconfigured.
 allowed-tools: "Bash Read Edit Write"
 ---
 
