@@ -3,7 +3,7 @@ description: >
   Java / JVM correctness + idiom rules for L4 review. Function bodies
   visible. Cap 10 issues. Flag concrete call sites, not stylistic
   preference. Targets the failure modes the language and stdlib
-  invite: equals/hashCode contract breaks, shared mutable static
+  invite: shared mutable static
   state, null-vs-Optional, over-broad catch, resource leaks, and
   concurrency primitives misused.
 
@@ -26,26 +26,9 @@ description: >
 language: [java]
 
 rules:
-  # TAG language-specific — the equals/hashCode contract is a genuine
-  # Java stdlib invariant (hash-based collections rely on it). No
-  # cross-language duplicate.
-  - name: equals-without-hashcode
-    status: stable
-    description: |
-      ANTI-PATTERN: a value type honors only HALF of Java's equality
-      contract — it overrides one of `equals(Object)` / `hashCode()`
-      but not the other — so two instances that compare equal can hash
-      to different buckets (or vice versa) and silently misbehave as
-      `HashMap` / `HashSet` keys: lookups miss, duplicates slip into a
-      set. The two overrides are ONE example of the anchor; the hazard
-      is the broken contract, not the keyword.
-      JUDGE: does this class participate in equality/hashing with the
-      two halves out of sync? FLAG that. EXEMPT: records (compiler
-      generates both), a class that genuinely overrides NEITHER (it
-      inherits identity semantics on purpose), or a class never used as
-      a key / in a set.
-    severity: error
-
+  # NOTE: the former `equals-without-hashcode` rule moved to
+  #   l4_contracts::equality-contract-split, which also judges Rust, Python
+  #   and C++ (equality and hashing built from different fields).
   # NOTE: the former `mutable-static-field` rule was DELETED as a pure Java
   #   spelling of `l4_contracts::shadow-state-in-module` (it self-tagged that
   #   owner). The canonical is language-agnostic, already names the Java

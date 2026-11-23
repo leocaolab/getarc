@@ -24,29 +24,13 @@ description: >
 language: [typescript, javascript]   # plain JS shares the hazards (floating promise, loose equality, async)
 
 rules:
-  # TAG language-specific — a "floating promise" is a JS/TS async-model
-  # hazard (unhandled rejection + the `void` quirk). No cross-language
-  # duplicate. Overlaps siblings missing-await-in-async-flow /
-  # promise-all-swallows-rejection (same async family, distinct shapes).
-  - name: floating-promise
-    status: stable
-    description: |
-      ANTI-PATTERN: a Promise-returning call is left "floating" in
-      statement position — neither awaited, returned, assigned, nor
-      `.catch()`-handled — so on rejection it becomes an UNHANDLED
-      rejection AND the surrounding logic races ahead before the async
-      work finishes. The bare call is the anchor; the hazard is an
-      un-awaited, un-handled async result.
-      JUDGE: is a promise discarded in statement position with no
-      await / return / .then / .catch on any path? FLAG it. NOTE:
-      `void somePromise()` does NOT fix this — `void` discards the
-      rejection too; require an explicit `.catch` that logs/handles.
-      EXEMPT: a call into a fire-and-forget helper that itself attaches
-      a rejection handler.
-    severity: error
-
+  # NOTE: the former `floating-promise` rule is one case of a hazard every
+  #   language has — a started task nobody awaits, cancels or hears fail — and
+  #   moved to effect_state::background-task-without-owner, which keeps the
+  #   `void p()` tell.
   # TAG language-specific — treating a Promise as its resolved value is
-  # a JS/TS await hazard. Overlaps floating-promise (async family).
+  # a JS/TS await hazard. Overlaps effect_state::background-task-without-owner
+  # (the former floating-promise; async family).
   - name: missing-await-in-async-flow
     status: stable
     description: |
@@ -123,7 +107,8 @@ rules:
     severity: warning
 
   # TAG language-specific — Promise.all vs allSettled fan-out semantics
-  # are a JS/TS async idiom. Overlaps floating-promise (async family).
+  # are a JS/TS async idiom. Overlaps effect_state::background-task-without-owner
+  # (async family).
   - name: promise-all-swallows-rejection
     status: stable
     description: |
@@ -264,7 +249,7 @@ rules:
       `?: never`. EXEMPT: unions of primitives or of classes, and members
       that already share a literal discriminant.
     why: |
-      2026-11 seven-layer review of a Next.js + Pyodide practice app: a test
+      2026-11 review of a Next.js + Pyodide practice app: a test
       case typed `{output} | {outputText}` compiled with both keys under
       `tsc --strict`, and the Python runner then preferred `outputText`,
       reintroducing the "expected string parsed as a number" bug the split
@@ -298,7 +283,7 @@ rules:
       the raw value; readers call it instead of `as`. EXEMPT: a value the same
       module wrote in the same process lifetime and reads back from memory.
     why: |
-      2026-11 seven-layer review of a Next.js + Firestore app: every document
+      2026-11 review of a Next.js + Firestore app: every document
       read from the database was `d.data() as Problem` (six sites), a
       submission record was `as Submission` with every field optional, and a
       runner-output decoder was itself an `as`; each was a place where stored
@@ -322,7 +307,7 @@ rules:
       EXEMPT: a wrapper (`authFetch`, a typed client) that already checks
       `ok` and throws or returns a typed failure — then judge the wrapper.
     why: |
-      2026-11 seven-layer review: a Web Worker fetched its Python runner and
+      2026-11 review: a Web Worker fetched its Python runner and
       extractor sources without `res.ok`; a breaker test served a 404 and the
       worker replaced the previous good runner with the error page, so the
       next run failed with a Python `SyntaxError`. The fallback to the last
@@ -353,7 +338,7 @@ rules:
       touch per-message state, and resources documented as safe for
       concurrent use.
     why: |
-      2026-11 seven-layer review: the Pyodide worker's `self.onmessage` was
+      2026-11 review: the Pyodide worker's `self.onmessage` was
       `async`; a breaker test sent "run cases" and "extract blueprint" at
       once and observed two `runPythonAsync` calls in flight in one
       interpreter, which shares module-level state between them.
@@ -386,7 +371,7 @@ rules:
       EXEMPT: pure view mapping; decisions already delegated to a pure
       function that the component merely calls.
     why: |
-      2026-11 seven-layer review of a Next.js practice app found the same
+      2026-11 review of a Next.js practice app found the same
       shape in four groups: "next problem" computed separately in two pages
       (the copies already disagreed), the publish policy written as control
       flow inside an admin component, visualization layout decided inside

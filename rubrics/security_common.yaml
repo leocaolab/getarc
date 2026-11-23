@@ -3,15 +3,19 @@ description: Common security rules for code review
 
 # ── AUDIT NOTE: this rubric is intentionally LANGUAGE-AGNOSTIC ──
 # No `language:` key ⇒ it applies to every one of arc's 8 target languages.
-# Each rule is confirmed UNIVERSAL, with two boundedness caveats flagged inline:
+# Each rule is confirmed UNIVERSAL, with three boundedness caveats flagged inline:
 #   - no-shell-injection: the hazard is universal, but the prior wording was
 #     Python-token-anchored (`shell=True`); reframed with cross-language tokens.
 #   - no-eval-exec: only meaningful in languages with runtime eval
 #     (Python/JS/Ruby/PHP); INERT on Rust/Go/Java/C — a bounded-universality rule.
+#   - native-deserialization-of-untrusted-bytes: only meaningful where a decoder
+#     instantiates the types the bytes name (Java/Python/Ruby/PHP/.NET); INERT on
+#     Rust/Go/C, whose decoders fill a type the code names.
 # validate-external-input is the UMBRELLA hazard; no-sql / no-shell / no-eval are
 # its specific injection consequences. It also overlaps (as the language-agnostic
-# parent) rust_best_practices::{no-unwrap-in-library, unchecked-arithmetic-on-input,
-# parse-dont-validate-weak-param}, which name the Rust-specific consequences.
+# parent) rust_best_practices::{no-unwrap-in-library, parse-dont-validate-weak-param},
+# which name the Rust-specific consequences, and unchecked-arithmetic-on-input
+# below, which names the integer-overflow consequence.
 
 rules:
   # WHY: a secret in source is exposed to everyone with repo read and lives in
@@ -79,9 +83,9 @@ rules:
   # WHY: any external value consumed before validation can break invariants
   #      deeper in — crashes, injection, resource abuse, logic bypass.
   # SCOPE: universal. This is the UMBRELLA hazard over the three injection rules
-  #        above; it also overlaps rust_best_practices::{no-unwrap-in-library,
-  #        unchecked-arithmetic-on-input, parse-dont-validate-weak-param} as
-  #        their language-agnostic parent.
+  #        above and unchecked-arithmetic-on-input below; it also overlaps
+  #        rust_best_practices::{no-unwrap-in-library,
+  #        parse-dont-validate-weak-param} as their language-agnostic parent.
   - name: validate-external-input
     status: stable
     why: "External input consumed before validation breaks invariants deep in the code — crashes, injection, logic bypass."
@@ -123,3 +127,83 @@ rules:
       (Rust / Go / Java / C) have no equivalent facility — this rule does not
       fire there.
     severity: critical
+
+  # WHY: a deserializer that instantiates whatever type the bytes name runs
+  #      constructor / magic-method code chosen by whoever wrote the bytes —
+  #      remote code execution before any validation can look at the result.
+  # SCOPE: universal AMONG runtimes with type-naming native serialization
+  #        (Java / Python / Ruby / PHP / .NET / some JS packages); INERT where the
+  #        decoder only fills a type the code names (Rust serde, Go gob/json).
+  - name: native-deserialization-of-untrusted-bytes
+    status: experimental
+    why: "A deserializer that instantiates the types named in the bytes runs attacker-chosen code before any validation sees the result."
+    description: >
+      Anti-pattern: bytes from outside the trust boundary (a socket, an HTTP
+      body, an upload, a queue message, a cookie, a file another party can
+      write) are handed to a deserializer that builds OBJECTS OF WHATEVER
+      TYPE THE BYTES NAME, running their constructors / magic methods along
+      the way — so the attacker picks the code that runs (a gadget chain)
+      and the damage is done during decoding, before any check after it can
+      look. The facility is per-runtime, the hazard is one:
+        - Java `ObjectInputStream.readObject`, XStream / Kryo / Jackson with
+          default typing enabled
+        - Python `pickle.load(s)` / `cPickle` / `shelve` / `marshal`,
+          `yaml.load` without `SafeLoader` (`yaml.unsafe_load`), `jsonpickle`
+        - Ruby `Marshal.load`, `YAML.load` on Psych < 4 / `YAML.unsafe_load`
+        - PHP `unserialize` on request data
+        - .NET `BinaryFormatter`, `NetDataContractSerializer`, Json.NET with
+          `TypeNameHandling` other than `None`
+        - JS `node-serialize` / `serialize-javascript` decoding with eval
+      FLAG such a call whose input can come from outside the process's own
+      trust domain. The fix is a data-only format decoded into a type the
+      CODE names (JSON / protobuf / `yaml.safe_load` into a schema), or, if
+      the native format must stay, an allow-list of permitted classes
+      (`ObjectInputFilter`, a restricted `Unpickler.find_class`) plus
+      authentication of the bytes (an HMAC checked before decoding). EXEMPT
+      bytes the same trust domain wrote and nobody else can write (a local
+      cache this process produced in a directory only it owns), and calls
+      already behind a class allow-list. Boundary: `validate-external-input`
+      owns external input USED before it is checked —
+      `readObject()` followed at once by `instanceof` and `validate(order)`
+      satisfies that rule and is still this rule's (the code already ran),
+      while `new byte[Integer.parseInt(req.getParameter("n"))]` deserializes
+      nothing and is that rule's alone; `no-eval-exec` owns evaluating a
+      STRING as source code.
+    severity: critical
+
+  # WHY: an overflowed size or offset computed from untrusted input becomes an
+  #      undersized buffer, an out-of-bounds index, or a crash.
+  # SCOPE: languages with fixed-width integers (was rust_best_practices-only).
+  #        INERT on Python (arbitrary-precision int) and JS / TS (doubles).
+  - name: unchecked-arithmetic-on-input
+    status: stable
+    description: |
+      ANTI-PATTERN: fixed-width integer arithmetic on an attacker- or
+      caller-controlled MAGNITUDE can overflow, and the wrong result then sizes
+      an allocation, an index, or a slice / buffer bound. It is a memory-safety
+      / DoS hazard precisely because the tainted number flows into a capacity
+      or an offset.
+
+      Instantiated by (examples, not the definition): `a + b`, `a - b`,
+      `a * b`, `len * width`, `base + offset`, `1 << n` on an integer derived
+      from external input, with no checked / saturating / widening guard,
+      where the result feeds an allocation or an index:
+        • Rust: no `checked_` / `saturating_` / `try_into` before
+          `Vec::with_capacity`, `[..n]`, `get(i)`, pointer math — it wraps in
+          release and panics in debug.
+        • C / C++: `malloc(n * size)` (use `calloc` or check
+          `n > SIZE_MAX / size`), `memcpy(dst, src, hdr.len + 4)`; signed
+          overflow is undefined behavior, and a shift by ≥ the type's width is
+          too.
+        • Go / Java: `make([]byte, n*m)`, `new byte[count * width]`, an index
+          `base + off` — the value wraps silently, so the bound check that
+          follows passes on the wrong number.
+
+      JUDGE: does an untrusted magnitude reach an arithmetic op whose result
+      controls memory (size / index / offset), unguarded? If yes, flag it and
+      use a checked / saturating / widened computation that handles the
+      overflow branch. Arithmetic on internal, bounded values (a small loop
+      counter) is not this. (Boundary-validation parent:
+      `validate-external-input`.)
+    severity: error
+    universality: [rust, go, java, c, cpp]

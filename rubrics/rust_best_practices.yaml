@@ -8,6 +8,11 @@ description: >
 language: [rust]
 
 rules:
+  # NOTE: three former rules judge hazards that are not Rust's own and moved
+  #   to the language-neutral rubrics: `no-blocking-in-async` →
+  #   effect_state::blocking-call-on-event-loop, `must-use-result` →
+  #   l4_contracts::ignored-error-return, `unchecked-arithmetic-on-input` →
+  #   security_common::unchecked-arithmetic-on-input.
   - name: no-unwrap-in-library
     status: stable
     description: |
@@ -205,59 +210,6 @@ rules:
       `l4_contracts::untyped-error-origin`.)
     severity: warning
 
-  - name: no-blocking-in-async
-    status: stable
-    description: |
-      ANTI-PATTERN: a synchronous, blocking operation runs on an async
-      executor thread, so instead of yielding it STALLS the reactor — every
-      other task multiplexed onto that thread starves until the block
-      returns. The whole premise of `async` (many tasks per thread) is
-      defeated at that one call, and the stall is invisible until the system
-      is under concurrent load.
-
-      Instantiated by (examples, not the definition):
-        • blocking IO on the async thread — `std::fs`, `std::net`,
-          `reqwest::blocking`, a synchronous DB driver;
-        • `std::thread::sleep` (use the runtime's async sleep);
-        • a `std::sync::Mutex`/`RwLock` guard — or any blocking / `!Send`
-          guard — held ACROSS an `.await`;
-        • `block_on` / `Handle::block_on` nested inside an async fn;
-        • a long CPU-bound loop with no `.await` / yield point.
-
-      JUDGE: can this call hold the OS thread for an unbounded time while the
-      executor is trying to drive other tasks on it? If yes, flag it and move
-      it to `spawn_blocking` / an async equivalent, or drop the guard before
-      the `.await`.
-      EXEMPT: blocking work BEFORE the first `.await` in a task that then runs
-      alone, code already inside `spawn_blocking`, and single-threaded
-      throwaway contexts where starvation cannot matter.
-    severity: error
-
-  - name: must-use-result
-    status: stable
-    description: |
-      ANTI-PATTERN: the error arm of a fallible operation is DISCARDED at the
-      call site, so a failed write / send / parse looks exactly like success
-      and the program marches on as if it had worked. The `Result` carried a
-      fact — "this did not happen" — and the code threw it away, turning a
-      detectable failure into silent corruption downstream.
-
-      Instantiated by (examples, not the definition):
-        • `let _ = fallible();` — the `_` explicitly drops the error;
-        • a fallible call in statement position with no `?` / `match` /
-          `.expect`-with-reason observing it;
-        • `.ok();` used only to silence `#[must_use]`, not to branch.
-
-      JUDGE: if this call FAILED, would the program now be proceeding on a
-      false premise (an unpersisted write, an un-sent message, a skipped
-      validation)? If yes, flag it and propagate with `?` or handle the `Err`.
-      EXEMPT: a genuinely best-effort call whose failure is irrelevant, WHEN
-      an adjacent comment says so (`let _ = writeln!(w, ...); // best-effort`).
-      BOUNDARY: this owns the DISCARDED-return-value form; a `match`/catch that
-      DOES observe the error and then ignores it is a swallow —
-      `l4_contracts::swallowed-exception`.
-    severity: warning
-
   - name: clone-in-hot-path
     status: stable
     description: |
@@ -279,29 +231,6 @@ rules:
       NEW intermediate buffer (a `join` / `format!`) only to feed a streaming
       sink is `hot-path-heap-thrash`.
     severity: warning
-
-  - name: unchecked-arithmetic-on-input
-    status: stable
-    description: |
-      ANTI-PATTERN: integer arithmetic on an attacker- / caller-controlled
-      MAGNITUDE can overflow — silently wrapping in release, panicking in
-      debug — and the wrong result then sizes an allocation, an index, or a
-      slice bound. It is a memory-safety / DoS hazard precisely because the
-      tainted number flows into a capacity or an offset.
-
-      Instantiated by (examples, not the definition): `a + b`, `a - b`,
-      `a * b`, `len * width`, `base + offset` on an integer derived from
-      external input, with no `checked_` / `saturating_` / `wrapping_` /
-      `try_into` guarding it, in a spot where the result feeds
-      `Vec::with_capacity`, `[..n]`, `get(i)`, or pointer math.
-
-      JUDGE: does an untrusted magnitude reach an arithmetic op whose result
-      controls memory (size / index / offset), unguarded? If yes, flag it and
-      use a checked/saturating variant that handles the overflow branch.
-      Arithmetic on internal, bounded values (a small loop counter) is not
-      this. (Boundary-validation cousin:
-      `security_common::validate-external-input`.)
-    severity: error
 
   # ── Performance & Concurrency (folded from review; arc_db origin) ──
   - name: read-path-incidental-write

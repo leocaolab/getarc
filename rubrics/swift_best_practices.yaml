@@ -1,0 +1,291 @@
+name: Swift Best Practices
+description: >
+  Swift correctness + idiom rules for L4 review. Function bodies
+  visible. Cap 10 issues. Flag concrete call sites, not stylistic
+  preference. Targets the failure modes the language and its frameworks
+  invite: traps on fallible values, errors turned into nil, exhaustiveness
+  switched off by `default:`, untyped JSON through Foundation bridging,
+  synthesized Codable that skips invariants or freezes a stored format,
+  errors lost inside unstructured tasks, access wider than the package,
+  non-Sendable state shared across isolation domains, and reference cycles.
+
+  # Each rule carries a `TAG` comment as in java_best_practices.yaml:
+  #   language-specific  — the hazard depends on a genuine Swift idiom.
+  #   universal-candidate — the same hazard exists in any language; the
+  #     `owner:` names the language-agnostic rule it spells in Swift.
+
+# Promotion bar (docs/features/rubric-management/lifecycle.md CUJ-1):
+# precision >= 0.75 over at least 2 true hits; fewer hits is unmeasured.
+# Measured 2026-11-21 with `arc local-review`, the rules opted in by
+# `[review] enable`, on a SwiftPM app before and after a shift-left-swift
+# cleanup whose diff names the known sites, plus 4,000 later lines; one
+# chunk of at most ~500 lines per review.
+
+# applicability — rubric_set_for filters on this (ruff-style config, not source)
+language: [swift]
+
+rules:
+  # TAG language-specific — `!`, `try!`, `as!` are Swift's trap operators.
+  # Cousin of rust_best_practices::no-unwrap-in-library, anchored on Swift's
+  # own constructs.
+  - name: trap-on-fallible-value
+    # measured 2026-11-21: 4 hits, 4 true; the one known site found, none on the clean version.
+    status: stable
+    description: |
+      ANTI-PATTERN: a value whose absence or failure is a real runtime
+      outcome is unboxed with a trap — force unwrap `x!` (including
+      `.first!`, `dict[k]!`), `try!`, `as!`, or a reachable
+      `fatalError` / `precondition` / `preconditionFailure` — in library
+      or core code, so the process dies on a condition that had a legal
+      error path, and the cause is lost to a crash log instead of a typed
+      value a caller could show.
+      JUDGE through four steps: (1) can the nil / error happen in the
+      real world — IO, external input, state changed between two calls,
+      async callback order, sandbox and platform differences? (2) if yes,
+      FLAG: it must be thrown or returned with the raw input and the
+      system's message; (3) if it cannot but the compiler does not know,
+      FLAG with the shape change (check-then-force → `if let` /
+      `guard let`; an optional-returning API forced → the throwing API,
+      e.g. `FileManager.url(for:in:appropriateFor:create:)` instead of
+      `urls(for:in:).first!`); (4) only when the type cannot change is
+      `guard let … else { preconditionFailure("<proof>") }` with a
+      checkable proof acceptable.
+      EXEMPT: tests (`try #require`, `XCTUnwrap`), the outermost startup
+      code deciding to exit, IBOutlets wired by a storyboard, and literal
+      constants the compiler cannot check (`URL(string: "https://…")!`
+      on a literal) — a typed constant or a static `let` is still better.
+    severity: error
+    example_bad: |
+      let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+    example_good: |
+      let base = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                             appropriateFor: nil, create: true)
+
+  # TAG universal-candidate — owner: l4_contracts::swallowed-exception.
+  # Spelled here because `try?` makes the swallow a single token.
+  - name: try-optional-drops-the-error
+    # measured 2026-11-21: 5 hits, 4 true (1 false: a failable `PDFDocument(url:)`, no error thrown); 2 of 3 known sites.
+    status: stable
+    description: |
+      ANTI-PATTERN: a thrown error is turned into `nil` or nothing — `try?`,
+      `catch { return nil }`, an empty `catch {}` — and the code goes on
+      as if the operation had not been asked for, or falls back to a
+      default (`copy(url) ?? url`), so the failure and the system's words
+      never reach anyone who could act.
+      JUDGE: after the swallow, does anything still carry the raw input or
+      the error to a reader (the caller reports the unparsed body; a log
+      line with the path and message)? If not, FLAG; the fix is
+      `do`/`catch` mapping to a typed case that keeps
+      `error.localizedDescription`.
+      EXEMPT: a `try?` whose nil is the whole truth and whose raw input
+      travels on to the reader; a `catch` of one named error that means
+      "already done" (`CocoaError.fileNoSuchFile` when deleting); a best
+      effort cleanup that logs what it dropped and why.
+    severity: warning
+    example_bad: |
+      try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+    example_good: |
+      do { try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true) }
+      catch { throw .directoryUnavailable(path: base.path, systemMessage: error.localizedDescription) }
+
+  # TAG language-specific (borderline) — the hazard is Swift's
+  # exhaustiveness check being turned off; universal cousin:
+  # fp_lens::total-seeming-pattern-match.
+  - name: default-arm-on-own-closed-enum
+    # stays experimental: measured 2026-11-21, 1 hit, 1 true — one hit is not a precision. The open-set `default:` arms (String, Int, SQLite codes) were rightly left alone.
+    status: experimental
+    description: |
+      ANTI-PATTERN: a `switch` over an enum the code base owns (or a tuple
+      of such enums, as in a state machine's `switch (state, event)`) ends
+      in `default:`, which switches off the compiler's exhaustiveness
+      check: the next case anyone adds is silently treated as the default
+      branch everywhere, usually "nothing happens".
+      JUDGE: is the scrutinee a closed set the code owns? FLAG the
+      `default:` and name the fix — list the ignored cases or pairs
+      explicitly (`case (.done, _), (.failed, _): return (state, [])`).
+      EXEMPT: open sets — an `Int` status code, a `String` from outside,
+      argv — where `default` is required; a non-frozen enum from a system
+      framework, which takes `@unknown default`.
+    severity: warning
+    example_bad: |
+      switch (state, event) {
+      case (.idle, .startRequested): return (.starting, [.requestPermission])
+      default: return (state, [])
+      }
+    example_good: |
+      case (.uploading, .polled), (.computing, .submitted), (.done, _), (.failed, _):
+          return (state, [])
+
+  # TAG language-specific — JSONSerialization's NSNumber bridging is a
+  # Foundation idiom. Universal cousin:
+  # llm_generated_code_smells::untyped-bag-across-boundary.
+  - name: untyped-json-at-boundary
+    # measured 2026-11-21: 2 hits, 2 true; both known files found, none on the clean version.
+    status: stable
+    description: |
+      ANTI-PATTERN: an external JSON reply is read with
+      `JSONSerialization.jsonObject` into `[String: Any]` and picked apart
+      with `as?` casts, instead of decoded into a declared `Decodable`
+      shape. Besides losing the decoder's error (which key, which type),
+      Foundation bridges numbers through `NSNumber`, so `json["n"] as? Int`
+      accepts `true` as 1 and `as? Double` accepts `true` as 1.0 — a
+      malformed reply passes as a valid one.
+      JUDGE: does the code read a wire or file format it knows the shape
+      of through `[String: Any]`? FLAG it; the fix is a private DTO
+      struct decoded with `JSONDecoder` at the adapter, converted once to
+      the domain type, with a hand-written `init(from:)` for a tagged
+      union.
+      EXEMPT: an object whose keys are genuinely open (a free-form error
+      object copied through verbatim); APIs that only take
+      `[String: Any]` (AVFoundation settings dictionaries).
+    severity: warning
+
+  # TAG language-specific — synthesized Codable is a compiler feature.
+  # Universal cousin: l5_architecture::l5-O-parse-dont-validate.
+  - name: synthesized-decodable-skips-invariant
+    # stays experimental: measured 2026-11-21, no hits and no known site in the corpus — unmeasured.
+    status: experimental
+    description: |
+      ANTI-PATTERN: a type whose invariant is enforced by a smart
+      constructor (`private init` + `static func make` / `init?`) also
+      declares `Decodable` and lets the compiler synthesize `init(from:)`.
+      The synthesized initializer assigns the stored properties directly,
+      ignoring the private initializer, so a stored or received value
+      that breaks the invariant decodes without complaint.
+      JUDGE: does a `Codable` / `Decodable` type with a guarded
+      constructor lack a hand-written `init(from:)`? FLAG it; the fix
+      decodes the raw fields and calls the constructor
+      (`self = try Excerpt.make(start: s, end: e).get()`).
+      EXEMPT: types with no invariant beyond their field types.
+    severity: error
+
+  # TAG language-specific — the `_0` keyed shape is the compiler's.
+  # Universal cousin: test_quality::test-input-not-from-the-real-producer.
+  - name: synthesized-codable-enum-stored-unpinned
+    # measured 2026-11-21: 2 hits, 2 true; the known stored enum found, none on the pinned version.
+    status: stable
+    description: |
+      ANTI-PATTERN: an enum with associated values is persisted (a
+      database column, a file, a cache) through synthesized `Codable`, and
+      nothing pins the stored form. The compiler's shape
+      (`{"computing":{"_0":…}}`) follows case names and labels, so a
+      rename or an added label silently changes what is written, and rows
+      written before stop decoding. A round-trip test
+      (`decode(encode(x)) == x`) passes through the rename and does not
+      catch it.
+      JUDGE: is a synthesized-Codable enum written to storage that
+      outlives the process, with no test decoding a literal sample of the
+      stored form (or hand-written `CodingKeys`)? FLAG it.
+      EXEMPT: in-memory or same-process transport only.
+    severity: warning
+
+  # TAG language-specific — `Task {}` is Swift's unstructured task; cousin
+  # of a panic inside `tokio::spawn` (no dedicated arc rule yet).
+  - name: error-lost-in-unstructured-task
+    # stays experimental: measured 2026-11-21, no hits and no known site in the corpus — unmeasured.
+    status: experimental
+    description: |
+      ANTI-PATTERN: a throwing body runs inside `Task { … }` or
+      `Task.detached { … }` and the task handle is dropped, so a thrown
+      error is stored in a `value` nobody awaits and the failure vanishes
+      — no state change, no log, no alert.
+      JUDGE: is the task's body `throws`, and is the handle neither
+      returned nor awaited? FLAG it; the fix makes the body non-throwing
+      by turning each failure into state the user sees, or returns the
+      task so the caller awaits it, or uses structured concurrency
+      (`async let`, `withTaskGroup`).
+      EXEMPT: a body whose only throw is `CancellationError` from
+      `Task.sleep` / `Task.checkCancellation`, stopped on purpose.
+    severity: error
+    example_bad: |
+      Task { try await runner.upload(take) }
+    example_good: |
+      Task {
+          switch await server.submit(file: file, excerpt: excerpt) {
+          case .failure(let failure): trouble[id] = failure
+          case .success(let reply): apply(.submitted(read(reply)), to: id)
+          }
+      }
+
+  # TAG universal-candidate — owner: type_design::type-visibility-wider-than-its-use.
+  # Spelled here because Swift's `internal` default stops at the target
+  # edge, which pushes multi-target packages to `public`.
+  - name: public-where-package-suffices
+    # stays experimental: measured 2026-11-21, 0 hits on 12 files of `public` in a package with no products, before and after this JUDGE was rewritten — the reviewer reports `Package.swift` is not in its context when the diff does not touch it, so it cannot judge.
+    status: experimental
+    description: |
+      ANTI-PATTERN: declarations are `public` only so another target of
+      the same SwiftPM package can see them. `public` is the contract for
+      other packages; it also blocks implicit `Sendable` inference and
+      commits the API to clients who do not exist. Since SwiftPM 5.9
+      (SE-0386) `package` gives exactly "visible to this package's
+      targets".
+      JUDGE: open the package's `Package.swift` (it is in the repo even
+      when the diff does not touch it) and read `products:`. A target
+      named in no `.library(...)` product — and every target of a package
+      that declares no `products:` at all — is imported by no other
+      package, so its `public` buys nothing: FLAG it. Report one finding
+      per file, on its first `public` declaration, naming how many there
+      are; the fix is `package` (or narrower).
+      EXEMPT: targets vended as library products; `@main` / entry points
+      that require it; `@objc` / framework interop.
+    severity: warning
+
+  # TAG language-specific — Sendable and actor isolation are Swift's.
+  # Universal cousin: effect_state::shared-mutable-state-in-decision-layer.
+  - name: non-sendable-state-shared-across-isolation
+    # stays experimental: measured 2026-11-21, no hits and no known site in the corpus (it already built in Swift 6 mode) — unmeasured.
+    status: experimental
+    description: |
+      ANTI-PATTERN: a mutable reference type (a class holding a database
+      handle, a cache, a buffer) is reached from more than one isolation
+      domain — passed into `Task.detached`, captured by a delegate callback
+      on another thread, marked `@unchecked Sendable` without a lock —
+      and its thread rule lives only in a comment ("use it from one
+      thread"). Swift 5 mode compiles it; it is a data race.
+      JUDGE: can two isolation domains touch this object's mutable state?
+      FLAG it; the fix is to confine it (owned by one `@MainActor` object,
+      or made an `actor`), or to send values instead of the object.
+      Enabling Swift 6 language mode or `-strict-concurrency=complete`
+      makes the compiler find these.
+      EXEMPT: `@unchecked Sendable` types whose every mutable field is
+      behind a lock or atomic, with the reason stated beside it.
+    severity: error
+
+  # TAG language-specific — ARC reference counting; universal cousin:
+  # rust_ownership::strong-back-reference.
+  - name: owner-closure-captures-self-strongly
+    # stays experimental: measured 2026-11-21, no hits and no known site in the corpus — unmeasured.
+    status: experimental
+    description: |
+      ANTI-PATTERN: an object stores a closure (a callback handed to a
+      child it owns, a stored completion, a repeating timer it never
+      invalidates) that captures `self` strongly, so owner and closure
+      keep each other alive and neither is ever released.
+      JUDGE: does `self` (directly or through a child it owns) retain the
+      closure that captures `self`? FLAG it; the fix is `[weak self]`
+      (or `[unowned self]` with a stated lifetime proof), or invalidating
+      the timer at a defined point.
+      EXEMPT: closures that are not stored (`map`, `filter`, a `Task`
+      that finishes), and objects that live for the whole process.
+    severity: warning
+
+  # TAG universal-candidate — owner:
+  # typescript_best_practices::domain-decision-in-component-body (its
+  # SwiftUI spelling) and fp_lens::core-buried-outward.
+  - name: decision-in-swiftui-view
+    # measured 2026-11-21: 4 hits, 3 true (1 false: a play/pause button reading the player it toggles).
+    status: stable
+    description: |
+      ANTI-PATTERN: a SwiftUI view's body or action closure decides what
+      happens next — checks domain state, calls a store or a network
+      client, mutates several published fields — instead of sending one
+      event to the shell that runs a pure reducer. The decision then
+      cannot be tested without rendering the view.
+      JUDGE: does a `Button` action, `.onChange`, `.task` or `body`
+      branch on domain state to choose an effect? FLAG it; the view sends
+      an event (`recorder.send(.stopRequested)`), the shell calls `step`
+      and runs the effects. A `switch` that only chooses what to draw is
+      fine.
+      EXEMPT: purely presentational state (`@State var isExpanded`).
+    severity: warning

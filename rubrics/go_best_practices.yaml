@@ -2,9 +2,9 @@ name: Go Best Practices
 description: >
   Go correctness + idiom rules for L4 review. Function bodies visible.
   Cap 10 issues. Flag concrete call sites, not stylistic preference.
-  Targets the failure modes Go's design invites: silent error drops,
-  goroutine/resource leaks, nil-map and channel footguns, untyped
-  interface{} at boundaries.
+  Targets the failure modes Go's design invites: error-context loss,
+  resource leaks, nil-map and channel footguns, untyped interface{} at
+  boundaries.
 
   Every rule here is LANGUAGE-SPECIFIC: it anchors on a genuine Go
   idiom (the multi-return `error` model + `_` discard, goroutine /
@@ -18,27 +18,11 @@ description: >
 language: [go]
 
 rules:
-  # tag: language-specific — Go signals failure by a trailing `error`
-  #   return + the blank identifier `_`; discarding it is a Go-only shape.
-  #   kin (universal hazard): l4_contracts::swallowed-exception. Homed here
-  #   because `_ = f()` / `v, _ := f()` is a genuine Go idiom, not a catch block.
-  - name: ignored-error-return
-    status: stable
-    description: |
-      ANTI-PATTERN: a call that can fail proceeds as if it can't — the
-      returned `error` is dropped, so a real failure is invisible and the
-      program continues on unchecked state. Go's multi-return makes this a
-      one-character mistake.
-      FLAG `f()` (multi-return with a trailing error) used in a statement
-      position that drops the error, and `_ = f()` / `v, _ := f()` where the
-      dropped value is the error. The `_` is the example, not the essence:
-      any path where a fallible call's error never reaches a check is in scope.
-      EXEMPT: `defer x.Close()` on a read-only handle where a close error is
-      genuinely uninteresting (still prefer logging it); `fmt.Fprintf(os.Stderr,
-      ...)` and similar where the error is structurally unreachable; cases with
-      an adjacent comment explaining why the error cannot matter.
-    severity: error
-
+  # NOTE: three former rules judged hazards that are not Go's own, and moved
+  #   to the language-neutral rubrics with their criterion restated as a
+  #   structural fact: `ignored-error-return` → l4_contracts::ignored-error-return,
+  #   `goroutine-without-lifecycle` → effect_state::background-task-without-owner,
+  #   `context-without-deadline-on-io` → effect_state::remote-call-without-timeout.
   # tag: language-specific — `fmt.Errorf("...: %w", err)` + errors.Is/As is
   #   the Go error-wrapping idiom. kin (universal): l4_contracts::incomplete-error-context
   #   (context-on-error is a general hazard), but `%w` chain unwrapping is Go-specific.
@@ -55,21 +39,6 @@ rules:
       EXEMPT: thin pass-through helpers; sites where the immediate caller
       already adds context.
     severity: warning
-
-  # tag: language-specific — goroutine + context/WaitGroup/done-channel is the
-  #   Go concurrency model; no direct base-rubric kin.
-  - name: goroutine-without-lifecycle
-    status: stable
-    description: |
-      ANTI-PATTERN: a background task is spawned with no way to cancel it,
-      wait for it, or bound its lifetime, so on the failure / early-return
-      path it leaks — a goroutine blocked forever on a channel or network op.
-      FLAG a `go func() { ... }()` whose closure can block (channel op,
-      network, <-time.After) with no cancellation path reachable (no context,
-      no WaitGroup, no done channel).
-      EXEMPT: fire-and-forget that provably completes (pure CPU, no blocking)
-      and is documented as such.
-    severity: error
 
   # tag: language-specific — the pre-Go-1.22 range/loop-variable capture
   #   footgun. kin (weak/universal): closures capturing a mutable loop var
@@ -115,21 +84,6 @@ rules:
       FLAG an acquire whose Close is missing, or placed after code that can `return`.
       EXEMPT: ownership explicitly transferred to a caller (documented).
     severity: error
-
-  # tag: language-specific — `context.Context` deadline propagation is the Go
-  #   cancellation model; no direct base-rubric kin.
-  - name: context-without-deadline-on-io
-    status: stable
-    description: |
-      ANTI-PATTERN: an external blocking call is issued with an UNBOUNDED
-      context, so a slow / hung peer stalls the caller indefinitely with no
-      timeout to break it. `context.Background()` / `context.TODO()` is handed
-      straight into a network / DB / RPC call that should carry a deadline.
-      FLAG a blocking external call receiving an unbounded context at a
-      request-handling layer.
-      EXEMPT: process-lifetime operations (startup, background workers that own
-      their own cancellation), top-of-main contexts.
-    severity: warning
 
   # NOTE: the former `panic-in-library-code` rule (a recoverable condition
   #   crashing the process — `panic()` / input-reachable index-out-of-range /

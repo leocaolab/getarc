@@ -1150,3 +1150,149 @@ rules:
       }
       // record_run / block_on / tracing / format! all live INSIDE the named steps,
       // one level down — reachable when you want them, invisible when you don't.
+
+  # tag: function-body readability (TotT "isBooleanTooLongAndComplex",
+  #   2026-06-25 gap list; Effective Python "helper functions instead of
+  #   complex expressions"). Language-neutral; countable from the AST.
+  - name: complex-boolean-expr
+    status: experimental
+    severity: warning
+    transformer: null   # countable (leaf conditions per expression) but no detector yet
+    description: |
+      ANTI-PATTERN: one boolean expression carries more conditions than a
+      reader can evaluate in their head — more than four leaf conditions —
+      with no intermediate name saying what any group of them MEANS. `&&`
+      and `||` (`and` / `or`) mixed across nesting levels make it worse,
+      but four or fewer leaves stay readable even when mixed. To know when
+      the branch is taken the reader has to build a truth table:
+        if ((!pepperoni.empty() || sausages.size() > 0)
+            && (useOnion || hasMushroom(ENOKI, PORTOBELLO)) && hasCheese())
+      FLAG such an expression (in an `if`, a `while`, a `return`, a `filter`
+      predicate, an assignment) and quote it. FIX: give each group of
+      conditions that expresses ONE quality its own named boolean or
+      predicate function (`hasGoodMeat`, `hasGoodVeggies`), so the final
+      expression combines a few names with one operator; or move the logic
+      into a function with guard clauses. A run of equality tests on one
+      value (`a == 1 || a == 2 || a == 3 || ...`) is better written as a set
+      membership. EXEMPT: generated code, and a query or rule builder whose
+      chained conditions ARE the data. Boundary: `conditional-accretion` owns
+      a PILE of separate branches bolted on one at a time — five short
+      successive `if ...: return` guards each with one condition are that
+      rule's alone; a single designed condition of six leaves mixing `&&`
+      and `||` is this rule's alone. When `conditional-accretion`'s fix
+      collapses branches into one predicate, this rule asks that the
+      predicate's parts be named, not split back into branches.
+      `mixed-abstraction-levels` owns statements at different altitudes, not
+      the size of one expression.
+    why: |
+      A reader holds three or four conditions at once; past that they reach
+      for pen and paper or a debugger. A named intermediate states the intent
+      the conditions implement, so a wrong condition shows up as a name that
+      does not match its definition, and each named part can be tested alone.
+    example_bad: |
+      if user.active and not user.banned and (user.plan == "pro" or user.trial_days > 0) and region in ALLOWED and not maintenance:
+          serve(user)
+    example_good: |
+      has_paid_access = user.plan == "pro" or user.trial_days > 0
+      in_good_standing = user.active and not user.banned
+      service_open = region in ALLOWED and not maintenance
+      if in_good_standing and has_paid_access and service_open:
+          serve(user)
+
+  # tag: function-body clarity + a race on shared maps (TotT "One Map Key,
+  #   One Lookup", 2026-06-25 gap list; Effective Python "prefer get over in").
+  - name: redundant-map-lookup
+    status: experimental
+    severity: info
+    transformer: null   # deterministic shape (same map + same key, check then fetch) but no detector yet
+    description: |
+      ANTI-PATTERN: the code looks up the same key in the same map twice in
+      a row — once to ask whether it is there, once to fetch or update it —
+      with no write to the map in between, where one lookup that returns
+      "the value or absence" does both:
+        - Python `if k in m: use(m[k])`; `if k not in counts: counts[k] = 0`
+          followed by `counts[k] += 1`
+        - Java `if (m.containsKey(k)) use(m.get(k))`; containsKey + put to
+          initialise
+        - JS/TS `if (m.has(k)) use(m.get(k)!)`
+        - C++ `if (m.count(k)) use(m[k])` / `m.find(k) != m.end()` then
+          `m.at(k)`
+        - Rust `if m.contains_key(&k) { m[&k] }` / `.get(&k).unwrap()`
+      Each extra lookup pays the hash or tree walk again, and the second
+      access usually re-asserts presence with an unchecked index or `!` /
+      `unwrap()` that a later edit can break. FLAG the pair and quote both
+      lookups. FIX: one lookup that yields an optional (`m.get(k)` +
+      walrus / `if let Some(v)` / `v, ok := m[k]` / `find` kept in a
+      variable), or the container's own insert-or-update (`defaultdict`,
+      `Counter`, `setdefault`, `computeIfAbsent` / `merge`, Rust `entry()`,
+      C++ `operator[]` / `try_emplace`). EXEMPT: a Java map that may hold
+      `null` values, where `get` alone cannot tell absent from null; code
+      between the two lookups that may write the map. Boundary:
+      `repeated-work-in-loop` owns work repeated ACROSS iterations (a regex
+      recompiled each pass) — `if k in m: v = m[k]` outside any loop is this
+      rule's alone. When the map is shared across threads, the gap between
+      check and fetch is a race (check-then-act), which is a concurrency
+      defect and more severe than this one; report the race instead.
+    why: |
+      Two lookups state one question twice and leave a gap between them; one
+      lookup returning an optional states it once, removes the unchecked
+      second access, and is what every map API already offers.
+    example_bad: |
+      if employee_id in employees:
+          mail_to(employees[employee_id].email_address)
+    example_good: |
+      if (employee := employees.get(employee_id)) is not None:
+          mail_to(employee.email_address)
+
+  # tag: function-body clarity (TotT "Else Nuances" + "Reduce Nesting",
+  #   2026-06-25 gap list; Effective Go "omit else after return").
+  - name: else-after-early-return
+    status: experimental
+    severity: info
+    transformer: null   # shape is deterministic (if-arm always exits, else follows); "special case vs core" is judged
+    description: |
+      ANTI-PATTERN: an `if` branch that always leaves the function (`return`,
+      `raise` / `throw`, `continue` / `break` in a loop, `panic`) handles a
+      SPECIAL case — an invalid argument, an empty input, a cache hit — and
+      the function's main body then sits inside the `else`, one level deeper
+      than it needs to be:
+        if not path:
+            raise ValueError("path is empty")
+        else:
+            ...   # the real work, nested
+      The `else` adds nothing the early exit did not already guarantee, and
+      every such guard pushes the main path further right. FLAG an `else`
+      (or `elif` chain) following an exiting branch when the exiting branch
+      is a guard for a special case and the `else` holds the function's
+      main work. FIX: drop the `else` and dedent — the guard clause stands
+      alone at the top, the main path runs straight down. EXEMPT: an
+      `if / elif / else` whose branches are COMPLEMENTARY outcomes of the
+      core decision (`if signed_out: return Icon.SIGNED_OUT elif incognito:
+      return Icon.INCOGNITO else: return Icon.HAS_ITEMS`) — there the
+      `else` says the cases belong together, which is the point; a `match`
+      / `switch` would be better still. EXEMPT expression-oriented
+      languages where `if c { a } else { b }` is the value of the function
+      with no `return` in the arm (Rust, Kotlin, Scala tail expressions) —
+      that is one expression, not a guard. Boundary:
+      `conditional-accretion` owns a pile of guards bolted on one after
+      another; a single guard whose `else` wraps the body is this rule's
+      alone, and six successive `if ...: return` guards with no `else` are
+      that rule's alone.
+    why: |
+      A guard clause tells the reader "this case is done, forget it"; an
+      `else` after it says "keep holding the condition in mind", for nothing.
+      Keeping special cases at the top and the main path at the left margin
+      is what lets a function be read top to bottom.
+    example_bad: |
+      def parse_path(path: str) -> Path:
+          if not path:
+              raise ValueError("path is empty")
+          else:
+              parts = path.split("/")
+              return Path(*parts)
+    example_good: |
+      def parse_path(path: str) -> Path:
+          if not path:
+              raise ValueError("path is empty")
+          parts = path.split("/")
+          return Path(*parts)

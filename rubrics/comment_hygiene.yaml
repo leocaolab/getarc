@@ -20,7 +20,7 @@ description: >
 
 # applicability — comment hygiene is universal; it judges doc/comment TEXT
 # against adjacent code, not language syntax.
-language: [rust, python, typescript, javascript, go, java]
+language: [rust, python, typescript, javascript, go, java, c, cpp, swift]
 
 rules:
   - name: comment-contradicts-code
@@ -411,7 +411,8 @@ rules:
       Examples:
         - `// let x = old_path(a, b);` above the new call
         - a commented-out `#[test]` / config block / import list
-        - a disabled branch preserved "just in case"
+        - a disabled branch preserved "just in case", including a C / C++
+          `#if 0 … #endif` block
 
       JUDGE: is the comment SYNTAX of this language rather than prose — an
       assignment, call, block, attribute, or import? Flag it. One commented
@@ -431,7 +432,8 @@ rules:
     status: stable
     description: |
       ANTI-PATTERN: scaffolding from a debugging session left in committed
-      code — an ad-hoc `print` / `println!` / `console.log` / `dbg!` on a path
+      code — an ad-hoc `print` / `println!` / `console.log` / `dbg!` /
+      `printf` / `fprintf(stderr, …)` / `std::cerr <<` on a path
       that has a real logger, a temporary `eprintln!("HERE")`, a hardcoded
       short-circuit added to reproduce a bug.
 

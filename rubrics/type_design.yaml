@@ -1,6 +1,7 @@
 name: Type Design (new types only)
 description: |
-  判一段改动里「新加的类型」(struct / enum / trait / type 别名 / 错误类型)——
+  判一段改动里「新加的类型」(struct / enum / trait / type 别名 / 错误类型;Go 的 struct / interface / 具名类型,
+  Java 的 class / interface / enum / record,C 的 struct / enum / union,C++ 的 class / struct / enum)——
   它有没有必要、名字对不对、住对地方没有、形状是不是 total。这是判据的原文:
   `type-naming` 与 `name-check` 两个 skill 只引用这里,不另写一份。
 
@@ -15,7 +16,7 @@ description: |
   规则按六组排:词性(按种类) → 说得清 → 要不要 → 住对地方 → 形状三条(透明度 / total / 规范化) → 弱类型字段。
   `applies_to: type_design`:只由新类型评审者(b/2442)加载,不进每个文件的 L4 评审。
 
-language: [rust]
+language: [rust, go, java, c, cpp]
 
 # `type_design` scope: loaded ONLY by the new-type reviewer, never pulled into the
 # per-file L4 set (`rubric_set_for`), the L5 judge, or the structural pass.
@@ -68,6 +69,8 @@ rules:
           是 `Found`、`Reopened`、`Fixed`。
         - 错误变体:说原因 —— `BridgeOff`、`NoPrNumber`。
 
+      其他语言:Java / C / C++ 的 enum 常量、Go 用 `iota` 定义的一组常量都是「变体」,同样按角色定词性。
+
       JUDGE:先认出这个 enum 是状态、事件还是错误(看名字和读者),再逐个变体看词性是否一致。
       一个状态 enum 里出现祈使动词(`Close`)、一个事件 enum 里出现形容词,判负。
 
@@ -97,6 +100,9 @@ rules:
           读的人还要去翻实现才知道错在哪。
         - 把 `Result` 的 Err 一边做成一个像实体的类型(`RefusedPr`)。
 
+      其他语言:Go 的哨兵错误(`ErrNotDelivered`)和错误类型、Java / C++ 的异常类(`BranchNotFoundException`)、
+      C 的错误码 enum 常量,都是「一种死因」,按死因起名;`ErrFailed`、`GenericException`、`ERR_OTHER` 是遗体名。
+
       JUDGE:逐个变体看:说得出一种死因吗?说不出、或 Err 一边读起来像一个东西而不是一种失败,判负。
       `XxxError` 这个 enum 名本身不判。
 
@@ -121,11 +127,14 @@ rules:
   - name: trait-not-a-capability-or-doer
     status: stable
     severity: warning
+    universality: [rust, go, java, cpp]
     summary: trait 名不是能力形容词或执行者名词,或和实现它的 struct 同名
     gate_question: 这个 trait 的名字是能力形容词或执行者名词(`Reviewer`、`Runner`、`Clock`),且不和实现它的类型同名吗?
     description: |
       ANTI-PATTERN:trait 名是一个动作(`Review`、`DoFetch`)、一个数据名词(`ReviewData`),
       或和实现它的 struct 同名(同名不同物)。trait 的方法是动词。
+
+      其他语言:Go / Java 的 interface、C++ 只有纯虚函数的抽象基类,就是这里的 trait(Go 惯例的 `-er` 名正是执行者名词)。
 
       JUDGE:读 trait 名,问「实现它的东西**是**一个 X 吗 / **能** X 吗」—— `impl Reviewer for ClaudeCritic`
       读得通 = 过。
@@ -147,6 +156,8 @@ rules:
     description: |
       ANTI-PATTERN:别名可以有,但名字是分词(`type Looked = …`)或在复述结构
       (`type FindingVec = Vec<Finding>`)。底层从 `Vec` 换成 `HashSet`,名字不该跟着改。
+
+      其他语言:Go 的 `type X = Y` 和 `type X []Y`、C 的 `typedef`、C++ 的 `using X = …` 都是别名,同样要说角色。
 
       JUDGE:遮住右边,只读名字 —— 能说出「这是这一轮的什么」吗?能 = 过。
 
@@ -277,7 +288,7 @@ rules:
         - 同一个名字前后换了意思:`FixInput` 在 base 里是 enum,改动后变成 `Vec<…>` 的别名 ——
           名字没变,东西变了,旧读者会被误导。
 
-      JUDGE:对新名字跑 `git grep -nwE '(struct|enum|trait|type) <Name>' -- 'crates/*.rs'`;
+      JUDGE:对新名字跑 `git grep -nwE '(struct|enum|trait|type|class|interface|typedef) <Name>'`(只看源文件);
       和 base 对比同名定义。命中另一个不同的定义、或名字是一个不带角色的泛词、或同名换了种类 / 意思 = 判负。
 
       EXEMPT:同名的几个定义,每一个的调用方都带模块路径写(`review::Outcome`、`build::Outcome`),
@@ -373,6 +384,7 @@ rules:
   - name: outcome-enum-is-a-disguised-result
     status: stable
     severity: error
+    universality: [rust, cpp]
     summary: 一个「结局」enum 里一半是成功、一半是为什么没成 —— 改装的 Result
     gate_question: 这个 enum 的变体里是不是同时有成功和失败?
     description: |
@@ -490,6 +502,8 @@ rules:
         - 只有测试在 match 的变体 —— 留着不算理由。
         - 汇总错误却只有一个来源。
 
+      其他语言:Java / C++ 里是没人单独 `catch` 的异常子类,Go 里是没人 `errors.Is` / `errors.As` 的错误类型或哨兵。
+
       JUDGE(按顺序,命中即停):
         1. grep 每个变体在生产代码里的 match。有一处按变体分支 = 不报。
         2. 没有分支:看各变体带的事实。事实是**不同的**(哪个参数、用户给的原值、哪个字段、哪种线型…),
@@ -561,6 +575,9 @@ rules:
         - 不同的失败共用一个 struct,区别只在构造时 `format!` 出来的文字(`not_spawned()` / `panicked()` 构造器);
         - `source: Option<Box<dyn Error + Send + Sync>>` 把底层错误的类型擦掉,调用方只能 downcast。
       后果:调用方和测试要分辨失败只能解析文字或 downcast;错误信息的措辞一改,依赖它的地方就静默失效。
+
+      其他语言:Go 用 `errors.New` / `fmt.Errorf` 的文字区分种类、调用方比较字符串;Java / C++ 只抛带 message 的
+      通用异常(`RuntimeException("not found")`、`std::runtime_error`);`fmt.Errorf` 用 `%v` 而不是 `%w` 擦掉底层错误。
 
       JUDGE:
         1. 列出这个类型能表达的失败种类。只有一种 → 看字段:全是有类型的事实(`SocketCall`、`SocketAddr`、`io::Error`、
@@ -639,6 +656,9 @@ rules:
     description: |
       ANTI-PATTERN:私有优先 —— 只在一个模块里用的类型被标成 `pub`,或 `pub` 到整个 crate 外却只有本 crate 读。
 
+      其他语言:Go 首字母大写即导出;Java 的 `public`(只在包内用就不写修饰符);C / C++ 里只在一个 .c / .cpp
+      里用的类型,定义却放进了公开头文件(C++ 可放进 .cpp 的匿名命名空间)。
+
       JUDGE:grep 它在定义模块之外的使用。没有 = 应私有;只在本 crate = `pub(crate)`。可见性比使用宽 = 判负。
 
       FIX:收窄到实际使用的范围;要跨出去时,它是一个契约,才公开并住在主人的类型模块里。
@@ -660,6 +680,9 @@ rules:
       ANTI-PATTERN:
         - 有不变量却透明:字段 `pub`,谁都能绕过校验造出非法值(非空、已排序、合法格式)。
         - 没有不变量却不透明:只是给几样东西起个名,却字段私有 + `new` + 一排 getter,多余的仪式。
+
+      其他语言:Go 的导出字段、Java / C++ 的 `public` 字段就是透明;C 里有不变量的 struct 把定义放进公开头文件
+      = 透明,只在头文件里前向声明、定义留在 .c 里 = 不透明。
 
       JUDGE:写出它的不变量(「`sha` 是 40 位十六进制」)。写得出却有 `pub` 字段 = 判负;
       写不出却字段私有、只有透传的 getter = 判负。
@@ -715,6 +738,9 @@ rules:
       正面形状:每个成员一个 struct + 一个装全家的 enum(集装箱)。外层 enum 用在需要「几种都行」的地方
       (单一入口 `match` 分发、同一条队列、一种线上格式);处理具体业务时拆箱,收成员自己的类型。
 
+      其他语言:和类型在 Java 是 sealed interface / enum,C++ 是 `std::variant`,C 是带 tag 的 union,Go 是只有
+      包内类型能实现的 interface;Go / C 没有编译期穷尽检查,家族漏成员更难被发现。
+
       JUDGE:列出这个家族在业务上的全部成员,对照 enum 的变体与兄弟名字。缺成员、名字不对称、
       或成员只存在于 Option 组合里 = 判负。
 
@@ -763,6 +789,8 @@ rules:
     description: |
       ANTI-PATTERN:新类型的字段用原始类型装一个领域值,而仓里已经有那个领域类型 —— 每个读者都得重新校验,
       或者干脆不校验。
+
+      其他语言:Go / Java 的 `string`、C 的 `char *`、C++ 的 `std::string`,以及裸整数,都是这里的弱类型字段。
 
       JUDGE:对每个 `String` / `PathBuf` / `&str` / `&Path` / 整数字段,按字段名 grep 仓里的领域类型
       (`BranchName`、`RepoRoot`、`RepoPath`、`CommitSha`、`RequestId`、`FindingId`、`Pr`、`Text`……)。

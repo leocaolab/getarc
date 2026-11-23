@@ -18,13 +18,13 @@ rules:
       raised error, not a return value that stands in for it. The caller
       cannot tell a real result from a buried failure. The token is only
       an example of the hazard, never its definition:
-        - Rust: `let _ = fallible();`, `.ok()` / `.unwrap_or(sentinel)`
-          that drops a typed `Err`, a `match`/`if let` error arm returning
-          a sentinel with no propagation
+        - Rust: `.ok()` / `.unwrap_or(sentinel)` that drops a typed `Err`,
+          a `match`/`if let` error arm returning a sentinel with no
+          propagation
         - Python: `except ...: pass`, `except ...: return None`
         - JS/TS/Java/C++: a `catch` whose body neither rethrows, logs, nor
           returns a value carrying the failure
-        - Go: assigning an error to `_`
+        - Go: an `if err != nil` branch that neither returns nor records it
 
       OWNS this failure mode ONLY: the error is dropped ENTIRELY. Draw the
       boundary against its cousins — do NOT also flag them here:
@@ -39,6 +39,8 @@ rules:
           `untyped-error-origin`.
         - The skip is past corruption of the system's OWN persisted data in
           a loop → `silent-continue-past-corrupt-own-data`.
+        - The returned failure is never looked at all (`let _ = f();`,
+          Go `_ = f()`) → `ignored-error-return`.
       A single site should match the ONE rule that most precisely names its
       defect, not carpet-bomb all of them.
 
@@ -48,6 +50,8 @@ rules:
       (None/default/empty/0/false) and does NOT propagate, and `[DR]` for
       `let _ = <call>` / `except: pass`. The detector has ALREADY EXEMPTed
       any arm that re-raises / returns Err / uses `?` / panics. So:
+        - A DR hit on `let _ = <call>` drops a failure nobody looked at:
+          report it as `ignored-error-return`, not here.
         - For an SWH/DR hit: CONFIRM it genuinely buries the error (the
           caller can't tell failure from a real value) and that no
           `[arc:intentional-handle]` documents it; then judge severity +
@@ -525,3 +529,267 @@ rules:
       for byte; keep the file list in one manifest that both the sync and
       the loader read. Language-neutral.
     severity: warning
+
+  - name: partial-mutation-before-failure
+    status: experimental
+    description: >
+      ANTI-PATTERN: a method writes part of an object's state (fields on
+      self / this, or a structure the caller keeps using), THEN performs a
+      step that can fail (raises, returns an error, does IO, allocates), and
+      the failure path neither restores the earlier writes nor discards the
+      object — so the caller is left holding a value that no successful call
+      could ever have produced: a size bumped with no element stored, `lo`
+      updated but `hi` not, a cursor advanced past a record that was never
+      handed out. The defect is the ORDER (commit before the last thing that
+      can fail) plus the object SURVIVING the failure. FLAG a write to
+      caller-visible state followed by a fallible step, when some other part
+      of the same update comes after that step and the caller still holds
+      the object on the error path; name the invariant the half-update
+      breaks. FIX: compute everything that can fail into locals first and
+      assign last (copy-and-swap, build-then-replace), or roll back on the
+      error path. EXEMPT: an object that is unreachable after the failure (a
+      builder or temporary the error path drops); a design that marks the
+      object explicitly broken on failure (a poisoned lock, a `Failed`
+      state) so the state is representable and checked; a single write
+      followed by a failure (nothing is half-done). Boundary:
+      `derived-write-not-atomic-with-base` owns two PERSISTED writes outside
+      one transaction; this rule owns IN-MEMORY state — `lo_ = lo;
+      validate(lo, hi); hi_ = hi;` has no database and is this rule's alone,
+      two auto-committed UPDATE statements leave no half-updated object in
+      memory and are that rule's alone. `missing-invariant-assertion` owns an
+      invariant never checked; here it may be checked perfectly, too late.
+      Language-neutral.
+    severity: error
+
+  - name: collection-mutated-while-iterated
+    status: experimental
+    description: >
+      ANTI-PATTERN: a loop iterates a container and its body adds to or
+      removes from THAT SAME container (not the elements' contents — the
+      container's structure), so the cursor the loop is using no longer
+      matches what it walks: elements are skipped or visited twice, or the
+      runtime throws (Python "dictionary changed size during iteration",
+      Java `ConcurrentModificationException`), or the iterator dangles (C++
+      `v.erase(it)` then `++it`, a reference kept across `push_back`). Token
+      examples: `for u in users: if u.banned: users.remove(u)`; `for k in
+      self.cache: del self.cache[k]`; `for (String s : list) list.remove(s)`;
+      `for (const x of arr) arr.splice(...)`. FLAG a structural mutation
+      whose receiver is the very container (same variable or field) the
+      enclosing loop iterates. FIX: iterate a snapshot (`list(d)`, a copy),
+      collect then apply after the loop, use the container's own
+      iterate-and-remove (`it = c.erase(it)`, Java `Iterator.remove()`,
+      `removeIf` / `retain` / `erase_if`, a filtered rebuild). EXEMPT: the
+      forms just named; Go deleting from a map during `range` over it (the
+      language defines it); a work-queue loop that deliberately pops from the
+      container it drains (`while q: x = q.pop(); q.extend(next(x))`) — that
+      loop does not hold an iterator into the container. Rust's borrow
+      checker rules this out, so it does not fire there. Boundary:
+      `pure-function-mutates-input` owns a write to a caller's argument
+      (`def normalize(xs): xs.sort()` has no loop over xs and is that rule's
+      alone; deleting expired keys from `self.cache` while iterating it
+      mutates no input and is this rule's alone); `fp_lens::effect-order-dependent-expression`
+      owns a pure-looking expression whose result
+      depends on effect order across calls — when the iterated container
+      itself changes shape, this rule owns the site.
+      Language-neutral.
+    severity: error
+
+  - name: binary-float-for-exact-quantity
+    status: experimental
+    description: >
+      ANTI-PATTERN: a quantity whose meaning demands an exact decimal result
+      — money, a price, a fee, a tax, a ledger balance, a billing or quota
+      counter that must reconcile — is stored in or computed with a BINARY
+      floating-point type (`float`, `double`, `f32` / `f64`, JS `number`
+      holding fractional currency), and the code then sums it, compares it
+      for equality, rounds it, or persists it. `0.1 + 0.2 != 0.3`, so
+      totals drift by a cent, an equality check on a balance fails, and two
+      systems summing the same lines disagree. FLAG a float-typed field,
+      parameter, or accumulator whose quantity is an accounting value, and
+      quote the arithmetic or comparison done on it. FIX: integer minor
+      units (`amount_cents: i64`), a decimal type (`Decimal`, `BigDecimal`,
+      `rust_decimal`, a decimal library in JS), or a money type that wraps
+      one. EXEMPT: measured or approximate quantities, where float is the
+      right model — physics, statistics, ML scores, coordinates, durations
+      for display, an exchange-rate estimate that is only shown; a float
+      that only crosses a wire format immediately parsed into a decimal
+      type. Names like price / amount / balance / cents are a clue, not the
+      verdict — judge the quantity's meaning. Boundary: a float compared
+      with `==` that is NOT an accounting value is not this rule's.
+      `llm_generated_code_smells::magic-literal` owns an unnamed constant;
+      `double totalUsd = 0; for (Line l : lines) totalUsd += l.priceUsd;` is
+      named and unit-labelled and is this rule's alone. Language-neutral.
+    severity: error
+
+  - name: discarded-pure-result
+    status: experimental
+    description: >
+      ANTI-PATTERN: a call that does NOT modify its receiver or arguments —
+      it delivers its whole effect through the return value — stands in
+      statement position and its result is thrown away, so the operation the
+      author meant to perform never happened: C++ `std::remove(v.begin(),
+      v.end(), x);` with no `erase` (the vector keeps its size), `s.empty();`
+      written for `clear()`; Java / JS `s.trim();`, `s.replace(a, b);`,
+      `arr.concat(x);`, `date.plusDays(1);` on an immutable value; Python
+      `s.strip()`, `s.replace(a, b)`, `sorted(xs)` meant as `xs.sort()`;
+      Rust `s.trim();`, `opt.map(f);` used for its effect. FLAG such a call
+      whose result is unused when the surrounding code proceeds as if the
+      value had been changed in place. FIX: assign the result (`s =
+      s.trim()`), use the in-place form, or for remove-like algorithms
+      finish with the erase (`v.erase(std::remove(...), v.end())`, or
+      `std::erase`). EXEMPT: an explicit discard (`(void)f()`, `_ = f()`,
+      `let _ = f()` with a reason); calls whose main job IS a side effect
+      even though they also return something (`map.insert`, `set.add`,
+      `list.remove(x)` returning a bool, `std::fill`); Go `append` without
+      assignment (the compiler rejects it). Boundary: this owns a dropped
+      RESULT VALUE, where nothing failed; a dropped ERROR is
+      `swallowed-exception` (or `rust_best_practices::must-use-result` /
+      `go_best_practices::ignored-error-return` in those languages) —
+      `name.strip()` swallows no failure and is this rule's alone, `try:
+      save() except: pass` loses no pure result and is that rule's alone.
+      Language-neutral.
+    severity: error
+
+  - name: wrapped-error-drops-cause
+    status: experimental
+    description: >
+      ANTI-PATTERN: an error handler catches error E and raises or returns
+      a NEW error in its place, but the new error does not carry E as its
+      cause — so the stack, the root failure, and any programmatic
+      `errors.Is` / `getCause()` / `source()` walk stop at the wrapper, and
+      the operator sees "config invalid" with no trace of the
+      `FileNotFoundException` underneath. Token examples: Java `catch
+      (IOException e) { throw new ConfigError("load " + path); }` (no `e`
+      passed as cause); JS `catch (e) { throw new LoadError(msg) }` without
+      `{ cause: e }`; Go `fmt.Errorf("load %s: %v", p, err)` (`%v` instead
+      of `%w`, so the chain cannot be unwrapped); C# `throw new X(msg)`
+      without the inner exception; Rust a typed variant built from a caught
+      error with no `#[source]` / `#[from]` field holding it; Python a new
+      error raised AFTER leaving the `except` block (stored and raised
+      later), or `raise X(...) from None` where nothing needed hiding —
+      inside the handler Python chains implicitly via `__context__`, so a
+      plain `raise X(...)` there keeps the cause and is EXEMPT. FLAG the
+      constructed error and name the caught error it should carry. FIX:
+      attach the cause (`new X(msg, e)`, `{ cause: e }`, `%w`, `from e`,
+      `#[source]`). EXEMPT: a deliberate cut at a trust boundary that must
+      not leak internals (an auth or public-API error), stated by `from
+      None` or a comment; a handler that translates a fully understood,
+      expected condition into a domain answer (a `KeyError` that becomes
+      `NotFound(id)`) where the cause adds nothing. Boundary:
+      `incomplete-error-context` owns a message missing the runtime inputs
+      (`raise ConfigError("missing key") from e` has the cause, lacks the
+      key — that rule's alone; `throw new ConfigError("missing " + k + " in
+      " + path)` from a catch has the inputs, lacks the cause — this rule's
+      alone); `untyped-error-origin` owns an error flattened to a STRING;
+      `java_best_practices::checked-exception-tunneling` owns laundering
+      into a bare `RuntimeException`; `go_best_practices::error-returned-without-context`
+      owns a naked `return err` (context missing, chain
+      intact) while `%v` wrapping (context present, chain broken) is this
+      rule's. Language-neutral.
+    severity: warning
+
+  - name: unbounded-retry
+    status: experimental
+    description: >
+      ANTI-PATTERN: a loop retries the SAME failed operation and is missing
+      one of the four things that make a retry safe: (1) a bound — a maximum
+      attempt count or total deadline; (2) a wait between attempts that
+      grows (backoff, ideally with jitter) instead of hammering at once; (3)
+      a filter that retries only failures classified as transient (timeout,
+      connection reset, 429 / 503) and gives up at once on permanent ones
+      (bad request, auth, not-found, parse error); (4) a trace of each
+      failed attempt (log or counter) so a retry storm is visible. Without
+      them one outage turns into a self-inflicted flood, a permanent error
+      spins forever, and the caller hangs. Token shapes: `while True: try:
+      send(); break; except Exception: continue`; `loop { match call() {
+      Ok(v) => break v, Err(_) => continue } }`; `for (;;) { try { ... }
+      catch (e) {} }`; a recursive `retry()` with no depth. FLAG the retry
+      loop and name which of the four is missing. FIX: a bounded policy
+      with backoff and a transient-only predicate — the ecosystem's retry
+      library (`tenacity` with `stop_after_attempt`, `backoff`, Resilience4j,
+      `cenkalti/backoff`, `backon` / `tokio-retry`, `p-retry`) or the same
+      four written out once and shared. EXEMPT: a library retry call already
+      configured with a stop condition; a consumer main loop that fetches
+      the NEXT message (not the same operation again); a supervised restart
+      loop whose supervisor owns the backoff. Boundary:
+      `missing-error-classification` owns a handler that surfaces failures
+      as one sentinel (no loop needed — `except Exception as e: return
+      Err(str(e))` is that rule's alone; errors already split into
+      `Transient` but retried with no bound and no wait are this rule's
+      alone); `llm_generated_code_smells::reinvented-wheel` owns a
+      hand-rolled but CORRECT backoff when a library exists.
+      Language-neutral.
+    severity: error
+
+  # Was go_best_practices::ignored-error-return + rust_best_practices::must-use-result:
+  # one hazard in every language that reports failure through a return value.
+  - name: ignored-error-return
+    status: stable
+    description: |
+      ANTI-PATTERN: a call reports failure through its RETURN VALUE, and the
+      call site never looks at that value, so a failed write / send / parse /
+      allocation looks exactly like success and the program continues on a
+      false premise. The returned value carried the fact "this did not
+      happen"; the code threw it away unread.
+
+      Instantiated by (examples, not the definition):
+        • Go: `f()` in statement position where `f` returns a trailing
+          `error`; `_ = f()`; `v, _ := f()` where the dropped value is the error.
+        • Rust: `let _ = fallible();`; a `Result` in statement position;
+          `.ok();` used only to silence `#[must_use]`, not to branch.
+        • Java: a `boolean` failure report dropped — `file.delete()`,
+          `dir.mkdirs()`, `lock.tryLock()`, `queue.offer(x)` — or the count
+          from `InputStream.read(buf)` ignored.
+        • Python / JS / TS: a status return such as `subprocess.run(...)`
+          without `check=True` and with `returncode` unread.
+
+      JUDGE: if this call FAILED, would the program now be proceeding on a
+      false premise (an unpersisted write, an unsent message, a skipped
+      validation, a null pointer)? If yes, flag it; propagate the failure or
+      handle it.
+      EXEMPT: a genuinely best-effort call whose failure cannot matter, WHEN an
+      adjacent comment says why (`let _ = writeln!(w, ...); // best-effort`,
+      a call whose failure is structurally
+      unreachable (`fmt.Fprintf(os.Stderr, ...)`).
+      BOUNDARY: this owns the failure that is never LOOKED AT. A `catch` /
+      `match` arm / `if err != nil` that DOES observe the failure and then
+      drops it is `swallowed-exception`. A call whose return value is its
+      RESULT rather than a failure report (`s.trim()` unassigned) is not this.
+      C / C++ status returns are judged by `c_best_practices::ignored-return-status`.
+    severity: error
+    universality: [rust, python, typescript, javascript, go, java]
+
+  # Was java_best_practices::equals-without-hashcode, opened to the languages
+  # where user code defines both equality and hashing.
+  - name: equality-contract-split
+    status: stable
+    description: |
+      ANTI-PATTERN: a type defines equality and hashing (or equality and
+      ordering) from DIFFERENT facts, so two values that compare equal can
+      hash to different buckets or sort as different — and hash maps, sets
+      and sorted containers silently misbehave: lookups miss, duplicates slip
+      into a set, a sorted map holds two "equal" keys.
+
+      Instantiated by (examples, not the definition):
+        • Java: one of `equals(Object)` / `hashCode()` overridden and not the
+          other, or the two reading different fields; `compareTo` inconsistent
+          with `equals` for a key of a `TreeMap` / `TreeSet`.
+        • Rust: a hand-written `impl PartialEq` next to `#[derive(Hash)]` (or
+          the reverse) where the two read different fields; a hand-written
+          `Ord` that disagrees with `Eq`.
+        • Python: `__eq__` and `__hash__` built from different attributes;
+          `__eq__` overridden on a class whose instances are used as dict keys
+          while `__hash__` is set by hand to something unrelated.
+        • C++: `operator==` and the `std::hash` specialization (or
+          `operator<` / `<=>` used by `std::map` / `std::set`) reading
+          different members.
+
+      JUDGE: does this type take part in hashing or ordered containers with
+      its equality built from one set of facts and its hash / order from
+      another? Flag that.
+      EXEMPT: both halves generated together (a Java record, a Rust
+      `#[derive(PartialEq, Eq, Hash)]`, a Python `@dataclass(frozen=True)`);
+      a type that defines neither and keeps identity semantics on purpose; a
+      type never used as a key, in a set, or in a sorted container.
+    severity: error
+    universality: [rust, python, java, cpp]

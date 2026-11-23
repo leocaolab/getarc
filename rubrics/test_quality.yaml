@@ -27,6 +27,8 @@ description: >
 applies_to: test
 
 rules:
+  # NOTE: the former `fixed-sleep-to-sync-concurrency` rule moved to
+  #   effect_state, because production code races the same way a test does.
   # WHY: a test that patches out every dependency and only asserts
   #      `assert_called_with` proves it knows its own structure, not that the
   #      production path works — a self-fulfilling prophecy.
@@ -50,32 +52,6 @@ rules:
       path. EXEMPT a genuine interaction test where the call itself IS the
       contract (e.g. "must NOT call the payment API twice").
     severity: critical
-
-  # WHY: a fixed-duration sleep used to synchronize with concurrent/background
-  #      work passes locally but is flaky under CI load — it races the work.
-  # SCOPE: universal (any language with concurrency; renamed from the
-  #        token/`async`-narrow `wall-clock-sleep-in-async-test`).
-  - name: fixed-sleep-to-sync-concurrency
-    status: stable
-    why: "A fixed-duration sleep to wait for concurrent work races the work and is flaky under CI load."
-    description: >
-      Anti-pattern: a test uses a hardcoded, fixed-duration sleep to wait for
-      concurrent or background work to finish — a thread, an async task, a
-      spawned process, a debounce — instead of waiting on the actual
-      completion signal. It passes locally and flakes under CI load, because
-      the sleep RACES the work rather than observing it. Applies to any
-      concurrency primitive, not just async:
-        - Python `time.sleep(...)` / `asyncio.sleep(...)`
-        - Rust `tokio::time::sleep(...)` / `std::thread::sleep(...)`
-        - Go `time.Sleep(...)`
-        - JS/TS `await new Promise(r => setTimeout(r, 200))`
-        - Java `Thread.sleep(...)`
-      FLAG a fixed millisecond/second wait used to synchronize with work. The
-      fix is explicit completion waiting: an event/notify (`asyncio.Event`,
-      `tokio::sync::Notify`, a channel), or bounded polling with a timeout cap.
-      EXEMPT a sleep that IS the thing under test (e.g. verifying a rate
-      limiter actually delays).
-    severity: error
 
   # WHY: exercising a parse / state-machine / numeric function with 3-5
   #      hand-picked inputs leaves most of the input space untested.
@@ -236,3 +212,45 @@ rules:
       and inputs whose producer is outside the system (a third-party API
       recorded from the wire).
     severity: warning
+
+  # WHY: a test whose failure path cannot be reached stays green when the code
+  #      under test breaks — it reports coverage and proves nothing.
+  # SCOPE: universal (every test framework has the same five holes).
+  - name: never-failing-test
+    status: experimental
+    why: "A test whose failure path is structurally unreachable stays green when the code under test breaks."
+    description: >
+      Anti-pattern: a test that would STILL PASS if the behaviour it names
+      were broken, because nothing in it can fail on that behaviour. The
+      shapes:
+        (a) no assertion or expectation at all — the test only calls;
+        (b) every assertion sits inside a branch the test's own data or
+            environment decides (`if result:`, `if os == "linux":`, `if
+            len(rows) > 0:`), so the bad case takes the branch that asserts
+            nothing;
+        (c) an expected exception caught by hand with no `fail()` after the
+            call (`try: parse("x") except ValueError: pass`), or a `catch`
+            that swallows the assertion error itself;
+        (d) an early `return` / bare skip on a runtime condition that is not
+            reported as a skip, so the run counts it as a pass;
+        (e) the assertion compares the test's own constructed value with
+            itself or with a value derived from it (`assert expected ==
+            expected`, the expectation computed by calling the code under
+            test).
+      FLAG the test and name which shape makes its failure path
+      unreachable. The fix is an assertion that the broken behaviour WOULD
+      trip: the framework's expected-exception form (`pytest.raises`,
+      `assertThrows`, `expect(...).toThrow()`, `#[should_panic(expected =
+      ...)]`, `require.Error`), an unconditional assertion, a reported skip
+      (`pytest.skip`, `t.Skip`, `Assume`), an expectation written out
+      independently of the code under test. EXEMPT: a smoke test whose
+      stated contract is "does not panic / throw" (said in its name or a
+      comment), where completing IS the assertion; table-driven loops whose
+      `if got != want { t.Errorf(...) }` is the assertion, not a branch
+      around one; property tests whose assertion lives in the property.
+      Boundary: `assertion-strength-mismatch` owns a test that CAN fail but
+      only checks the happy return value (`assert lock.acquire() is True`
+      fails when acquire fails — that rule's alone; `try: parse("x")
+      except ValueError: pass` cannot fail — this rule's alone);
+      `mock-toxicity` owns assertions that only verify calls into mocks.
+    severity: error

@@ -206,8 +206,8 @@ change. `arc rot --no-judge` gives the signals alone, cheap enough to trend in C
 
 Review is a **coverage** problem, not an intelligence problem. arc aims fixed
 rules at the mistakes agents actually make (there is a rubric for LLM-generated
-code smells), reviews eight languages (Rust, Python, TypeScript, JavaScript,
-Go, Java, C, C++), and keeps every finding as a record with a status and a
+code smells), reviews nine languages (Rust, Python, TypeScript, JavaScript,
+Go, Java, C, C++, Swift), and keeps every finding as a record with a status and a
 history, not a line in a chat log.
 
 ---
@@ -240,6 +240,13 @@ claude plugin install arc@getarc
 
 In another agent: `npx skills add leocaolab/getarc`, and pick the skills.
 
+To see them: `claude plugin list` names `arc@getarc` and its version, `claude plugin details arc@getarc`
+lists every skill, and inside a session `/plugin` shows the same and `/arc:` completes the skill
+names; you can also just ask ("set up arc", "taste check `src/pool.rs`") and Claude picks the skill.
+To upgrade: `claude plugin marketplace update getarc`, then `claude plugin update arc@getarc` and
+restart Claude Code. Without the marketplace, the release's `arc-skills.tar.gz` holds the same skills:
+unpack it and run `claude --plugin-dir ./arc-skills` (the skills are then `arc-skills:<name>`).
+
 | Skill | What it does |
 |---|---|
 | [`arc-setup`](skills/arc-setup/SKILL.md) | installs and configures arc, stage by stage |
@@ -250,9 +257,10 @@ In another agent: `npx skills add leocaolab/getarc`, and pick the skills.
 | [`maintain`](skills/maintain/SKILL.md) | diagnoses a failing command, resets local state, swaps a role |
 
 The review methods arc's own team works by need no `arc` binary:
-`seven-layer-check`, `taste-check`, `smell-check`, `error-check`, `test-check`,
+`taste-check`, `smell-check`, `error-check`, `test-check`,
 `name-check`, `type-naming`, `comment-clean`, `coding-convention`,
-`coding-principles` and `shift-left-<lang>` for eight languages. They cite the
+`coding-principles` and `shift-left-<lang>` for nine languages (Rust, Python,
+TypeScript, JavaScript, Go, Java, C, C++, Swift). They cite the
 rule sets in [`rubrics/`](rubrics/), the same files arc's reviewer reads.
 
 ---

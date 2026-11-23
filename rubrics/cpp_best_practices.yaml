@@ -1,0 +1,853 @@
+name: C++ Best Practices
+description: >
+  C++ correctness rules for L4 review. Function bodies visible. Flag concrete
+  sites, not style. Almost every rule here is about object lifetime and
+  ownership — destruction, copy and move, references that outlive their
+  object, ownership held in raw pointers, slicing — the failure modes C++
+  leaves to the programmer and the base rubrics do not name. Hazards that hold
+  for C as well (out-of-bounds writes, uninitialized reads, narrowing,
+  ignored return status, format strings, integer UB) live in
+  c_best_practices, which also loads on C++; hazards that hold in every language
+  (half-done mutation before a failure, unsynchronized shared state, a
+  discarded pure result) live in the base rubrics.
+
+  Every rule names its nearest neighbour ("kin:") and the line between them.
+  Sources: the Effective C++ / More Effective C++ / Effective Modern C++ /
+  Effective STL line and Sutter's Exceptional C++ books and C++ Coding
+  Standards; the rules are written from their principles, not their text.
+
+language: [cpp]
+
+rules:
+  # kin: effect_state::resource-owned-but-not-released — that rule needs a
+  #   path that really leaks; this one needs no leak, only a pointer that
+  #   decides nothing about who owns it.
+  - name: raw-owning-pointer
+    status: experimental
+    description: |
+      ANTI-PATTERN: a heap object's ownership lives in a raw pointer — the
+      result of `new`, `new[]` or `malloc` is kept in a `T*` variable, member
+      or container element and released by a hand-written `delete` / `free` —
+      instead of in a type whose destructor releases it (`std::unique_ptr`,
+      `std::shared_ptr`, `std::vector`, `std::string`, a project RAII class).
+      Who owns the object is then written only in the author's head: the
+      first early return, exception, copy or refactor leaks it or frees it
+      twice.
+
+      Instantiated by (examples, not the definition):
+        • `Foo* p_ = new Foo;` member with `delete p_;` in the destructor
+        • `items.push_back(new Item(...));` into `std::vector<Item*>`
+        • `char* buf = (char*)malloc(n); ... free(buf);` in C++ code
+        • a factory returning `T*` that the caller must remember to delete
+
+      JUDGE: does the pointer variable's TYPE say it owns the object? A raw
+      pointer that some code is expected to `delete` is an owning raw pointer
+      whether or not today's paths all release it.
+      EXEMPT: non-owning observer pointers (parameters, pointers to objects
+      someone else owns); the `new` inside the implementation of an RAII
+      class itself; a C API result handed straight to `unique_ptr<T, Deleter>`
+      on the next statement; intrusive containers that document their
+      ownership.
+      BOUNDARY: a path on which the release is actually skipped is ALSO
+      `resource-owned-but-not-released`; report both only when both hold.
+    severity: warning
+    gate_question: |
+      Is there a `delete` / `free` somewhere that this pointer depends on, and
+      is the pointer's type a plain `T*`?
+
+      Yes → own it with `std::unique_ptr` (or a container / RAII type) and
+        remove the manual release.
+      No, it only observes → not this rule.
+    example_bad: |
+      class Session {
+          Socket* sock_ = new Socket(addr);
+      public:
+          ~Session() { delete sock_; }
+      };
+    example_good: |
+      class Session {
+          std::unique_ptr<Socket> sock_ = std::make_unique<Socket>(addr);
+      };
+
+  # kin: l4_contracts::* has nothing on lifetimes. The nearest is
+  #   use-after-move below: there the object is alive but moved-from; here the
+  #   object is gone.
+  - name: dangling-reference-or-view
+    status: experimental
+    description: |
+      ANTI-PATTERN: a reference, pointer, iterator, `std::string_view`,
+      `std::span` or by-reference lambda capture outlives the object it
+      refers to. Reading it afterwards is undefined behaviour; it often
+      "works" in tests and corrupts memory in production.
+
+      Instantiated by (examples, not the definition):
+        • returning a reference / pointer / view to a local or a temporary
+        • `std::string_view v = make_name();` where `make_name` returns
+          `std::string` by value
+        • a `[&]` lambda stored in a member `std::function`, handed to a
+          `std::thread` / executor, or returned from the function
+        • `const auto& n = make_obj().name();` — the object dies at the `;`
+        • a view or iterator kept across a call that can reallocate or
+          destroy its container
+
+      JUDGE: name the object the handle points at and the point where that
+      object dies. If the handle can be read after that point, flag it.
+      EXEMPT: returning a reference to a member or `*this` from an object that
+      itself outlives the call; a `[&]` lambda called before the enclosing
+      scope ends (`std::for_each`, `std::sort`, an immediately invoked lambda).
+      BOUNDARY: a handle invalidated because the loop that holds it mutates
+      the container it iterates is the cross-language
+      collection-mutated-while-iterated hazard; this rule is about the
+      object's lifetime ending, not about mutation during iteration.
+    severity: error
+    gate_question: |
+      Where does the referred-to object die, and can this handle be read
+      after that line?
+
+      Yes → own the value (return by value, `std::string` instead of
+        `string_view`, capture by value / `shared_ptr`), or extend the
+        owner's lifetime.
+    example_bad: |
+      std::string_view label(const Item& i) {
+          return i.prefix() + ":" + i.id();   // temporary std::string dies here
+      }
+    example_good: |
+      std::string label(const Item& i) {
+          return i.prefix() + ":" + i.id();
+      }
+
+  # kin: raw-owning-pointer — that rule asks whether ownership sits in an
+  #   owning type; this one asks whether the special members that exist agree
+  #   with each other. A class can pass one and fail the other.
+  - name: special-members-inconsistent
+    status: experimental
+    description: |
+      ANTI-PATTERN: a class declares some of destructor / copy constructor /
+      copy assignment / move constructor / move assignment and leaves the rest
+      to the compiler, and the implicit ones are WRONG for this class (the
+      rule of three / five). The compiler-generated copy of a class whose
+      destructor frees a resource copies the handle and frees it twice; a
+      user-declared destructor silently suppresses the implicit moves, so
+      every "move" becomes a copy; a hand-written copy constructor without a
+      copy assignment leaves a class that can be copied but not assigned.
+
+      JUDGE: list which of the five the class declares. For each one it does
+      NOT declare, ask what the implicit version does to this class's
+      members. A member that is a raw pointer, file descriptor or other
+      handle freed in the destructor makes the implicit copy wrong.
+      EXEMPT: the rule of zero — every member is an RAII type and no special
+      member is declared; a polymorphic base that declares only
+      `virtual ~Base() = default;` (such bases are not meant to be copied);
+      a class that deletes the operations it does not support.
+      BOUNDARY: a hand-written copy operation whose BODY forgets a member is
+      `copy-operation-omits-member-or-base`; this rule is about which
+      functions exist.
+    severity: error
+    gate_question: |
+      For each special member this class does not declare, is the implicit
+      version correct for its members?
+
+      No → declare it (or `= delete` it), or move the resource into an RAII
+        member and declare none.
+    example_bad: |
+      class Buffer {
+          char* data_;
+      public:
+          explicit Buffer(size_t n) : data_(new char[n]) {}
+          ~Buffer() { delete[] data_; }
+      };                       // implicit copy shares data_ → double delete
+    example_good: |
+      class Buffer {
+          std::unique_ptr<char[]> data_;
+      public:
+          explicit Buffer(size_t n) : data_(std::make_unique<char[]>(n)) {}
+      };
+
+  # kin: dangling-reference-or-view — there the object is dead; here it is
+  #   alive in its moved-from state.
+  - name: use-after-move
+    status: experimental
+    description: |
+      ANTI-PATTERN: an object is read after its contents were moved out and
+      before it is assigned again. A moved-from object is valid but its
+      value is unspecified (except where the type defines it), so the read
+      sees whatever the move left behind. Includes the move mistakes that
+      move the wrong thing: `std::move` on a forwarding reference (moves the
+      caller's lvalue away — use `std::forward`), `std::move` on a `const`
+      object (silently copies), `return std::move(local);` (blocks copy
+      elision).
+
+      JUDGE: after `std::move(x)` or passing `x` to an rvalue parameter, is
+      `x` read on any path before it is assigned, `clear()`ed or reset?
+      EXEMPT: types whose moved-from state the standard pins down, used only
+      for that state (a moved-from `std::unique_ptr` checked for null);
+      reassigning or `clear()`ing before reuse; a move inside a loop where
+      each iteration re-initialises the variable first.
+    severity: error
+    gate_question: |
+      Is the moved-from object read before it is given a new value?
+
+      Yes → reorder so the read happens before the move, or reassign it
+        first.
+    example_bad: |
+      void submit(std::vector<Job> jobs) {
+          queue_.push(std::move(jobs));
+          log("submitted {} jobs", jobs.size());   // reads the moved-from vector
+      }
+    example_good: |
+      void submit(std::vector<Job> jobs) {
+          const auto n = jobs.size();
+          queue_.push(std::move(jobs));
+          log("submitted {} jobs", n);
+      }
+
+  # kin: effect_state::resource-owned-but-not-released — that rule needs an
+  #   unreleased resource; here every resource may be released and the
+  #   derived destructor still never runs.
+  - name: non-virtual-destructor-in-polymorphic-base
+    status: experimental
+    description: |
+      ANTI-PATTERN: a class meant to be used through a base pointer — it has
+      virtual functions, or derived objects are owned as `Base*` /
+      `std::unique_ptr<Base>` / `std::shared_ptr<Base>` created from a
+      `Derived` without `make_shared<Derived>` — has a public non-virtual
+      destructor. Deleting a derived object through the base pointer is
+      undefined behaviour: the derived part is never destroyed. Includes
+      publicly inheriting a standard container (whose destructor is not
+      virtual) and deleting it through the container pointer.
+
+      JUDGE: can a derived object be destroyed through a pointer to this
+      base? Then the base destructor must be public and virtual.
+      EXEMPT: a protected non-virtual destructor (the base is not deletable
+      through itself — a deliberate mixin design); a class marked `final`;
+      a base that is never owned through a base pointer.
+    severity: error
+    gate_question: |
+      Is any derived object deleted (directly or by a smart pointer) through
+      a pointer to this class, and is the destructor public and non-virtual?
+
+      Yes → `virtual ~Base() = default;`, or make it protected if the base
+        should never be deleted through itself.
+    example_bad: |
+      struct Codec { virtual Bytes encode(const Frame&) = 0; };
+      std::unique_ptr<Codec> c = std::make_unique<H264Codec>();  // ~H264Codec never runs
+    example_good: |
+      struct Codec {
+          virtual ~Codec() = default;
+          virtual Bytes encode(const Frame&) = 0;
+      };
+
+  # kin: l4_contracts::swallowed-exception — that rule is about a failure
+  #   that disappears; here the failure escapes from a function that may not
+  #   fail, and the process terminates.
+  - name: throwing-destructor-or-swap
+    status: experimental
+    description: |
+      ANTI-PATTERN: a destructor, deallocation function, `swap`, or move
+      operation calls something that can throw and lets the exception
+      escape. Destructors are implicitly `noexcept`, so the exception calls
+      `std::terminate`; a destructor run during unwinding of another
+      exception terminates even if it were not. A throwing `swap` breaks the
+      strong guarantee every copy-and-swap assignment built on it promises.
+
+      JUDGE: does the body call an operation that can throw (I/O flush,
+      allocation, a function documented to throw) outside a `try` that
+      catches it in this function?
+      EXEMPT: a destructor that wraps the throwing call in `try { … }
+      catch (…) { log … }` — the language forces that shape, and it is the
+      recommended one (offering a `close()` the caller can check is better
+      still, but not required). That catch is not `swallowed-exception`
+      either, as long as it records the failure.
+    severity: error
+    gate_question: |
+      Can an exception leave this destructor / swap / move operation?
+
+      Yes → catch it inside and record it, and give callers an explicit
+        fallible `close()` / `flush()` to call first.
+    example_bad: |
+      LogFile::~LogFile() { flush(); }   // flush() throws on a full disk → terminate
+    example_good: |
+      LogFile::~LogFile() {
+          try { flush(); } catch (const std::exception& e) { report_flush_failure(path_, e); }
+      }
+
+  # kin: refactor::construction-mixed-with-logic — that rule is about a
+  #   constructor doing work it should not own; this one is about which
+  #   override a constructor reaches, even when it does nothing else.
+  - name: virtual-call-in-constructor-or-destructor
+    status: experimental
+    description: |
+      ANTI-PATTERN: a constructor or destructor calls a virtual function of
+      its own class, directly or through a non-virtual member it calls.
+      During construction and destruction the object's dynamic type is the
+      class being built, so a derived override is NOT called — the author's
+      intended hook silently does nothing, and a pure virtual call is
+      undefined behaviour.
+
+      JUDGE: follow the calls from the constructor / destructor body; does
+      one reach a virtual member of this class without explicit
+      qualification?
+      EXEMPT: the class is `final`; the call is explicitly qualified
+      (`Base::f()`), which states that the base version is meant.
+    severity: error
+    gate_question: |
+      Does the constructor or destructor reach a virtual function expecting
+      a derived override to run?
+
+      Yes → move the call to a factory / `init()` run after construction, or
+        pass the varying behaviour in as a constructor argument.
+    example_bad: |
+      struct Widget {
+          Widget() { load_theme(); }          // never calls DarkWidget::load_theme
+          virtual void load_theme();
+      };
+    example_good: |
+      struct Widget {
+          explicit Widget(Theme theme) : theme_(std::move(theme)) {}
+      };
+
+  # kin: the cross-language partial-mutation-before-failure hazard — that one
+  #   covers any method that breaks its object on a mid-way failure; this one
+  #   is the copy assignment that breaks on `a = a`, which happens every time,
+  #   not only when something throws.
+  - name: self-assignment-unsafe-copy-assign
+    status: experimental
+    description: |
+      ANTI-PATTERN: a hand-written copy assignment releases its own resource
+      first and then copies from the right-hand side, with neither a
+      self-check nor a copy-then-release order. `a = a` reads memory it just
+      freed; a throw while copying leaves the object holding a dangling
+      handle. Includes an `operator=` that calls its own destructor and then
+      placement-news itself.
+
+      JUDGE: in `operator=(const T& rhs)`, is any member released before the
+      new value is fully built from `rhs`?
+      EXEMPT: copy-and-swap (`T& operator=(T rhs) { swap(*this, rhs); return
+      *this; }`); copy-then-release order; `= default` over RAII members.
+    severity: error
+    gate_question: |
+      If `rhs` is `*this`, or the copy throws half-way, does `operator=` leave
+      the object holding a freed or half-built resource?
+
+      Yes → build the new state first (copy-and-swap), then release the old.
+    example_bad: |
+      Image& Image::operator=(const Image& rhs) {
+          delete[] px_;
+          px_ = new Pixel[rhs.n_];            // rhs.px_ already freed when rhs is *this
+          std::copy(rhs.px_, rhs.px_ + rhs.n_, px_);
+          n_ = rhs.n_;
+          return *this;
+      }
+    example_good: |
+      Image& Image::operator=(Image rhs) {
+          swap(*this, rhs);
+          return *this;
+      }
+
+  # kin: special-members-inconsistent — that rule is about which special
+  #   members exist; this one is about a member or base missing from the body
+  #   of one that does.
+  - name: copy-operation-omits-member-or-base
+    status: experimental
+    description: |
+      ANTI-PATTERN: a hand-written copy constructor or copy assignment does
+      not copy one of the class's non-static members, or a derived class's
+      copy does not copy its base (the base is then default-constructed, or
+      left with its old value). The copy is silently partial; it usually
+      starts when a member is added later and the hand-written copy is not
+      updated.
+
+      JUDGE: compare the class's member list (and base list) with the
+      members initialised in the copy constructor's initialiser list /
+      assigned in the copy assignment. Is any missing?
+      EXEMPT: a member deliberately not copied (a mutex, a cache, an
+      instance counter) with a comment saying why.
+      BOUNDARY: when the skipped member is a built-in type that the copy
+      constructor leaves uninitialised and something reads it, that read is
+      c_best_practices::read-of-uninitialized-object; this rule is the copy
+      that is partial, whether or not the member is read.
+    severity: error
+    gate_question: |
+      Is there a member or base the copy operation does not copy, without a
+      stated reason?
+
+      Yes → copy it (call `Base(rhs)` / `Base::operator=(rhs)` for bases), or
+        let the compiler generate the copy.
+    example_bad: |
+      Job::Job(const Job& o) : id_(o.id_), cmd_(o.cmd_) {}   // retries_ not copied
+    example_good: |
+      Job::Job(const Job& o) = default;
+
+  # kin: l5_architecture::l5-S-inheritance-fanout — that rule measures the
+  #   hierarchy's surface; this one is a single by-value use of any
+  #   polymorphic type, however small its hierarchy.
+  - name: object-slicing
+    status: experimental
+    description: |
+      ANTI-PATTERN: an object of a polymorphic type is turned BY VALUE into
+      its base class, cutting off the derived part: a parameter or return of
+      base type by value, `catch (Base e)`, a `std::vector<Base>` holding
+      derived objects, assignment through a base reference
+      (`Base& b = d1; b = d2;` copies only the base part), or an array of
+      derived objects walked with base-pointer arithmetic.
+
+      JUDGE: is the by-value type a class with virtual functions (or a base
+      of classes that add state), and can a derived object reach it?
+      EXEMPT: value types without virtual functions or derived classes;
+      bases whose copy is deleted (slicing would not compile).
+    severity: error
+    gate_question: |
+      Can a derived object be copied into this by-value base-typed slot?
+
+      Yes → pass / catch / store by reference or (smart) pointer.
+    example_bad: |
+      void render(Shape s) { s.draw(); }        // a Circle arrives as a Shape
+      catch (std::exception e) { log(e.what()); }
+    example_good: |
+      void render(const Shape& s) { s.draw(); }
+      catch (const std::exception& e) { log(e.what()); }
+
+  # kin: typescript_best_practices::type-assertion-bypasses-checker — same
+  #   principle, closed to C++; the two never load on the same file.
+  - name: type-system-bypass
+    status: experimental
+    description: |
+      ANTI-PATTERN: an object is read or written around the type system,
+      so the compiler can no longer catch a mismatch: a C-style cast
+      `(T)x`; `reinterpret_cast` between unrelated types; `const_cast`
+      followed by a write; `static_cast` down a class hierarchy with nothing
+      proving the dynamic type; `memcpy` / `memset` / `memcmp` on a type that
+      is not trivially copyable (vtable, owning members); type punning
+      through a union; an object passed through C varargs.
+
+      JUDGE: does the conversion rely on a fact the compiler cannot check,
+      with nothing in the code establishing it?
+      EXEMPT: `memcpy` / `std::bit_cast` of trivially copyable types at a
+      serialization boundary; `reinterpret_cast<const char*>` for a byte view
+      handed to a C or I/O API, with a comment; a downcast guarded by a type
+      tag or `dynamic_cast` check in the same scope.
+      BOUNDARY: a cast between arithmetic types that may lose value is
+      c_best_practices::narrowing-numeric-conversion; this rule is about
+      reinterpreting objects, not about numeric range.
+    severity: warning
+    gate_question: |
+      Is there a check, tag or type that guarantees this conversion is
+      valid?
+
+      No → use a checked form (`dynamic_cast`, `std::variant`, a typed
+        accessor, `std::bit_cast`) or change the type so no cast is needed.
+    example_bad: |
+      auto* conn = (TlsConn*)base;              // base may be a PlainConn
+      std::memset(&cfg, 0, sizeof cfg);         // cfg holds std::string members
+    example_good: |
+      if (auto* conn = dynamic_cast<TlsConn*>(base)) { conn->renegotiate(); }
+      Config cfg{};
+
+  # kin: l4_contracts::boolean-trap-parameter — that rule is about an
+  #   unnamed literal at the call site; here the call site has no literal
+  #   problem, a value of the wrong type is converted silently.
+  - name: implicit-conversion-not-explicit
+    status: experimental
+    description: |
+      ANTI-PATTERN: a single-argument constructor (or one whose other
+      parameters all have defaults) or a conversion operator is not marked
+      `explicit`, and the conversion is not a lossless "same value, other
+      spelling". A caller then passes the wrong type and it compiles:
+      `Timeout t = 5;` (seconds? milliseconds?), `send(42)` where `send`
+      takes a `Message`, a non-explicit `operator bool` taking part in
+      arithmetic.
+
+      JUDGE: would a reader of the call site be surprised that this
+      argument becomes the class type? Then the constructor should be
+      `explicit`.
+      EXEMPT: wrappers deliberately designed to convert implicitly and
+      documented as such (string-like, view-like, `optional`-like types);
+      copy and move constructors.
+    severity: warning
+    gate_question: |
+      Is the converted-from value always the same value in another spelling?
+
+      No → mark the constructor / conversion operator `explicit`.
+    example_bad: |
+      class Timeout { public: Timeout(int ms); };
+      wait_for(event, 30);                      // 30 ms, meant 30 s
+    example_good: |
+      class Timeout { public: explicit Timeout(std::chrono::milliseconds ms); };
+      wait_for(event, Timeout{30s});
+
+  # kin: the cross-language inheritance-without-substitutability hazard —
+  #   there the override exists and breaks the base's contract; here the
+  #   function the author meant to override is not overridden at all.
+  - name: unsafe-override-or-name-hiding
+    status: experimental
+    description: |
+      ANTI-PATTERN: a derived-class function relates to the base function of
+      the same name differently from what its author believes: an override
+      without `override` (a slightly different signature makes it a new
+      function and the base version keeps being called); redefining a
+      NON-virtual base function (which one runs depends on the static type);
+      an override that changes a default argument (defaults bind
+      statically, so the base's default is used through a base pointer); one
+      new overload hiding every base overload of that name without
+      `using Base::f;`.
+
+      JUDGE: for each derived member that shares a name with a base member,
+      which function does a call through a base pointer, and through a
+      derived object, actually reach? Does that match the author's intent?
+      EXEMPT: a `final` function in a `final` class; overloads brought in by
+      `using Base::f;` before new ones are added.
+    severity: warning
+    gate_question: |
+      Does this derived member mean to override, and does it really?
+
+      Mean to and does → write `override`.
+      Mean to but doesn't (const, parameter type, ref-qualifier) → fix the
+        signature.
+      Hides base overloads → add `using Base::name;`.
+    example_bad: |
+      struct Base    { virtual void on_event(const Event&); };
+      struct Handler : Base { void on_event(Event&); };   // new function, never called via Base
+    example_good: |
+      struct Handler : Base { void on_event(const Event&) override; };
+
+  # kin: throwing-destructor-or-swap — that one is a move operation that can
+  #   throw; this one cannot throw but does not say so.
+  - name: move-operation-not-noexcept
+    status: experimental
+    description: |
+      ANTI-PATTERN: a hand-written move constructor or move assignment that
+      cannot throw is not marked `noexcept`. Standard containers then copy
+      instead of move when they reallocate (to keep their strong guarantee),
+      so the move is silently unused; a move-only type may fail to compile
+      in those operations.
+      EXEMPT: `= default` moves (noexcept is deduced); moves that genuinely
+      can throw (those are `throwing-destructor-or-swap` territory).
+    severity: info
+    gate_question: |
+      Can this move operation throw?
+
+      No → mark it `noexcept`.
+    example_bad: |
+      Matrix(Matrix&& o) : data_(o.data_), n_(o.n_) { o.data_ = nullptr; }
+    example_good: |
+      Matrix(Matrix&& o) noexcept : data_(std::exchange(o.data_, nullptr)), n_(o.n_) {}
+
+  # kin: raw-owning-pointer — that rule is about where ownership lives; this
+  #   one is about the release form not matching the allocation form, which
+  #   can happen inside a correct RAII class.
+  - name: mismatched-allocation-form
+    status: experimental
+    description: |
+      ANTI-PATTERN: allocation and release forms do not pair: `new[]` with
+      `delete`, `new` with `delete[]`, `malloc` with `delete`, `new` with
+      `free`; a class-specific `operator new` without its matching `operator
+      delete`; a placement `new` overload without its placement `delete`.
+      Each mismatch is undefined behaviour.
+
+      JUDGE: trace each released pointer back to its allocation; do the two
+      forms match?
+      EXEMPT: `std::unique_ptr<T[]>` / custom deleters, where the type
+      chooses the form.
+    severity: error
+    gate_question: |
+      Does the release form match the allocation form for this pointer?
+
+      No → match them, or let `std::unique_ptr<T[]>` / `std::vector` choose.
+    example_bad: |
+      buf_ = new char[n];
+      // ...
+      ~Packet() { delete buf_; }
+    example_good: |
+      std::vector<char> buf_;                   // or std::unique_ptr<char[]>
+
+  # kin: refactor::global-mutable-state — that rule is about global state
+  #   being mutable; this one holds even for immutable globals whose
+  #   initialisers depend on each other across files.
+  - name: static-initialization-order-dependency
+    status: experimental
+    description: |
+      ANTI-PATTERN: a namespace-scope object with dynamic initialisation
+      reads another namespace-scope object defined in a DIFFERENT
+      translation unit. The order between the two is unspecified: the
+      reader may see the other object before it is constructed, depending on
+      link order.
+
+      JUDGE: does a global's initialiser (or a constructor it runs) touch a
+      global defined in another `.cpp` file?
+      EXEMPT: `constexpr` / `constinit` objects; constant-initialised
+      objects; function-local statics (construct-on-first-use).
+    severity: error
+    gate_question: |
+      Does this global's initialiser depend on a global from another
+      translation unit?
+
+      Yes → replace the dependency with a function returning a local static,
+        or make it `constinit` / `constexpr`.
+    example_bad: |
+      // registry.cpp
+      const Registry kRegistry = Registry::with(kDefaultCodecs);  // kDefaultCodecs in codecs.cpp
+    example_good: |
+      const Registry& registry() {
+          static const Registry r = Registry::with(default_codecs());
+          return r;
+      }
+
+  # kin: llm_generated_code_smells::magic-literal — that rule is about an
+  #   unnamed literal; a named `#define` is not a magic literal, it is a name
+  #   without a type or a scope.
+  - name: macro-where-language-construct-fits
+    status: experimental
+    description: |
+      ANTI-PATTERN: `#define` does the job of a `constexpr` constant, an
+      `enum`, an `inline` function or a template: a constant macro (no type,
+      no scope, invisible to the debugger) or a function-like macro (its
+      arguments may be evaluated twice, operator precedence leaks through,
+      it ignores namespaces).
+
+      JUDGE: could a typed language construct express this macro exactly?
+      EXEMPT: include guards; conditional compilation (`#ifdef _WIN32`);
+      macros that need `__FILE__` / `__LINE__` / stringification / token
+      pasting; X-macro tables.
+    severity: warning
+    gate_question: |
+      Does this macro need anything only the preprocessor can do?
+
+      No → replace it with `constexpr`, `enum class`, an `inline` function or
+        a template.
+    example_bad: |
+      #define MAX_RETRIES 5
+      #define SQUARE(x) ((x) * (x))                 // SQUARE(i++) increments twice
+    example_good: |
+      constexpr int kMaxRetries = 5;
+      constexpr auto square(auto x) { return x * x; }
+
+  # kin: llm_generated_code_smells::obscure-import-or-alias — that rule is
+  #   about an alias being unclear; `using namespace std;` in a header is
+  #   perfectly clear and still leaks into every includer.
+  - name: header-leaks-into-includers
+    status: experimental
+    description: |
+      ANTI-PATTERN: a header pushes something that belongs to it alone into
+      every file that includes it: a namespace-scope `using namespace X;`
+      (every includer now has X's names, and lookups change behind their
+      back); a function or variable with external linkage DEFINED in the
+      header without `inline` / template / `constexpr` (one definition per
+      including translation unit: a link error, or silently several copies).
+
+      JUDGE: is this a header, and does the declaration change name lookup
+      or definitions in files that merely include it?
+      EXEMPT: `using namespace` inside a function body or in a `.cpp` file;
+      `inline` functions, templates, `constexpr` variables in headers.
+    severity: warning
+    gate_question: |
+      Does including this header change what names or definitions the
+      includer sees, beyond the header's own declarations?
+
+      Yes → qualify names / use narrow `using X::name;` inside functions;
+        mark header definitions `inline` or move them to a `.cpp`.
+    example_bad: |
+      // net/socket.h
+      using namespace std;
+      int default_port = 8080;                  // defined in every includer
+    example_good: |
+      // net/socket.h
+      inline constexpr int kDefaultPort = 8080;
+
+  # kin: l4_contracts::untyped-error-origin — that rule is about an error's
+  #   type being erased at a boundary; here the C++ exception itself may not
+  #   cross the boundary at all.
+  - name: exception-crosses-c-or-module-boundary
+    status: experimental
+    description: |
+      ANTI-PATTERN: a C++ exception, allocation or library type crosses a
+      boundary that cannot carry it: an `extern "C"` function, a callback
+      handed to a C library, or a shared-library export that can let an
+      exception escape (no `noexcept`, no outermost catch) — unwinding
+      through C frames is undefined behaviour; memory allocated in one module
+      and freed in another; `std::string` / STL containers in an interface
+      between separately built binaries (their layouts and allocators may
+      differ).
+
+      JUDGE: is this function called from C or from another binary, and can
+      an exception, a foreign-heap pointer or an STL object pass through it?
+      EXEMPT: an `extern "C"` body whose outermost statement is `try { … }
+      catch (…) { return error_code; }`; modules guaranteed to be built
+      with the same toolchain and runtime, stated where the interface is
+      declared.
+    severity: error
+    gate_question: |
+      Can an exception, an allocation or an STL object cross this C / module
+      boundary?
+
+      Yes → catch everything at the boundary and translate it to an error
+        code; free memory in the module that allocated it; pass C types
+        across.
+    example_bad: |
+      extern "C" int plugin_run(const char* cfg) {
+          return engine().run(parse(cfg));      // parse() throws ParseError into C
+      }
+    example_good: |
+      extern "C" int plugin_run(const char* cfg) noexcept {
+          try { return engine().run(parse(cfg)); }
+          catch (const std::exception& e) { record_last_error(e); return -1; }
+      }
+
+  # kin: java_best_practices::volatile-on-compound-operation — Java's
+  #   volatile gives visibility and only compound updates break; C++'s gives
+  #   neither, so even a single read/write of a shared volatile is a data race.
+  - name: volatile-as-synchronization
+    status: experimental
+    description: |
+      ANTI-PATTERN: a variable shared between threads is declared `volatile`
+      and used as the synchronisation (a stop flag, a ready flag, a counter).
+      In C++ `volatile` gives no atomicity and no happens-before ordering, so
+      every concurrent access is a data race — undefined behaviour — even a
+      single read and a single write of a `bool`.
+
+      JUDGE: is the `volatile` object read or written by more than one
+      thread?
+      EXEMPT: memory-mapped hardware registers; `volatile std::sig_atomic_t`
+      written from a signal handler.
+    severity: error
+    gate_question: |
+      Is this `volatile` variable accessed by more than one thread?
+
+      Yes → `std::atomic<T>` (or a mutex / condition variable).
+    example_bad: |
+      volatile bool stop = false;
+      std::thread worker([&] { while (!stop) step(); });
+      stop = true;
+    example_good: |
+      std::atomic<bool> stop{false};
+
+  # kin: rust_ownership::strong-back-reference — same principle, closed to
+  #   Rust. Within C++ the nearest is raw-owning-pointer: a cycle is
+  #   ownership expressed in the right type, pointing the wrong way.
+  - name: shared-ownership-cycle
+    status: experimental
+    description: |
+      ANTI-PATTERN: two or more objects hold each other through
+      `std::shared_ptr` — parent and child, subject and observer, an object
+      and a callback that captured its own `shared_from_this()` — and no edge
+      of the cycle is a `std::weak_ptr` or a non-owning pointer. The
+      reference counts never reach zero: the whole cycle leaks and its
+      destructors never run.
+
+      JUDGE: follow the `shared_ptr` edges (members, captured lambdas); is
+      there a path from this object back to itself? The edge that points
+      against the direction of ownership must be weak.
+      EXEMPT: a cycle broken by an explicit `reset()` on a path that always
+      runs before shutdown, documented as such.
+    severity: error
+    gate_question: |
+      Does any chain of `shared_ptr` lead from this object back to itself?
+
+      Yes → make the back edge `std::weak_ptr` (and handle `lock()` returning
+        null).
+    example_bad: |
+      struct Node { std::vector<std::shared_ptr<Node>> children; std::shared_ptr<Node> parent; };
+    example_good: |
+      struct Node { std::vector<std::shared_ptr<Node>> children; std::weak_ptr<Node> parent; };
+
+  # kin: l4_contracts::pure-function-mutates-input — that rule is a function
+  #   that DOES write its input; this one does not write it but its signature
+  #   does not say so.
+  - name: missing-const-correctness
+    status: experimental
+    description: |
+      ANTI-PATTERN: a member function that does not modify the object is not
+      `const`, or a reference / pointer parameter that is only read is not
+      `const&` / `const*`. Callers holding a `const` object cannot call it,
+      and every reader has to open the body to learn the function does not
+      change its argument.
+
+      JUDGE: does the body write the object / the parameter? If not, the
+      signature should say `const`.
+      EXEMPT: virtual overrides whose signature the base dictates; interfaces
+      deliberately left non-const for implementations that will mutate.
+    severity: info
+    gate_question: |
+      Does this function modify the object / parameter it does not mark
+      `const`?
+
+      No → add `const`.
+    example_bad: |
+      int Pool::size() { return static_cast<int>(slots_.size()); }
+      bool matches(Rule& rule, const Event& e);           // reads rule only
+    example_good: |
+      int Pool::size() const { return static_cast<int>(slots_.size()); }
+      bool matches(const Rule& rule, const Event& e);
+
+  # kin: llm_generated_code_smells::repeated-work-in-loop — that rule is
+  #   work redone per iteration; this one is a single needless copy at a
+  #   call boundary.
+  - name: expensive-pass-by-value
+    status: experimental
+    description: |
+      ANTI-PATTERN: a type that is expensive to copy (`std::string`, a
+      container, a large struct) is taken BY VALUE, and the function only
+      reads it — never moves it, stores it or modifies its copy. Every call
+      pays an allocation and a copy for nothing.
+      EXEMPT: the sink idiom — a parameter taken by value to be moved into a
+      member or another owner; cheap types (`string_view`, `span`, scalars,
+      small trivially copyable structs).
+    severity: info
+    gate_question: |
+      Is the by-value parameter moved, stored or modified?
+
+      No → take it by `const&` (or `std::string_view` / `std::span`).
+    example_bad: |
+      bool contains(std::vector<Id> ids, Id id) { return std::ranges::find(ids, id) != ids.end(); }
+    example_good: |
+      bool contains(std::span<const Id> ids, Id id) { return std::ranges::find(ids, id) != ids.end(); }
+
+  # kin: typescript_best_practices::enum-numeric-pitfall — same principle,
+  #   closed to TS/JS; the two never load on the same file.
+  - name: unscoped-enum-implicit-int
+    status: experimental
+    description: |
+      ANTI-PATTERN: a closed set is an unscoped `enum`, and its values are
+      implicitly converted to int — used in arithmetic, compared with an
+      integer, or compared with a value of a DIFFERENT enum — and it
+      compiles. The type no longer keeps the set closed.
+      EXEMPT: an enum used deliberately as bit flags with its own operators,
+      stated as such.
+    severity: info
+    gate_question: |
+      Does a value of this enum mix with ints or another enum anywhere?
+
+      Yes → `enum class`, with explicit conversion where an int is really
+        needed.
+    example_bad: |
+      enum Color { Red, Green };
+      enum Level { Low, High };
+      if (color == High) { … }                  // compiles
+    example_good: |
+      enum class Color { Red, Green };
+
+  # kin: the cross-language ordering-contract-violated hazard (a comparator
+  #   that is not a strict weak order) — this one is about operators whose
+  #   behaviour no longer matches the built-in ones, comparison or not.
+  - name: operator-overload-breaks-builtin-semantics
+    status: experimental
+    description: |
+      ANTI-PATTERN: an overloaded operator behaves unlike its built-in
+      meaning: `&&`, `||` or `,` are overloaded (both operands are now
+      always evaluated, short-circuit and sequencing are gone); `operator+`
+      modifies its left operand; `operator==` is not symmetric; `operator=`
+      returns something other than `*this` by reference.
+
+      JUDGE: would a reader who knows the built-in operator mispredict what
+      this one does?
+      EXEMPT: expression-template / DSL libraries that overload `&&` / `||`
+      to build expressions, documented as such.
+    severity: warning
+    gate_question: |
+      Does this operator do what the built-in operator would lead a reader to
+      expect?
+
+      No → give the operation a named function.
+    example_bad: |
+      Query operator&&(Query a, Query b);       // a reader expects b to be skipped when a is false
+    example_good: |
+      Query all_of(Query a, Query b);

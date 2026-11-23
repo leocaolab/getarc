@@ -9,8 +9,9 @@ description: 审一段 Rust 代码（一个 crate、几个文件或一个 diff�
 
 按规则原文判，不凭这里的摘要，也不凭记忆。规则原文随插件附带：
 
-- `${CLAUDE_PLUGIN_ROOT}/rubrics/l4_contracts.yaml`：`swallowed-exception`、`missing-error-classification`、`untyped-error-origin`、`incomplete-error-context`、`silent-default-on-config-miss`、`silent-continue-past-corrupt-own-data`。
-- `${CLAUDE_PLUGIN_ROOT}/rubrics/rust_best_practices.yaml`：`no-unwrap-in-library`、`default-substituted-for-absent-or-failed`、`error-not-stringly`、`must-use-result`、`unchecked-arithmetic-on-input`。
+- `${CLAUDE_PLUGIN_ROOT}/rubrics/l4_contracts.yaml`：`swallowed-exception`、`missing-error-classification`、`untyped-error-origin`、`incomplete-error-context`、`silent-default-on-config-miss`、`silent-continue-past-corrupt-own-data`、`ignored-error-return`。
+- `${CLAUDE_PLUGIN_ROOT}/rubrics/rust_best_practices.yaml`：`no-unwrap-in-library`、`default-substituted-for-absent-or-failed`、`error-not-stringly`。
+- `${CLAUDE_PLUGIN_ROOT}/rubrics/security_common.yaml`：`unchecked-arithmetic-on-input`。
 - 本插件 `shift-left-rust` skill 的「Don't swallow, don't hide」一节：每个 `Option` / `Result` 的四步判断、按时期的 panic 表、改类型的写法清单。
 - 项目自己的 `CLAUDE.md` 和编码规范。
 
