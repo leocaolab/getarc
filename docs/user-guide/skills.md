@@ -60,7 +60,7 @@ Each skill is called by name (`arc:<skill>` from getarc, `arc-skills:<skill>` ot
 
 | Skill | Ask for it with | What it does |
 |---|---|---|
-| `arc-setup` | "install arc", "set up arc" | the install agent: binary from getarc, providers in tars, `arc init` roles, optional merge gate / deploy / agent hooks, then a smoke test. It probes what is already there, does only what is missing, verifies each stage with one command and stops with the real error when one fails |
+| `arc-setup` | "install arc", "set up arc" | the install agent: binary from getarc, providers in tars, `arc init` roles, a smoke test, presubmit.toml, the merge gate; then the pipeline machine (server suite, machine.toml, arc-web and arc-bridge, the repo registered with its review routes and services), client.toml and the agent hooks, and a first landed PR. It probes what is already there, does only what is missing, verifies each stage with one command and stops with the real error when one fails |
 | `review` | "review my changes", "arc local-review this" | runs `arc local-review` and shows the reviewer's findings as arc prints them. Read-only |
 | `fix` | "fix the real issues", "arc fix" | runs `arc fix` after a local review: the Fixer answers the local PR's findings, one commit per fix on the current branch. It pushes nothing |
 | `rot` | "fix the rot", "arc rot" | works through `arc rot`'s structural suggestions as multi-file refactors; it edits and commits, so it confirms first |

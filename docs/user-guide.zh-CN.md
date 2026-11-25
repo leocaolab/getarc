@@ -101,13 +101,13 @@ Set up A.R.C. (arc) in this repository with the arc-setup skill. If you're in Cl
 ```
 
 [arc-setup skill](https://github.com/leocaolab/getarc/blob/main/skills/arc-setup/SKILL.md) 先装二进制,再配 tars 里的 provider、
-`arc init` 的角色、跑第一遍,动全局的东西之前先问你。PATH 上有 `claude` 时,它默认用你已登录的 Claude Code 当评审和修复的模型,
+`arc init` 的角色、`presubmit.toml` 和合并门禁,然后带你装流水线机器(套件、看板、登记仓和评审路由、各服务),直到第一个 PR 落地;动全局的东西之前先问你。PATH 上有 `claude` 时,它默认用你已登录的 Claude Code 当评审和修复的模型,
 不要 API key。每个 skill 和插件做什么见 §3。
 
 | 哪一步 | 问你什么 | 写什么 |
 |---|---|---|
 | `install.sh` | 什么都不问 | `arc` 二进制,放在 `~/.local/bin`(或 `--to` 指定的目录) |
-| arc-setup skill | 用哪个模型(有 `claude` 时建议用它,不要 key);每次写全局文件之前 | `~/.tars/config.toml`、`.arc/config.toml`,再跑第一遍 |
+| arc-setup skill | 用哪个模型(有 `claude` 时建议用它,不要 key);每次写全局文件之前 | `~/.tars/config.toml`、`.arc/config.toml`、`presubmit.toml`、`merge.yml`;流水线机器上的 `~/.arc/machine.toml` 和 unit;`~/.arc/client.toml` 和 agent hook |
 | `arc init`(在终端里) | 从 `~/.tars/config.toml` 已有的 provider 里选谁评审、谁修复;一个都没有就停下说明 | `.arc/config.toml`、`.arc/.gitignore` |
 
 ### 0.2 装 arc CLI
@@ -722,7 +722,7 @@ skill 让你的编码 agent 替你驱动 arc。它们从不重新实现 arc:跑 
 
 | skill | 这么说就会用它 | 做什么 |
 |---|---|---|
-| `arc-setup` | 「装 arc」「配 arc」 | 安装 agent:从 getarc 装二进制、tars 里的 provider、`arc init` 的角色、可选的合并门禁 / 部署 / agent hook,最后冒烟测试。先探测已有的,只做缺的,每一步用一条命令验收,失败就带着真实报错停下 |
+| `arc-setup` | 「装 arc」「配 arc」 | 安装 agent:从 getarc 装二进制、tars 里的 provider、`arc init` 的角色、冒烟测试、presubmit.toml、合并门禁;再装流水线机器(套件、machine.toml、arc-web 和 arc-bridge、登记仓及其评审路由和服务)、client.toml 和 agent hook,直到第一个 PR 落地。先探测已有的,只做缺的,每一步用一条命令验收,失败就带着真实报错停下 |
 | `review` | 「评一下我的改动」「arc local-review」 | 跑 `arc local-review`,先给真问题,分成 core 和噪音。只读 |
 | `fix` | 「修真问题」「arc fix」 | 本地评审之后跑 `arc fix`:Fixer 回答本地 PR 的 finding,每修一块在当前分支上一个 commit。什么都不推 |
 | `rot` | 「修腐烂」「arc rot」 | 把 `arc rot` 的结构建议当跨文件重构来做;它改代码、提交,所以先确认 |

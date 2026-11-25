@@ -107,9 +107,9 @@
     },
     {
       "id": "fixer_build_failed",
-      "stage": "agents",
-      "pattern": "fixer pipeline: failed to build provider '([^']+)' from config at",
-      "source": "crates/review/cli/src/workflow/fix/agents.rs:90; docs/user-guide/coding-agents.md",
+      "stage": "roles",
+      "pattern": "fixer pipeline: failed to build provider '([^']+)'",
+      "source": "crates/review/agents/src/fixer/model.rs:36; docs/user-guide/coding-agents.md",
       "cause": "the fixer's id is not in the tars config, or that entry does not parse; the rest of the line is tars's words.",
       "fix": "fix the tars entry the line names."
     },
@@ -147,7 +147,7 @@
     },
     {
       "id": "not_a_tenant",
-      "stage": "smoke",
+      "stage": "tenant",
       "pattern": "is not a tenant in .*machine\\.toml",
       "source": "crates/infra/fs/src/tenants.rs:64 (StoreError::NotATenant)",
       "cause": "a pipeline lookup found no tenant for this repo in this machine's ~/.arc/machine.toml: no review service serves it here. `arc local-review` and `arc fix` never ask (they use the clone's own .arc/review.db); this comes from arc's services.",
@@ -173,33 +173,137 @@
       "id": "no_runner",
       "stage": "smoke",
       "pattern": "cannot tell who is submitting — not in an agent session and no `gh` login",
-      "source": "crates/apps/cli/src/cli/dispatch.rs:155 (writer_of); crates/infra/types/src/identity/agent.rs:36",
+      "source": "crates/apps/cli/src/cli/dispatch.rs:146 (writer_of); crates/infra/types/src/identity/agent.rs:36",
       "cause": "`arc local-review`, `arc fix` and `arc submit` name who ran them: the agent session they run in (Claude Code, Codex, agy), else the `gh` login. This shell has neither.",
       "fix": "run it from the person's coding agent, or have the person run `gh auth login` (their account — ask)."
     },
     {
-      "id": "review_service_silent",
-      "stage": "smoke",
-      "pattern": "the review service did not take it in",
-      "source": "crates/review/cli/src/bootstrap/record.rs:52",
-      "cause": "the request was queued but no review service took it within the wait.",
-      "fix": "report it with the row and request id; the service is the operator's."
-    },
-    {
-      "id": "detached_head",
-      "stage": "smoke",
-      "pattern": "the checkout is on no branch",
-      "source": "crates/review/cli/src/bootstrap/record.rs:36",
-      "cause": "HEAD is detached; a PR belongs to a branch.",
-      "fix": "check out a branch (ask before creating one)."
-    },
-    {
       "id": "bridge_unconfigured",
-      "stage": "agents",
+      "stage": "client",
       "pattern": "no arc-bridge server is configured",
-      "source": "crates/bridge/cli/src/workflow/collect.rs (and history.rs / talk.rs); docs/user-guide/coding-agents.md",
+      "source": "crates/bridge/cli/src/workflow/talk.rs:112; crates/bridge/cli/src/workflow/team.rs:43",
       "cause": "~/.arc/client.toml names no board, so the client does not know where the pipeline is.",
       "fix": "on the pipeline machine `arc-server tenant url web` prints the address; write `web = \"http://<host>:<port>\"` to ~/.arc/client.toml (ask first — global file)."
+    },
+    {
+      "id": "no_feature_branch",
+      "stage": "first_pr",
+      "pattern": "HEAD is not on a feature branch",
+      "source": "crates/review/cli/src/workflow/submit/mod.rs:97 (Refusal::NoBranch)",
+      "cause": "`arc submit` ran on a detached HEAD or the default branch; a PR belongs to a feature branch.",
+      "fix": "check out a feature branch (`git switch -c <name>`, after asking) and run arc submit again."
+    },
+    {
+      "id": "no_default_branch",
+      "stage": "first_pr",
+      "pattern": "origin names no default branch",
+      "source": "crates/review/cli/src/workflow/submit/mod.rs:138 (Refusal::NoDefaultBranch)",
+      "cause": "origin/HEAD is not set in this clone, so arc cannot tell which branch the change lands on (probe.py's *_on_target criteria say the same).",
+      "fix": "`git remote set-head origin --auto` (it reads origin; ask first), then run again."
+    },
+    {
+      "id": "presubmit_refused",
+      "stage": "presubmit",
+      "pattern": "presubmit\\.toml is refused( at line (\\d+))?: (.*)",
+      "source": "crates/review/cli/src/workflow/presubmit/mod.rs:50 (PresubmitError::Malformed); crates/review/cli/src/workflow/presubmit/config.rs",
+      "cause": "presubmit.toml does not read: a misspelt key, no [[checks]], no or a zero timeout_seconds, or one over 86400.",
+      "fix": "fix the key the line names (docs/user-guide/configuration.md, <repo>/presubmit.toml) and run `arc presubmit` again."
+    },
+    {
+      "id": "presubmit_flag_missing",
+      "stage": "presubmit",
+      "pattern": "uses \\{(base|target|affected)\\}, so pass --",
+      "source": "crates/review/cli/src/workflow/presubmit/mod.rs:58 (PresubmitError::FlagNotGiven)",
+      "cause": "a check's command spells {base} / {target} / {affected} and the run was not given the flag that fills it; no check ran.",
+      "fix": "`git fetch origin`, then pass `--target origin/<target> --base \"$(git merge-base HEAD origin/<target>)\"`."
+    },
+    {
+      "id": "presubmit_dirty_tree",
+      "stage": "presubmit",
+      "pattern": "the working tree has uncommitted changes, and a check passes only on HEAD's own tree",
+      "source": "crates/review/cli/src/workflow/presubmit/mod.rs:64 (PresubmitError::DirtyTree)",
+      "cause": "a check's pass counts for HEAD, so it runs only on a clean tree (untracked files included).",
+      "fix": "commit or remove the paths the line lists (ask before discarding anything), then run again."
+    },
+    {
+      "id": "git_too_old",
+      "stage": "suite",
+      "pattern": "is too old — refusing to start \\(need git >= (\\d+\\.\\d+)\\)",
+      "source": "crates/apps/server/src/boot.rs:151 (GitFloorError::TooOld)",
+      "cause": "the merge server merges with `git merge-tree --write-tree`, which arrived in git 2.38.",
+      "fix": "the person installs a newer git on the pipeline machine (a system package — ask), then restarts the service."
+    },
+    {
+      "id": "env_refused",
+      "stage": "tenant_services",
+      "pattern": "refusing to start: arc takes no input from the environment",
+      "source": "crates/config/src/startup.rs:40 (RetiredVarsError)",
+      "cause": "a service found ARC_* variables outside its allow-list; the lines after it name each one and what replaced it.",
+      "fix": "remove each named variable (the unit, the shell profile, `systemctl --user show-environment`); put the setting in ~/.arc/machine.toml as the line says."
+    },
+    {
+      "id": "machine_toml_missing",
+      "stage": "machine",
+      "pattern": "does not exist — a service reads its configuration from it",
+      "source": "crates/config/src/startup.rs:28 (StartupError::NoFile)",
+      "cause": "~/.arc/machine.toml is not there yet.",
+      "fix": "stage `machine`: write [machine] (ask first — global file); `arc-server install <clone>` adds the [[tenant]]."
+    },
+    {
+      "id": "expose_without_address",
+      "stage": "machine",
+      "pattern": "\\[machine\\] expose = true, but no address is written",
+      "source": "crates/config/src/resolved.rs:108",
+      "cause": "expose = true needs the IP address the board and the chat server listen on.",
+      "fix": "add `address = \"<this machine's IP>\"` under [machine]."
+    },
+    {
+      "id": "unknown_tenant_key",
+      "stage": "tenant",
+      "pattern": "`([^`]+)` is no setting of a tenant",
+      "source": "crates/apps/server/src/tenant/args.rs:90",
+      "cause": "`arc-server tenant set` was given a key a [[tenant]] does not have.",
+      "fix": "`arc-server tenant show <owner/name>` lists the keys; review routes are edited in machine.toml, not with tenant set."
+    },
+    {
+      "id": "names_no_tenant",
+      "stage": "tenant",
+      "pattern": "names no tenant (\\S+)",
+      "source": "crates/apps/server/src/tenant/mod.rs:54",
+      "cause": "`arc-server tenant check|show|set <owner/name>` named a repo machine.toml does not register.",
+      "fix": "register the clone with `arc-server install <clone>`, or use a name `arc-server tenant list` prints."
+    },
+    {
+      "id": "not_a_tenant_of_this_environment",
+      "stage": "tenant_services",
+      "pattern": "(\\S+) is not a tenant of this environment \\(tenants: ",
+      "source": "crates/config/src/startup.rs:99 (UnknownTenant)",
+      "cause": "a per-repo service (arc-server@ / arc-review@) started for a name machine.toml does not register; the unit instance is the tenant name with `/` turned into `-`.",
+      "fix": "enable the unit for a registered tenant (`arc-server tenant list`), or register the clone first."
+    },
+    {
+      "id": "startup_check_failed",
+      "stage": "tenant_services",
+      "pattern": "refusing to start — `arc-server tenant check (\\S+)` fails:",
+      "source": "crates/apps/server/src/tenant/check.rs:108 (StartupCheckError::Failed)",
+      "cause": "arc-server or arc-review ran the tenant's offline checks at start and one said FAIL; the lines under it name which.",
+      "fix": "run `arc-server tenant check <owner/name>` and fix each FAIL line (most often: the clone has uncommitted paths, or is not at its real path); then start the service again."
+    },
+    {
+      "id": "client_toml_invalid",
+      "stage": "client",
+      "pattern": "client\\.toml is not valid: (.*)",
+      "source": "crates/infra/http/src/client.rs:390 (ServerConfigError::Parse); crates/infra/machine_client/src/lib.rs (ClientFile refuses unknown keys)",
+      "cause": "~/.arc/client.toml has a key other than `web`, or is not TOML.",
+      "fix": "leave exactly one line, `web = \"http://<address>:<port>\"` (what `arc-server tenant url web` prints on the pipeline machine)."
+    },
+    {
+      "id": "systemd_user_bus",
+      "stage": "board",
+      "pattern": "Failed to connect to (the )?bus",
+      "source": "systemctl (systemd's own words), when the shell has no user manager session",
+      "cause": "`systemctl --user` could not reach this user's systemd manager — usually a shell started with su/sudo, or no lingering for the user.",
+      "fix": "log in as the service user directly (ssh), and turn lingering on: `loginctl enable-linger $USER` (ask first)."
     }
   ]
 }

@@ -1,6 +1,7 @@
 {
-  "about": "The install route. probe.py reads it and reports, per stage, which criterion holds and which does not; SKILL.md walks it in order. Every stage is judged from the world (files, binaries, git) each time, so a stopped install resumes by probing again.",
-  "required_verbs": ["init", "local-review", "fix", "rot", "workflow", "submit", "reset"],
+  "about": "The install route: the arc CLI on the coding machine, then the pipeline machine, ending with a first PR the pipeline landed. probe.py reads it and reports, per stage, which criterion holds and which does not; SKILL.md walks it in order. Each stage names the machine it is judged on: `coding` (where the person writes code) or `pipeline` (the machine that runs the server suite); probe.py judges the stages of the machine it is told it runs on. Every stage is judged from the world (files, binaries, git, the board's answers) each time, so a stopped install resumes by probing again.",
+  "required_verbs": ["init", "local-review", "fix", "rot", "workflow", "presubmit", "submit", "bridge", "reset"],
+  "suite_binaries": ["arc", "arc-server", "arc-review", "arc-reviewer", "arc-fixer", "arc-web", "arc-bridge"],
   "release_page": "https://github.com/leocaolab/getarc/releases",
   "assets": {
     "Darwin arm64": "arc-darwin-arm64.tar.gz",
@@ -10,6 +11,7 @@
     {
       "id": "prereq",
       "title": "Prerequisites",
+      "machine": "coding",
       "optional": false,
       "verify": "git rev-parse --show-toplevel",
       "criteria": [
@@ -22,6 +24,7 @@
     {
       "id": "binary",
       "title": "The arc binary",
+      "machine": "coding",
       "optional": false,
       "verify": "arc --version",
       "criteria": [
@@ -33,6 +36,7 @@
     {
       "id": "tars",
       "title": "LLM providers in tars",
+      "machine": "coding",
       "optional": false,
       "asks": ["Which model providers do you have access to (an API key, or a signed-in Claude Code / Codex / agy CLI)?"],
       "verify": "probe.py --stage tars",
@@ -47,6 +51,7 @@
     {
       "id": "roles",
       "title": "arc init: .arc/config.toml [roles]",
+      "machine": "coding",
       "optional": false,
       "asks": ["Which tars provider reviews (critic) and which fixes (fixer)? The fixer should be a different model family."],
       "verify": "probe.py --stage roles",
@@ -56,62 +61,172 @@
         {"id": "roles_resolve", "level": "required", "says": "every [roles] value names a provider id in tars, and a critic resolves (critic_l4 / critic / default)"},
         {"id": "fixer_explicit", "level": "required", "says": "fixer is written out (it never falls back to default)"},
         {"id": "fixer_family_differs", "level": "advice", "says": "fixer and critic are different model families"},
-        {"id": "fixer_can_edit", "level": "advice", "says": "a claude_cli fixer has tools = \"default\"; a codex_cli fixer has sandbox = \"workspace-write\""}
+        {"id": "fixer_can_edit", "level": "advice", "says": "a claude_cli fixer has tools = \"default\"; a codex_cli fixer has sandbox = \"workspace-write\""},
+        {"id": "fixer_cli_present", "level": "advice", "says": "the fixer provider's agent CLI (claude / codex / agy) is on PATH"}
       ],
       "sources": ["crates/apps/cli/src/cli/init.rs", "crates/infra/llm/src/roles/mod.rs", "crates/review/agents/src/role.rs (FIXER_MUST_BE_EXPLICIT)", "docs/user-guide/configuration.md", "docs/user-guide/coding-agents.md"]
     },
     {
-      "id": "merge_gate",
-      "title": "Merge gate: .github/workflows/merge.yml",
-      "optional": true,
-      "asks": ["Will a merge machine land this repo's PRs (merge gate), and if so which checks must pass?"],
-      "verify": "arc workflow .github/workflows/merge.yml --job <job> --list",
-      "criteria": [
-        {"id": "merge_yml_present", "level": "required", "says": ".github/workflows/merge.yml exists"},
-        {"id": "merge_yml_dispatch_only", "level": "required", "says": "its trigger is workflow_dispatch only, so GitHub never runs it"},
-        {"id": "merge_yml_lists", "level": "required", "says": "`arc workflow … --job <job> --list` exits 0 for every job"}
-      ],
-      "sources": ["docs/user-guide/merge-gate.md", "crates/infra/workflow/src/workflow/plan.rs"]
-    },
-    {
-      "id": "release",
-      "title": "Deploy: [release] + .arc/delivery.toml",
-      "optional": true,
-      "asks": ["Does this repo deploy from a merge machine? If so, which workflow job is the deploy?"],
-      "verify": "arc workflow <deploy workflow> --job <job> --list",
-      "criteria": [
-        {"id": "release_declared", "level": "required", "says": "[release] in .arc/config.toml names a workflow (and job)"},
-        {"id": "release_job_lists", "level": "required", "says": "`arc workflow <file> --job <job> --list` exits 0"},
-        {"id": "release_has_concurrency", "level": "required", "says": "the deploy workflow declares a concurrency: group"},
-        {"id": "delivery_one_build", "level": "required", "says": ".arc/delivery.toml has exactly one [builds.*] naming the same workflow and job"}
-      ],
-      "sources": ["docs/user-guide/release.md", "docs/user-guide/configuration.md (.arc/delivery.toml)"]
-    },
-    {
-      "id": "agents",
-      "title": "Coding agents: Fixer CLI and bridge hooks",
-      "optional": true,
-      "asks": ["Which coding agent do you use (Claude Code, Codex CLI, agy)? Is your pipeline machine up yet (its board address is what ~/.arc/client.toml needs)?"],
-      "verify": "arc bridge inbox",
-      "criteria": [
-        {"id": "fixer_cli_present", "level": "advice", "says": "the fixer provider's agent CLI (claude / codex / agy) is on PATH"},
-        {"id": "bridge_client", "level": "required", "says": "~/.arc/client.toml names a board (`web = …`) — only with an operator's bridge server"},
-        {"id": "bridge_hooks", "level": "required", "says": "the agent's settings run `arc bridge hook …`"}
-      ],
-      "sources": ["docs/user-guide/coding-agents.md"]
-    },
-    {
       "id": "smoke",
-      "title": "Smoke test",
+      "title": "Smoke test of the CLI",
+      "machine": "coding",
       "optional": false,
       "verify": "arc rot --no-judge",
       "criteria": [
         {"id": "rot_offline_runs", "level": "required", "says": "`arc rot --no-judge` exits 0 here (binary, repo and [review] exclude all read)"},
-        {"id": "origin_remote", "level": "info", "says": "the repo has an origin remote (`arc submit` pushes to it)"},
-        {"id": "gh_authed", "level": "info", "says": "`gh auth status` succeeds (`arc submit` opens the PR through gh)"},
-        {"id": "review_service_here", "level": "info", "says": "this machine's ~/.arc/machine.toml serves this repo as a tenant, so a review service here takes the PR `arc submit` opens; `arc local-review` / `arc fix` need none"}
+        {"id": "origin_remote", "level": "info", "says": "the repo has an origin remote (`arc submit` pushes to it, and it names the tenant)"},
+        {"id": "gh_authed", "level": "info", "says": "`gh auth status` succeeds (`arc submit` opens the PR through gh)"}
       ],
-      "sources": ["crates/review/cli/src/workflow/local_review/mod.rs (the clone's own review.db)", "crates/apps/cli/src/cli/dispatch.rs (writer_of)", "crates/review/cli/src/bootstrap/record.rs", "crates/review/cli/src/workflow/submit/mod.rs (QUEUE_REMOTE)"]
+      "sources": ["crates/review/cli/src/workflow/local_review/mod.rs (the clone's own review.db)", "crates/apps/cli/src/cli/dispatch.rs (writer_of)", "crates/review/cli/src/workflow/submit/mod.rs (QUEUE_REMOTE)"]
+    },
+    {
+      "id": "presubmit",
+      "title": "presubmit.toml: the checks before arc submit pushes",
+      "machine": "coding",
+      "optional": true,
+      "asks": ["Which commands must pass on your machine before a change is pushed (the build, the tests, a lint)? arc submit runs them, and arc fix tells the fixer to run them before it calls a finding fixed."],
+      "verify": "arc presubmit --target origin/<target> --base \"$(git merge-base HEAD origin/<target>)\"",
+      "criteria": [
+        {"id": "presubmit_present", "level": "required", "says": "presubmit.toml is at the repo root (arc submit and arc fix read it from the working tree)"},
+        {"id": "presubmit_on_target", "level": "required", "says": "presubmit.toml is committed on origin's default branch, so every branch carries it"}
+      ],
+      "sources": ["docs/user-guide/configuration.md (<repo>/presubmit.toml)", "crates/review/cli/src/workflow/presubmit/mod.rs (PRESUBMIT_FILE, load)", "crates/review/cli/src/workflow/presubmit/config.rs (Presubmit)"]
+    },
+    {
+      "id": "merge_gate",
+      "title": "Merge gate: .github/workflows/merge.yml",
+      "machine": "coding",
+      "optional": false,
+      "asks": ["Which checks must pass before a PR lands on the target branch (build, tests, lint)?"],
+      "verify": "arc workflow .github/workflows/merge.yml --job <job> --list",
+      "criteria": [
+        {"id": "merge_yml_present", "level": "required", "says": ".github/workflows/merge.yml exists"},
+        {"id": "merge_yml_lists", "level": "required", "says": "`arc workflow … --list` exits 0 for every job arc reads in the file"},
+        {"id": "merge_yml_on_target", "level": "required", "says": "merge.yml is committed on origin's default branch: the merge machine reads it from the base of every change"}
+      ],
+      "sources": ["docs/user-guide/merge-gate.md", "docs/user-guide/onboarding.md §4", "crates/infra/workflow/src/workflow/plan.rs"]
+    },
+    {
+      "id": "labels",
+      "title": "The arc-hold label on GitHub",
+      "machine": "coding",
+      "optional": false,
+      "asks": ["May I create the `arc-hold` label on the GitHub repo (and `arc-bypass`, if a review route will name it)?"],
+      "verify": "gh label list --search arc-hold",
+      "criteria": [
+        {"id": "label_arc_hold", "level": "required", "says": "the repo has the `arc-hold` label, which keeps a PR from landing"}
+      ],
+      "sources": ["docs/user-guide/onboarding.md §4", "crates/merge/types/src/hold.rs:5 (HOLD_LABEL)"]
+    },
+    {
+      "id": "suite",
+      "title": "The server suite and what the pipeline machine needs",
+      "machine": "pipeline",
+      "optional": false,
+      "asks": ["Which machine runs the pipeline: this one, or another (Linux x86_64 with systemd recommended)? Can this agent run commands there, or will you run them and paste the output?"],
+      "verify": "probe.py --machine pipeline --stage suite",
+      "criteria": [
+        {"id": "suite_on_path", "level": "required", "says": "every suite binary the pipeline runs (arc, arc-server, arc-review, arc-reviewer, arc-fixer, arc-web, arc-bridge) is on PATH and prints its version"},
+        {"id": "git_new_enough", "level": "required", "says": "git is 2.38 or newer (arc-server refuses to start on an older one)"},
+        {"id": "gh_authed", "level": "required", "says": "`gh auth status` succeeds as the user the services run as (the merge server pushes and the review service reads labels through gh)"},
+        {"id": "linger_on", "level": "advice", "says": "systemd keeps this user's services after logout and starts them at boot (`loginctl enable-linger`); a machine without systemd cannot"}
+      ],
+      "sources": ["docs/user-guide/install.md (The pipeline machine, The server suite)", "docs/user-guide/onboarding.md §2", "crates/apps/server/src/boot.rs:169 (GIT_FLOOR)", "crates/infra/fs/src/systemd_units.rs:125"]
+    },
+    {
+      "id": "machine",
+      "title": "~/.arc/machine.toml: [machine]",
+      "machine": "pipeline",
+      "optional": false,
+      "asks": ["Which IP address do the coding machines reach this machine at? Which directories hold the toolchains merge.yml runs (for `path`)?"],
+      "verify": "arc-server tenant url web",
+      "criteria": [
+        {"id": "machine_toml_reads", "level": "required", "says": "arc-server reads ~/.arc/machine.toml (`arc-server tenant list` exits 0)"},
+        {"id": "machine_exposed", "level": "advice", "says": "[machine] has an address and expose = true, so other machines reach the board; without it the board listens on 127.0.0.1 only"}
+      ],
+      "sources": ["docs/user-guide/onboarding.md §3.1", "docs/user-guide/configuration.md ([machine])", "crates/config/src/resolved.rs:108 (expose without address)", "crates/apps/server/src/tenant/mod.rs:193 (url)"]
+    },
+    {
+      "id": "board",
+      "title": "arc-bridge and arc-web: the chat server and the board",
+      "machine": "pipeline",
+      "optional": false,
+      "verify": "curl -fsS \"$(arc-server tenant url web)/api/machine\"",
+      "criteria": [
+        {"id": "board_answers_here", "level": "required", "says": "arc-web answers GET /api/machine at the address `arc-server tenant url web` prints"},
+        {"id": "bridge_answers_here", "level": "required", "says": "arc-bridge answers GET /healthz at the address the board gives for it"},
+        {"id": "board_units_enabled", "level": "advice", "says": "arc-web.service and arc-bridge.service are enabled systemd user units, so they come back after a reboot"}
+      ],
+      "sources": ["docs/user-guide/onboarding.md §3.1", "crates/infra/types/src/machine_wire.rs (GET /api/machine)", "crates/bridge/server/src/lib.rs:107 (/healthz)", "crates/apps/web/src/install.rs", "crates/apps/bridge/src/install.rs"]
+    },
+    {
+      "id": "tenant",
+      "title": "Register the repo: a dedicated clone, a [[tenant]], its review routes",
+      "machine": "pipeline",
+      "optional": false,
+      "asks": ["Where should the clone only arc works in live (for example ~/<repo>-ci)? Which branch do PRs land on (default main)? Who reviews: the dummy reviewer (says LGTM to everything, no model) or a model reviewer (react)?"],
+      "verify": "arc-server tenant check <owner/name>",
+      "criteria": [
+        {"id": "tenant_registered", "level": "required", "says": "~/.arc/machine.toml has a [[tenant]] with this repo's owner/name (`arc-server install <clone>` writes it)"},
+        {"id": "tenant_routed", "level": "required", "says": "the tenant has at least one [[tenant.review.route]]: with none, nobody reviews and nothing lands"},
+        {"id": "tenant_reviewers_ready", "level": "required", "says": "a route to a model reviewer (basic / react) has a critic_l4 or default role in the clone's .arc/config.toml (or review.model_config) naming a provider in this machine's tars config"},
+        {"id": "tenant_check_passes", "level": "required", "says": "`arc-server tenant check <owner/name>` exits 0 and every line says ok or skip"}
+      ],
+      "sources": ["docs/user-guide/onboarding.md §4", "docs/user-guide/configuration.md ([[tenant]], review routes)", "crates/apps/server/src/install.rs", "crates/apps/server/src/tenant/check.rs:298 (finding_line)", "crates/review/agents/src/review/agent.rs:67 (basic / react take a model)"]
+    },
+    {
+      "id": "tenant_services",
+      "title": "Start the repo's services: arc-server@, arc-review@, then restart arc-web",
+      "machine": "pipeline",
+      "optional": false,
+      "verify": "probe.py --machine pipeline --stage tenant_services",
+      "criteria": [
+        {"id": "tenant_served_here", "level": "required", "says": "the board on this machine lists the tenant with its merge and review stores open (its services ran, and arc-web was restarted after)"},
+        {"id": "tenant_units_enabled", "level": "advice", "says": "arc-server@<owner>-<name>.service and arc-review@<owner>-<name>.service are enabled systemd user units"}
+      ],
+      "sources": ["docs/user-guide/onboarding.md §3.1, §4 step 5", "crates/apps/web/src/lib.rs:168 (api_machine stores)", "crates/apps/server/src/install.rs:137 (the unit instance)"]
+    },
+    {
+      "id": "client",
+      "title": "This machine talks to the pipeline: ~/.arc/client.toml and the agent hooks",
+      "machine": "coding",
+      "optional": false,
+      "asks": ["What did `arc-server tenant url web` print on the pipeline machine? Which coding agent do you use (Claude Code, Codex CLI, agy)?"],
+      "verify": "arc bridge inbox",
+      "criteria": [
+        {"id": "client_web", "level": "required", "says": "~/.arc/client.toml names the board (`web = \"http://<address>:<port>\"`)"},
+        {"id": "board_reachable", "level": "required", "says": "the board answers GET /api/machine from this machine"},
+        {"id": "board_serves_repo", "level": "required", "says": "the board lists this repo (its origin's owner/name) as a tenant, with its merge and review stores open"},
+        {"id": "bridge_hooks", "level": "required", "says": "the agent's settings run `arc bridge hook …`, so findings and each PR's outcome reach its session"}
+      ],
+      "sources": ["docs/user-guide/onboarding.md §3.2", "docs/user-guide/configuration.md (~/.arc/client.toml)", "crates/infra/machine_client/src/lib.rs (ClientFile)", "docs/user-guide/coding-agents.md"]
+    },
+    {
+      "id": "first_pr",
+      "title": "The first PR: arc submit, reviewed and landed by the pipeline",
+      "machine": "coding",
+      "optional": false,
+      "asks": ["May I run `arc submit` on a feature branch? It pushes the branch and opens a PR."],
+      "verify": "curl -fsS <web>/api/r/<owner>/<name>/merger",
+      "criteria": [
+        {"id": "pr_landed", "level": "required", "says": "the board's merge record for this repo counts at least one landed PR"}
+      ],
+      "sources": ["docs/user-guide/onboarding.md §5", "crates/apps/web/src/merger/mod.rs (GET /api/r/<owner>/<name>/merger)", "crates/merge/store/src/read.rs:240 (MergeMetrics.landed)"]
+    },
+    {
+      "id": "release",
+      "title": "Deploy: [release] in the tenant clone + .arc/delivery.toml",
+      "machine": "pipeline",
+      "optional": true,
+      "asks": ["Does this repo deploy from the pipeline machine? If so, which workflow job is the deploy?"],
+      "verify": "arc workflow <deploy workflow> --job <job> --list",
+      "criteria": [
+        {"id": "release_declared", "level": "required", "says": "[release] in the tenant clone's .arc/config.toml names a workflow (and job); the deploy runs in that clone"},
+        {"id": "release_job_lists", "level": "required", "says": "`arc workflow <file> --job <job> --list` exits 0 (without --job when [release] names none)"},
+        {"id": "release_has_concurrency", "level": "required", "says": "`arc workflow <file> --job <job> --list` names a concurrency group the job holds, its own or the file-wide one"},
+        {"id": "delivery_one_build", "level": "required", "says": ".arc/delivery.toml has exactly one [builds.*] naming the same workflow and job"}
+      ],
+      "sources": ["docs/user-guide/release.md (where [release] is written)", "docs/user-guide/configuration.md (.arc/delivery.toml)"]
     }
   ]
 }
