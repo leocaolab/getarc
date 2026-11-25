@@ -70,7 +70,7 @@ fixer  = "claude_fixer"
 - **审的是你的代码,8 种语言。** Rust、Python、TypeScript、JavaScript、Go、Java、C、C++,按目标仓库的语言启用。
 
 **目录** —— 安装和搭建:§0 安装 · §1 配置 · §2 搭流水线 · §3 skills 和插件。提交前在本机评审:§4 命令 ·
-§5–§10 arc 怎么审、腐烂、自定义 rubric · §11 接入编码 agent。流水线:§12 组队 · §13 流水线上的评审 · §14 合并 · §15 发布与部署。
+§5–§10 arc 怎么审、腐烂、自定义 rubric · §11 接入编码 agent。流水线:§18 在看板上干活 · §12 组队 · §13 流水线上的评审 · §14 合并 · §15 发布与部署。
 §16 故障排查 · §17 代码规范规则。每个 flag 和 `--json` 信封的细节见 `usage.md`。
 
 ---
@@ -128,7 +128,7 @@ curl -fsSL https://github.com/leocaolab/getarc/releases/latest/download/install.
 参数写在 `sh -s --` 后面:
 
 ```bash
-curl -fsSL https://github.com/leocaolab/getarc/releases/latest/download/install.sh | sh -s -- --version v1.3.0 --to ~/bin
+curl -fsSL https://github.com/leocaolab/getarc/releases/latest/download/install.sh | sh -s -- --version vX.Y.Z --to ~/bin
 ```
 
 | 参数 | 作用 |
@@ -248,7 +248,7 @@ tarball 里的 README 写着每个二进制做什么、要系统的什么(Linux 
 
 ### 0.7 升级
 
-CLI 在每台机器上重跑 `install.sh`(`sh -s -- --version v1.3.0` 装某一个版本,也用来回退);skills 插件经 Claude Code 升级(§3)。
+CLI 在每台机器上重跑 `install.sh`(`sh -s -- --version vX.Y.Z` 装某一个版本,也用来回退);skills 插件经 Claude Code 升级(§3)。
 服务端套件在它的机器上:取新的 `arc-suite-*.tar.gz` 和 `SHA256SUMS`、校验、解开,把二进制放到原来的路径上覆盖旧的(单元写的是这些路径,不用重写),
 然后查机器、重启在跑的:
 
@@ -633,7 +633,7 @@ arc submit                             # 推送分支、创建或复用 PR,并�
 §13(评审)→ §14(门禁与合并)→ §15(部署)。在看板上看它走,或在合并机上
 `journalctl --user -u arc-review@acme-widgets.service -u arc-server@acme-widgets.service -f`。
 
-- **合并控制:** 要暂缓合入,给 PR 打 `arc-hold` 标签。
+- **合并控制:** 要暂缓合入,给 PR 打 `arc-hold` 标签(见 §18.4)。
 - **issue 关联:** 看板是 issue 的唯一真源(GitHub 只是镜像),所有 issue 都经 `arc issues` 管理。PR 标题里写 `b/<n>`,会把这次提交记到看板的那条 issue 上。
   记不上时(issue 不存在,或看板连不上),`arc submit` 已经推了分支、把评审请求入了队,只是那条 issue 上没记下这次提交:它点名那条 issue,以退出码 8 结束。
 
@@ -1578,6 +1578,90 @@ if post_fix_run_id:
 - `name`,加一行 `why` 说明意图;
 - 一对正反例 `example_bad` / `example_good`;
 - 作为评审指令的 `description`,以及 `status: stable`(写法见 §10)。
+
+---
+
+## 18. 在看板上干活
+
+看板(`arc-web`)是人看、人拍板的地方;干活的是 agent。计划上板变成 milestone 和 issue,agent 按 milestone 一条条做,要人定的事在看板上点一下就定了。每个 PR 的评审、合并、发布也都在同一处看。
+
+看板地址就是 `~/.arc/client.toml` 里那一行(在流水线机器上 `arc-server tenant url web` 打印它)。浏览器打开,选仓库。
+
+### 18.1 各页面
+
+| 页面 | 看什么 | 在这里做什么 |
+|---|---|---|
+| **Projects** | 所有 milestone(进行中、闲着、做完),和等你回答的问题 | 回答问题:每个选项一个按钮,或者自己写 |
+| 某个 milestone | 它的 issue,按状态或按树;卡住的 issue 显示卡在哪个问题上 | 看;点进 issue |
+| **Issues** | 整个看板,可筛选、分组,右边是打开的 issue | 新建 issue;评论(写了 `@agent` 的会转给它) |
+| Report | 按优先级、类型、负责人或 milestone 看:开着的、过期的、快到期的、放了多久、每周进出 | 选维度和 milestone |
+| **Review** | 等你的、agent 在处理的、历史;每条显示谁拿着、改了多少、等了多久、几轮 | 点进一个改动 |
+| 一个改动(PR) | 概览、文件、动态、为什么在等、每个评审员的 finding | 等人定的时候点 **LGTM** 或 **再修一次**;把 finding 答成「已修」或「不修」 |
+| **Merge** | 合并队列(谁在等、什么时候轮到、谁被挡着),每个改动的每次尝试,失败标红 | 看 |
+| **Release** | nightly、版本、部署目标、上次发布后落地了什么 | 这台机器能部署时点 **Deploy** |
+| Rot、Usage | 结构腐化趋势;agent 用量和花费 | 筛选;导出 CSV |
+
+页面自己会刷新,不用手动刷新也能看到改动落地。
+
+问一件事走到哪了,用进度地址:给一个 issue、PR 号或分支,它按每个 PR 回一个阶段(评审中、等作者改、排队、被挡、门禁红、已落地……)和下一步该看哪:
+
+```bash
+curl "$(sed -n 's/^web *= *"\(.*\)"/\1/p' ~/.arc/client.toml)/api/r/<owner>/<name>/progress/b/<n>"
+```
+
+### 18.2 从计划到落地
+
+1. **计划写成文档。** 一份 Markdown roadmap:按顺序的 milestone,每个都小,每个都写清做完的判据。
+2. **上板。** `arc issues candidates --doc roadmap.md` 列出文档的每一块和它的编号;按编号写一份提案,`arc issues plan proposal.json --doc roadmap.md` 显示上板会做什么,文档里没说的、漏掉的都会被拒;`arc issues apply proposal.json --doc roadmap.md --role reporter` 上板,要么全上,要么一条不写。单开一条:`arc issues open --kind task --parent b/<milestone> "<标题>"`。
+3. **开 loop。** 在 agent 的会话里:`arc issues loop start b/<milestone> --until drained --role assignee`(或 `--until fixed:<n>`)。会话每停一次,loop 就派下一条 issue。`arc issues loop stop b/<milestone>` 结束;`arc issues show b/<milestone>` 看进度。
+4. **agent 做每条 issue。** 开分支、写、提交,PR 标题带上编号(`b/<n>: …`),这次提交就记到那条 issue 上。PR 落地以后才标 `fixed`。
+5. **要人定,就在看板上问。** `arc issues block b/<n> --said "<问题,带背景>" --option "A: …" --option "B: …"` 开一个问题(`q/<n>`),它出现在 Projects 上,每个选项一个按钮;点一下就答了,答案回到 agent 的会话。只有人能拍板:`arc issues rule` 不接受 agent。
+6. **跟 PR。** Review 上的 PR 页;Merge 上的队列。PR 落地后,落地信会发回提交它的会话。
+7. **清理。** Report 看哪些放久了、过期了。结束一条 issue 用 `fixed`、`wont-fix`(写理由)或 `duplicate --of b/<n>`;没有单纯的「关闭」。
+
+还可以让第二个 Claude 会话监督 agent 的会话:它判断每一次停下,小问题自己定(见 §12 的 supervisor)。
+
+### 18.3 好用的做法
+
+- **队列一直满着,别等自己。** 改动一好 agent 就提交;人有空再看,不用每个 PR 都盯。
+- **问一次,问完整。** 问题带背景、各选项的利弊和推荐,点一下就能定。只在聊天里问的问题会丢,要问就放到看板上。
+- **issue 要小。** 一条 issue 是一个 agent 一小时左右的活;大的先拆再开始。
+- **人拍板,agent 动手。** 看板上的按钮是用来做决定的(回答、LGTM、部署),不是用来跑工具的;要做的事交给 agent。
+- **别盯 PR。** 落地信或被打回的消息会自己回到会话里;轮询 PR 只是烧 token。
+- **看板是记录。** issue 用 `arc issues` 写;GitHub 上的 issue 只是镜像,在那里改不会被读回来。
+- **部署是人的决定。** 想部署时在 Release 上点。
+
+### 18.4 不让 PR 落地:`arc-hold`
+
+给 PR 打上 `arc-hold`,合并队列就跳过它:
+
+```bash
+gh pr edit <n> --add-label arc-hold      # 挡住
+gh pr edit <n> --remove-label arc-hold   # 放行
+```
+
+- **挡的是什么:** 只挡落地。PR 照样评审,照样能拿到评审员的 LGTM。合并机推送前会再读一次标签,所以最后一刻打上也算数。
+- **摘掉以后:** PR 回到队列;如果 LGTM 就在它当前的 head 上,不用再评审就会落地。
+- **在看板上:** Merge 页显示「被作者挡住」。标签在 GitHub 上打和摘,看板不改标签。
+- **每个仓建一次:** `gh label create arc-hold`。
+
+什么时候挡:
+
+- 你对这个改动有疑问,落地前想再看一眼。
+- 已知它有问题,修复还在路上 —— 队列可能比你下一次推送快。
+- 必须先给某个人看。
+
+什么时候不挡:
+
+- 只是要等另一个 PR 先落地:提交时带 `--after <N>`,它会排在那个后面。
+- 文档。让它走评审、落地。
+
+别弄混:
+
+- **Review 页上的「Held」:** 那是一个等人定(LGTM 还是再修)的改动,不是这个标签。
+- **`arc-bypass`:** `arc submit --bypass-review` 会打上它,你的路由把这种 PR 交给 dummy 评审员,它对谁都说 LGTM。这等于跳过真正的评审;想清楚了再用。
+
+英文页:[Working on the board](user-guide/working-on-the-board.md)。
 
 ---
 

@@ -1,7 +1,7 @@
 {
   "name": "arc",
   "description": "A.R.C. code review from your coding agent. Start with arc-setup: it installs the arc CLI and configures it in your repository. Then review, fix, rot, automate and maintain drive the arc CLI; plus the methods behind it — type naming, comment hygiene, the coding convention and shift-left guides for 9 languages — reading the same rubrics arc's reviewer reads.",
-  "version": "1.3.3",
+  "version": "1.3.4",
   "author": {
     "name": "Leo Cao"
   },

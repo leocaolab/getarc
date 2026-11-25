@@ -29,6 +29,7 @@ For the exhaustive operations reference (every flag, the `--json` envelope) see 
 
 **The pipeline**
 
+- [Working on the board — the pages, from a plan to landed work, what works well, `arc-hold`](working-on-the-board.md)
 - [Review on the pipeline — submit, answer, LGTM, pass](pipeline-review.md)
 - [Team up — arc bridge: rooms, messages, teams](bridge.md)
 - [Merge — how a PR lands, and writing `merge.yml`](merge-gate.md)
