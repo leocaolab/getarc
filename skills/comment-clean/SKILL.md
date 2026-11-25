@@ -1,81 +1,51 @@
 ---
 name: comment-clean
-description: Clean comment/doc TEXT to a strict comment-hygiene standard — cut WHAT-narration, body step-lists, type-echo, idiom-teaching, refactor-history, sibling-contrast, verbose essays, duplicated WHYs, planning labels, commented-out code and debug residue; keep the WHY, failure-mode contracts, invariants, and non-obvious constraints. Use when comments read verbose / "typical LLM", when asked to clean comments or notes, or after writing/editing code before it lands. The exhaustive rule set, boundaries, and exemptions live in the plugin's `rubrics/comment_hygiene.yaml` (the same file arc's reviewer reads) — this is its operational distillation.
+description: Clean up comments and docstrings to remove LLM-style noise — strip out "what" narration, step-by-step body summaries, type echoes, idiom explanations, refactor history, and dead code, while keeping "why" context, failure contracts, invariants, and non-obvious constraints. Use when comments feel verbose or noisy, or before landing changes. The full rule set lives in `rubrics/comment_hygiene.yaml`.
 ---
 
 # Comment clean
 
-Judge each comment against the code it sits on. Three clauses, severity order:
+Evaluate every comment against the code it describes, in priority order:
 
-1. **TRUE** — what it asserts must be what the code does. A false claim outranks
-   everything else; a hedged lie is still a lie. Fix = make it true or delete it,
-   never soften.
-2. **ONCE** — a WHY has one owner: the entity it constrains. A second copy is a fork
-   that drifts silently into a lie. Keep it on the owner; at the copy site delete it,
-   or leave a one-line pointer (only when the owner is in another file).
-3. **WHY, not HOW** — over three layers:
-   - module `//!` — a one-line elevator pitch + `# Invariants` (do-not-cross lines) +
-     `# Core Concepts` (jargon). NOT a table of contents, NOT a pseudocode flow of `run`.
-   - function `///` — the caller's contract: a verb-first summary + `# Side Effects` +
-     `# Errors`/`# Panics`. NOT a 1-2-3 of the body, NOT a type-echo of the signature.
-   - inline `//` — miserly. Only to justify the non-obvious.
+1. **TRUE** — Every claim must match what the code actually does. A false comment is worse than no comment; fix it or delete it, never soften it into a vague hedge.
+2. **ONCE** — A "why" explanation belongs in one place: on the entity it constrains. A second copy elsewhere drifts out of sync and becomes a lie. Keep it on the owner and delete duplicates (or leave a one-line pointer if the owner is in another file).
+3. **WHY, not HOW** — Across all three comment levels:
+   - **Module docs (`//!`)**: A one-line summary + `# Invariants` + `# Core Concepts` (domain terms). Not a table of contents or pseudocode walkthrough.
+   - **Function/type docs (`///`)**: The caller's contract — a verb-first summary + `# Side Effects` + `# Errors` / `# Panics`. Not a 1-2-3 walkthrough of the body or a repetition of parameter types.
+   - **Inline comments (`//`)**: Use sparingly, only to explain non-obvious reasoning.
 
-## The deletion test (the one judgement)
+## The deletion test
 
-Delete the comment, then ask: would a competent reader of THIS language now want to
-CHANGE the code — reorder a line, add a missing guard, thread a type differently,
-`unwrap_or_default` an absence? If **yes**, the comment carried a hidden constraint
-(ordering, concurrency, an upstream contract, a deliberate omission) — **keep it**. If
-deleting only costs a few seconds of reading the code or an API doc — **cut it**.
-"Tells the reader something" is not the bar; almost any sentence does.
+Delete the comment and ask: would a competent reader of this language now want to **change** the code (reorder lines, add a guard, change error handling, replace a return with `unwrap_or_default`)?
+- If **yes**, the comment carries a hidden constraint (ordering, concurrency, upstream contract, intentional omission) — **keep it**.
+- If deleting it only costs a few seconds of reading the code or standard API docs — **cut it**.
 
-## Cut — WHAT wearing prose
+## What to cut
 
-- **what-narration** — `//` translating the line into English (`// open the ctx` over
-  `Ctx::open()`, `// read the clock` over `let now = …`); step-number preambles.
-- **doc-narrates-steps** — a `///` walking the body's 1-2-3 instead of the contract.
-- **redundant-signature-restatement** — doc re-says the types/names (`/// the run_id`
-  on `run_id: RunId`).
-- **explains-known-idiom** — teaching a standard practice: "`Arc` so it's shared",
-  "cloned to satisfy the borrow checker", "injected at the composition root".
-- **contrast-with-sibling** — defining code by how it differs from a LIVE sibling
-  ("mints its OWN id rather than adopting X's"). Rewrite positively.
-- **refactor-history-narration** — past-tense migrations, deleted structs, "used to …
-  now …", subjective markers ("god-struct", "finally"), dead proper nouns that no
-  longer resolve. The codebase documents the PRESENT tense.
-- **over-verbose-comment** — a correct WHY said as an essay. Cut it in half; if nothing
-  is lost, it was padding. (Length is not the smell: a subtle invariant / algorithm /
-  a real list of distinct hazards can be worth 100 lines.)
-- **duplicated-why** — the same rationale in two or more places.
-- **internal-vocab / planning-labels** — vocabulary the reader can't reach on a PUBLIC
-  item; and ALWAYS cut planning labels anywhere (`M4`, `Block 3`, `Phase 2.4`, `§6`,
-  `Doc 19 §10`, `runtime2`) — they name nothing in the tree.
-- **commented-out-code / debug-residue** — dead code blocks (VCS holds them); stray
-  `println!` / `dbg!` / `console.log` on a path that has a real logger.
-- **todo-without-owner** — a bare `// TODO`/`FIXME`. Add `TODO(owner)` or an issue ref,
-  or do the thing.
-- **missing-verb-first-summary** — an item `///` whose first sentence isn't a
-  verb-first `Loads…` / `Returns…` / `Checks…` (it is extracted alone into the index).
+- **Line-by-line narration** (`// open the context` above `Ctx::open()`, or numbered step comments).
+- **Body walkthroughs in docstrings** (explaining steps 1-2-3 of the implementation instead of the caller contract).
+- **Redundant signature restatements** (`/// The run ID` on `run_id: RunId`).
+- **Standard idiom explanations** ("wrapped in `Arc` so it can be shared", "cloned for the borrow checker").
+- **Negative comparisons to sibling code** ("generates its own ID instead of using X's") — state what it *does* positively.
+- **Refactor history** ("used to do X, now does Y", references to deleted structs, or subjective tags like "god-struct"). Code comments document the present.
+- **Over-verbose essays** — if cutting a comment in half loses no information, it was padding. (Genuine complexity — subtle invariants, algorithms, or hazard lists — can still warrant detail.)
+- **Duplicated rationales** — the same explanation repeated in multiple places.
+- **Internal jargon / planning labels** — internal milestone/phase tags (`M4`, `Phase 2.4`, `§6`) or private vocabulary on public items.
+- **Commented-out code and debug residue** — git holds old code; remove stray `println!` / `dbg!` / `console.log` where a real logger exists.
+- **Ownerless TODOs** — bare `// TODO` or `// FIXME`; either add `TODO(owner)` / an issue link, or just do it.
+- **Missing verb-first summary** — `///` doc comments whose first sentence doesn't start with an active verb (`Loads…`, `Returns…`, `Checks…`).
 
-## Keep — load-bearing, never cut
+## What to always keep
 
-- **Failure-mode contracts** — "an unresolved HEAD fails the run, it is not skipped";
-  "a crashed unit is not an `Err`". Deleting invites an `unwrap_or_default` or a
-  swallowed branch. Rewrite positively if you can, but never drop it.
-- **Invariants, ordering, concurrency, deliberate omissions** — the hidden constraints.
-- **Unit / range / default / domain meaning** a type can't carry
-  (`/// seconds; None ⇒ no budget`).
-- **NON-VACUOUS test notes** (which code deletion makes the test red), external
-  bug/spec/RFC/CVE refs, `[arc:intentional-handle]` blocks (the marker arc's reviewer
-  reads as a deliberate, explained swallow), and "why the obvious idiom was NOT used here".
+- **Failure-mode contracts** ("an unresolved HEAD fails the run rather than skipping" — removing these invites someone to add a silent fallback).
+- **Invariants, ordering, concurrency rules, and deliberate omissions**.
+- **Units, valid ranges, defaults, and domain meaning** that the type doesn't express (`/// seconds; None means unlimited`).
+- **Non-obvious test notes** (explaining what regression fails if a line is removed), external bug/RFC/CVE links, `[arc:intentional-handle]` markers, and explanations of why the obvious idiom was intentionally avoided.
 
-## Discipline
+## Rules of thumb
 
-- **Lean toward cutting.** A cut comment costs a human seconds to reject; a kept-noise
-  comment costs every future reader. Silence is the expensive answer.
-- **Fix the code, not the comment.** A line that needs a signpost wants a better-named
-  helper; a doc that must be long wants a self-evident body.
-- Match ONE comment to its most specific rule. Do not touch what is already tight, or
-  the pre-existing comments you weren't asked to review.
+- **Bias toward cutting.** A deleted comment is easy to restore in review; noisy comments tax every future reader.
+- **Fix the code, not the comment.** If a line needs a signpost, extract a well-named helper instead.
+- Only clean comments in code you were asked to touch or review; leave unrelated pre-existing comments alone.
 
-Full rule set + boundaries + exemptions: `${CLAUDE_PLUGIN_ROOT}/rubrics/comment_hygiene.yaml`.
+Full rule set and exemptions: `${CLAUDE_PLUGIN_ROOT}/rubrics/comment_hygiene.yaml`.

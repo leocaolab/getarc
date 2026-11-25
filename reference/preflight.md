@@ -1,7 +1,6 @@
 # arc preflight (shared)
 
-Run before any arc action. It fails closed: when something is missing, stop and route
-the person to the right skill — never fabricate a review or a fix.
+Run before any `arc` action. Fail closed: if something is missing, stop and route the user to the right skill — never fabricate a review or a fix.
 
 ## Checks
 
@@ -9,31 +8,28 @@ the person to the right skill — never fabricate a review or a fix.
 python3 ${CLAUDE_PLUGIN_ROOT}/skills/arc-setup/scripts/probe.py --stage prereq --stage binary --stage roles --stage smoke
 ```
 
-Pass `--tars-home DIR` when the person's tars home is not `~/.tars` (and give arc the
-same `--tars_home DIR`).
+Pass `--tars-home DIR` if the user's provider config lives outside `~/.tars` (and pass `--tars_home DIR` to `arc`).
 
-| Probe result | Means | Do |
+| Probe result | Meaning | Action |
 |---|---|---|
-| `prereq` / `binary` / `roles` not `done` | arc is not installed or not configured here | **`arc-skills:arc-setup`**; stop |
-| `smoke.review_service_here` false | no review service serves this repo from this machine: `arc submit` puts a PR on a queue nobody here takes. `arc local-review` and `arc fix` do not need one — they run on the clone's own `.arc/review.db` | say so before `arc submit`; local-review / fix run |
-| the branch holds no open local PR | `arc fix` stops with `this checkout's branch holds no open local PR — run \`arc local-review\` first` | run `arc local-review` first (local only, nothing pushed) |
+| `prereq`, `binary`, or `roles` is not `done` | `arc` is not installed or configured here | Route to **`arc-skills:arc-setup`** and stop |
+| `smoke.review_service_here` is `false` | No team review service is watching this repo from this machine, so `arc submit` would queue a PR nobody picks up. `arc local-review` and `arc fix` still work locally using `.arc/review.db` | Mention this before running `arc submit`; `local-review` and `fix` can proceed |
+| Branch has no open local PR | `arc fix` fails with `this checkout's branch holds no open local PR — run \`arc local-review\` first` | Run `arc local-review` first (local only, nothing pushed) |
 
-## Exit codes (an agent API — `crates/review/cli/src/error.rs`)
+## Exit codes
 
-| Code | Class | What to do |
+| Code | Meaning | Action |
 |---|---|---|
-| 0 | the command did what it says | a review exits 0 with findings too: read the count from `--json`, never infer "clean" from 0 |
-| 1 | internal — likely a bug, or a review with a unit that failed | report the raw output |
-| 2 | config / setup (config, role, missing tool, clap flags) | fix the setup; do not retry |
-| 3 | git / repository state | fix the tree |
-| 4 | provider (not transient) | provider / policy; report |
-| 5 | filesystem / storage | environment |
-| 6 | transient (rate limit, network, a request not yet taken) | may retry later |
-| 7 | a gate said "no" (`post-commit-gate`) | not an error |
-| 8 | `arc submit`: an issue the PR title names did not list it | re-run `arc submit` |
+| 0 | Command succeeded | `arc local-review` also exits 0 when it finds issues — check the finding count in `--json`, never assume exit 0 means clean |
+| 1 | Internal error (bug, or a review unit failed) | Report the raw output |
+| 2 | Config or setup error (bad config, missing role/tool, invalid flags) | Fix the setup; do not retry |
+| 3 | Git or repository state error | Fix the working tree or branch state |
+| 4 | Provider error (non-transient) | Report the provider/policy error |
+| 5 | Filesystem or storage error | Check disk/permissions |
+| 6 | Transient error (rate limit, network, queued request) | Safe to retry later |
+| 7 | A gate rejected the change (`post-commit-gate`) | Expected gate rejection, not a crash |
+| 8 | `arc submit`: an issue named in the PR title did not list it | Re-run `arc submit` |
 
-With `--json`, also read the envelope: `"success": false` is a failure even on exit 0,
-and its `"error"` is the reason, word for word.
+With `--json`, always check the response envelope: `"success": false` indicates a failure even if the exit code is 0, and `"error"` holds the exact reason.
 
-For any failure, `python3 ${CLAUDE_PLUGIN_ROOT}/skills/arc-setup/scripts/diagnose.py --from -`
-(the output on stdin) matches it against the known issues.
+For any failure, pipe the output into `python3 ${CLAUDE_PLUGIN_ROOT}/skills/arc-setup/scripts/diagnose.py --from -` to match it against known issues.

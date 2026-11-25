@@ -1,43 +1,36 @@
-# Triage heuristic — CORE vs noise (shared)
+# Triage heuristic — CORE vs. noise (shared)
 
-A review can return dozens of findings, and most of any model's raw output is soft
-smells, duplicates, or non-actionable. Never dump the raw list. Triage first.
+A code review can return dozens of findings, and most raw LLM output consists of low-priority smells, duplicates, or non-actionable items. Never dump the raw list — triage it first.
 
 ## Read the findings
 
-Where a finding's full text lives depends on whose PR it is on:
+Where full finding details live depends on the review mode:
 
-- **A local PR** (`arc local-review`): it has no review page. The run prints each open
-  finding as one line — `<id>  <path>:<line>  [<rule>] <message>` — and `--json` prints one
-  object whose `open` lists them, each with `id`, `rule`, `message`, `path`, `line`. The whole
-  record, the debate included, is in the clone's `.arc/review.db` (tables `findings` and
-  `finding_events`); open it read-only (`sqlite3 -readonly`).
-- **A PR in review** (`arc submit`): its review page holds each finding's rule, reasoning
-  and debate.
+- **Local review** (`arc local-review`): There is no web review page. The command prints one line per open finding (`<id>  <path>:<line>  [<rule>] <message>`), and `--json` returns an `open` array where each item has `id`, `rule`, `message`, `path`, and `line`. The full record (including any reviewer–fixer debate) is stored in `.arc/review.db` (tables `findings` and `finding_events`); inspect it read-only with `sqlite3 -readonly`.
+- **Team PR review** (`arc submit`): The PR's review page holds each finding's rule, reasoning, and debate.
 
-`arc fix --json` ends with the envelope of the PR the branch is: `metrics` (`open`,
-`closed`, `total`), `open_issues` (each `id`, `file`, `severity`), and `action_required`.
-Use the finding's number (`id`) as the handle; never invent one.
+`arc fix --json` ends with the PR envelope: `metrics` (`open`, `closed`, `total`), `open_issues` (`id`, `file`, `severity`), and `action_required`. Always reference findings by their numeric `id`; never invent IDs.
 
 ## Bucket each finding
 
-**CORE** (show these, ranked by severity) — all of:
-- grounded in a named rule (not an ungrounded `free_review::*`);
-- severity `critical` / `error` / `warning` (drop `info` unless asked);
-- not a duplicate of another finding (same file, same rule, adjacent line).
+**CORE** (show these first, ranked by severity) — must meet all of:
+- Grounded in a named rule (not an ungrounded `free_review::*` note)
+- Severity is `critical`, `error`, or `warning` (omit `info` unless requested)
+- Not a duplicate of another finding (same file, same rule, adjacent lines)
 
-**NOISE** (fold into one line "+N low-signal") — any of: ungrounded, a duplicate,
-`info` with no correctness or security angle, or the message itself says it is not
-actionable (a build script, a test helper, an intentional pattern).
+**NOISE** (collapse into `+N low-signal`) — any of:
+- Ungrounded `free_review::*` notes
+- Duplicates
+- `info` findings with no correctness or security impact
+- Findings whose own message admits they aren't actionable (e.g., build scripts, test helpers, or documented intentional patterns)
 
-## Present
+## Present the summary
 
 ```
 N core findings (M folded as low-signal — say "show all" to expand):
 
   ① <severity> <file>  ·  #<id>
-     <one-line why>  ·  fix: arc fix <id>
+     <one-line summary>  ·  fix: arc fix <id>
 ```
 
-If everything is noise, say "nothing clearly actionable — N low-signal findings if you
-want them."
+If every finding is noise, say: `"Nothing clearly actionable — N low-signal findings if you want to see them."`

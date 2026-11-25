@@ -3,61 +3,42 @@ name: rot
 description: >-
   Work through A.R.C. (arc) structural-rot findings — god-modules, cross-file
   clones, duplicated types, repeated idioms. Use when the user says "fix the
-  rot" / "handle the rot findings" / "arc rot" after a whole-repo structural
-  review. These are multi-file REFACTORS (not point fixes): read the whole
-  picture, refactor holistically, gate hard, re-detect. This EDITS code and
-  commits — confirm before committing.
+  rot", "handle the rot findings", or "arc rot" after a whole-repo structural
+  review. These are multi-file refactors (not point fixes): inspect the full
+  context, refactor holistically, verify with tests, and re-run detection.
+  Edits code and commits — confirm before committing.
 allowed-tools: "Bash Read Edit Write"
 ---
 
 # arc rot — handle structural-rot findings
 
-Rot findings are **structural refactors** (extract-helper, split-god-module,
-unify-duplicated-type, extract-trait), not L4 point fixes. Each is a
-multi-file *design* change. So: **concurrency 1, sequential, on `main` or one
-persistent worktree** — structural changes conflict badly in parallel. Drive
-them as a full-context agent (you), not the per-finding `arc fix` pipeline.
+Rot findings are **structural refactors** (extracting a shared helper, splitting a god-module, unifying duplicated types, or extracting a trait), not single-line bug fixes. Because each one spans multiple files, handle them **sequentially (concurrency 1) on `main` or a single persistent worktree** — parallel refactors will conflict. Drive them directly with full repo context rather than using `arc fix`.
 
-## 1. Read the suggestions
+## 1. Run detection
 ```bash
-arc rot                      # deterministic detection + the L5 judge (critic_l5) on every suspect
-arc rot --file <path>        # scope the cost to a file or folder
-arc rot --no-judge           # the deterministic candidates only — no LLM
+arc rot                      # deterministic detection + L5 LLM judge (critic_l5) on each candidate
+arc rot --file <path>        # limit scope and cost to a specific file or directory
+arc rot --no-judge           # deterministic candidates only — no LLM calls
 ```
-Each verdict is printed as it lands, and the printed run IS the report — arc keeps it
-nowhere else (`crates/review/cli/src/workflow/rot/mod.rs`). Keep the output; each
-suggestion names its anchor, the other sites it covers and the proposed refactor.
+Each verdict is printed to stdout as it finishes, and `arc` does not persist the report anywhere else — keep the terminal output. Each suggestion names the primary anchor, the related sites, and the proposed refactor.
 
-## 2. Triage — do NOT trust the judge blindly
-The `duplicated-domain-type` signal is **low precision**: it flags field
-overlap as duplication, but structural similarity ≠ same concept. Read the
-actual types before refactoring. Common FALSE POSITIVES (leave them, say why):
-- **Different abstraction levels** (e.g. per-file `CallEdge` vs repo-wide `RepoCallEdge`).
+## 2. Triage — don't trust the judge blindly
+The `duplicated-domain-type` detector is **low-precision**: it flags field overlap as duplication, even when two types represent different concepts. Always read the actual types before merging them. Common **false positives** (leave them alone and explain why):
+- **Different abstraction levels** (e.g., per-file `CallEdge` vs. repo-wide `RepoCallEdge`).
 - **Read/write/insert splits** (`FooIn` / `NewFoo` / `FooRecord` — the DAO pattern).
-- **serde wire type vs rich in-memory type** (`Detection` vs `DetectionData`).
-- **Single vs batch reports**, **agent variants**, etc.
+- **Wire DTOs vs. rich in-memory types** (`Detection` vs. `DetectionData`).
+- **Single vs. batch reports**, or distinct agent variants.
 
-Real refactor value is usually in **clones (`dup-block`)**, **reinventions**,
-and **god-modules** — verify each is genuine (read the copies) before acting.
+The highest-value refactors are usually **code clones (`dup-block`)**, **reinvented helpers**, and **god-modules** — verify each copy before editing.
 
 ## 3. Refactor holistically
-Read **every** location (not just the primary), then make the change across
-all of them in one pass. Fix-pattern for an extracted helper/type: **extract
-DOWN to the lowest shared module/package** in the dependency graph (so consumers
-call down, never sideways or up) — never "share" by re-exporting from a high one.
+Read **every** affected site before editing, then update all of them in a single pass. When extracting a shared helper or type, **push it down to the lowest shared module/package** in the dependency graph so callers depend downward — never "share" by re-exporting from a higher-level module.
 
-## 4. Gate hard (every step)
-Run the repo's own build, lint and tests after every change — the checks in its
-`presubmit.toml` when it has one, else ask the person which ones.
-Structural changes cascade — if it's not green, REVERT, don't paper over it.
-Confirm before committing (outward action). One finding/cluster = one commit.
+## 4. Verify strictly after every step
+Run the repository's full build, lint, and test suite after each refactor (using `presubmit.toml` if present, otherwise ask the user which checks to run). Structural changes ripple easily — if checks fail, **revert** rather than papering over the failure. Ask the user before committing, and keep it to one logical finding/cluster per commit.
 
-## 5. Prove it is gone
-There is nothing to close: rot suggestions are not stored. **Verify by re-detection** —
-re-run `arc rot --file <the sites>`; if the clone / idiom / god-module is no longer
-reported, the rot is cleared. Report the before/after lines.
+## 5. Prove it is resolved
+Because rot suggestions aren't stored in a database, **verify by re-running detection**: run `arc rot --file <affected-paths>` and confirm the clone, idiom, or god-module is no longer flagged. Report the before/after output.
 
 ## Cadence
-Batch by concept, **human-review each batch** before it lands — 60+ refactors
-fully autonomous is risky. Report per batch: what was refactored, what was judged a
-false positive (with the reason), and the re-detection result.
+Group refactors by concept and **have a human review each batch** before landing — running 60+ structural refactors unattended is risky. For each batch, report what was refactored, what was skipped as a false positive (and why), and the re-detection result.

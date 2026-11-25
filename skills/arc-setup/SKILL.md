@@ -2,186 +2,105 @@
 name: arc-setup
 description: >-
   Install and set up A.R.C. (arc) in the current repo, stage by stage: the arc
-  binary from getarc, LLM providers in tars, `arc init` roles, optional merge gate /
-  deploy / coding-agent hooks, then a smoke test. Probes what is already there,
-  does only what is missing, verifies each stage with one command, and stops with
-  the real error when one fails. Use when the user says "install arc", "set up
-  arc", "装 arc", "配 arc", or another arc skill found arc missing or unconfigured.
+  binary from getarc, LLM providers in ~/.tars/config.toml, `arc init` roles,
+  optional merge gate / deploy / coding-agent hooks, then a smoke test. Probes
+  what is already configured, does only what is missing, verifies each stage
+  with one command, and stops with the real error if a step fails. Use when
+  the user says "install arc", "set up arc", "装 arc", "配 arc", or when
+  another arc skill reports arc is missing or unconfigured.
 allowed-tools: "Bash Read Edit Write"
 ---
 
 # Set up arc
 
-You are the installer. The route is `roadmap.json` (stages in order, each with its
-completion criteria); the scripts read the world and report; you judge, ask the
-person, and act. `$S` is the directory this SKILL.md is in: the skill is also
-installed outside a Claude Code plugin (`npx skills add`), where no plugin root is set.
+You are the installer. Follow the stages in `roadmap.json` in order; the helper scripts inspect the environment and report status, while you decide, ask the user, and apply changes. `$S` is the directory containing this `SKILL.md` (note that when installed via `npx skills add` outside a Claude Code plugin, `CLAUDE_PLUGIN_ROOT` is not set).
 
-## What you have
+## Tools available
 
 | Tool | What it does | Writes |
 |---|---|---|
-| `python3 $S/scripts/probe.py [--stage ID] [--tars-home DIR] [--repo DIR]` | every stage's criteria judged now: `ok` true/false/null, the facts seen, and `next` (the first required stage not done) | nothing of the person's; the smoke check lets arc create its own `.arc/.gitignore` and `.arc/tars/` |
-| `python3 $S/scripts/diagnose.py -- <cmd…>` or `--from FILE\|-` | runs (or reads) a failed step, returns the raw stdout/stderr plus every row of `known_issues.json` it matches (cause, fix, source in arc's code) | nothing |
-| `python3 $S/scripts/fetch_arc.py --stage-dir DIR [--install-to DIR] [--version vX.Y.Z \| --from URL]` | downloads this platform's binary from getarc (or from `URL/<asset>` with `--from`) into DIR, reports its version and which route verbs it lacks; `--install-to` moves it into place | DIR; the install dir only with `--install-to` |
-| `$S/reference.md` | the facts the stages need — provider fields, `[roles]`, merge.yml rules, deploy, bridge hooks — since the person has no arc docs | — |
-| `arc <verb> --help` | the source of truth for every flag | — |
+| `python3 $S/scripts/probe.py [--stage ID] [--tars-home DIR] [--repo DIR]` | Checks every stage's criteria: `ok` (`true`/`false`/`null`), observed facts, and `next` (first incomplete required stage) | Nothing user-owned; the smoke check lets `arc` create `.arc/.gitignore` and `.arc/tars/` |
+| `python3 $S/scripts/diagnose.py -- <cmd…>` or `--from FILE\|-` | Runs (or reads) a failed command and matches stdout/stderr against `known_issues.json` (cause + fix) | Nothing |
+| `python3 $S/scripts/fetch_arc.py --stage-dir DIR [--install-to DIR] [--version vX.Y.Z \| --from URL]` | Downloads this platform's binary from `getarc` (or `URL/<asset>`) into `DIR`, reports its version and any `missing_verbs`; `--install-to` moves it into place | `DIR`; install dir only with `--install-to` |
+| `$S/reference.md` | Reference for provider fields, `[roles]`, `merge.yml` rules, deploy config, and bridge hooks | — |
+| `arc <verb> --help` | Source of truth for CLI flags | — |
 
-The scripts need only `python3` (3.11+ for the TOML checks; older reports `ok: null`).
+The scripts require `python3` (3.11+ for TOML checks; older versions report `ok: null`).
 
 ## Rules
 
-1. **Probe first, every time.** Run `probe.py` at the start and after each stage. An
-   install that stopped half-way resumes from its `next`. Never redo a stage whose
-   criteria hold.
-2. **Ask before anything outward or global**: `git push`, `arc submit` (it pushes the
-   branch and opens a PR), creating a remote repo or branch, installing into a
-   directory on PATH, writing `~/.tars/config.toml`, `~/.arc/*`, `~/.claude/settings.json`,
-   `~/.codex/*`. Files inside this repo's `.arc/` and `.github/` you may write after
-   telling the person what goes in them.
-3. **Keys never pass through you.** Ask which env var or file holds a credential; the
-   person sets it. Never print, echo or write a key's value. Provider definitions and
-   credentials live only in the tars config — never in `.arc/config.toml`
-   (`[providers]` there is refused: `crates/infra/types/src/config/parse.rs:27`).
-4. **One tars home.** If the person uses a tars home other than `~/.tars`, pass it to
-   every call: `arc <verb> --tars_home DIR` and `probe.py --tars-home DIR`.
-5. **When the probe and the person disagree, show the fact and ask.** E.g. they say
-   they have no bridge server but `~/.arc/client.toml` names one: tell them what the
-   file says, then let them decide. Never silently pick one side; when you cannot
-   ask, change nothing on either side and report the disagreement.
-6. **Few, precise questions.** Ask only when the probe cannot decide and the stage's
-   `asks` needs an answer. Batch the questions for one stage into one message.
-7. **A failure stops the stage.** Go to *Troubleshooting*; never skip to the next stage
-   and never paper over a failure with a different command.
-8. **Say what is not public.** arc's review service, merge machine, release page and
-   chat bridge are not publicly released. A stage that needs one is reported as needing
-   an operator — never set up as if the person could install it.
+1. **Probe first, every time.** Run `probe.py` at the start and after each stage. If a previous install stopped halfway, resume from `next`. Never redo a stage that already passes.
+2. **Ask before anything outward or global:** `git push`, `arc submit` (which pushes the branch and opens a PR), creating a remote repo/branch, installing into a directory on `PATH`, or writing `~/.tars/config.toml`, `~/.arc/*`, `~/.claude/settings.json`, or `~/.codex/*`. Files inside this repo's `.arc/` and `.github/` may be written after telling the user what goes into them.
+3. **Never handle API keys directly.** Ask which environment variable or key file holds the credential; let the user set it. Never print, echo, or write a key value. Provider definitions and credentials belong only in `~/.tars/config.toml` — never in `.arc/config.toml` (where `[providers]` is rejected).
+4. **Keep `--tars-home` consistent.** If the user keeps their provider config outside `~/.tars`, pass `--tars_home DIR` to `arc` and `--tars-home DIR` to `probe.py` on every call.
+5. **When the probe and the user disagree, show the fact and ask.** For example, if they say they have no bridge server but `~/.arc/client.toml` configures one, show what the file contains and let them decide. Never silently override either side.
+6. **Keep questions minimal and batched.** Only ask when the probe cannot determine the answer and the stage requires user input. Batch all questions for a stage into one message.
+7. **Stop on failure.** Go to *Troubleshooting*; never skip ahead or paper over a failure with a different command.
+8. **Be clear about what is not public.** The team edition's review server, merge server, release page, and `arc bridge` server are not publicly released. Any stage requiring them needs an operator — never act as if the user can install them from `getarc`.
 
-## The stages
+## Stages
 
-Walk `next` from the probe. For each stage: probe it → ask (if needed) → do only the
-missing criteria → run its `verify` → probe again.
+Follow `next` from `probe.py`. For each stage: probe → ask (if needed) → apply only missing items → run its `verify` command → probe again.
 
-**1 `prereq`.** Not in a git repo → ask the person to `cd` into the project (or agree to
-`git init`). No binary for this platform (getarc ships macOS arm64 and Linux x86_64) →
-stop; say so.
+**1. `prereq`**
+- If not inside a git repository, ask the user to `cd` into their project (or confirm running `git init`).
+- If there is no prebuilt binary for this OS/arch (`getarc` ships macOS arm64 and Linux x86_64), stop and tell the user.
 
-**2 `binary`.** `arc` missing or lacking route verbs → `fetch_arc.py --stage-dir <scratch>`
-first (installs nothing), show the person the version and `missing_verbs`.
-- Which release: getarc's *latest* (the default) is the one this route is written for.
-  Pass `--version <tag>` only when the person names another release, and `--from URL` only
-  when they name a mirror or a directory holding the assets (`file:///…`); the two cannot be
-  given together. The release also carries `arc-suite-<platform>.tar.gz` (the server suite, an
-  operator's — this skill does not install it) and `arc-skills.tar.gz` (this plugin).
-- `missing_verbs` empty → ask where to install. Suggest `~/.local/bin` (no sudo); if
-  that directory is not on their PATH, say which shell profile line adds it — editing
-  the profile is theirs to approve. Then `--install-to` it and re-probe. Updating later
-  is the same fetch with the newer `--version`.
-- `missing_verbs` not empty → the newest public release predates this route. Stop and
-  report the tag, the missing verbs, and the release page. Do not install it as if it
-  worked; do not substitute old verbs.
+**2. `binary`**
+- If `arc` is missing or lacks required subcommands, run `fetch_arc.py --stage-dir <scratch>` first (downloads without installing) and show the user the version and `missing_verbs`.
+- **Release selection:** `getarc`'s latest release (default) is what this skill targets. Only pass `--version <tag>` if the user asks for a specific release, or `--from URL` if they provide a mirror or local directory (`file:///…`); these two flags are mutually exclusive. Note that releases also include `arc-suite-<platform>.tar.gz` (the operator-hosted server suite — not installed by this skill) and `arc-skills.tar.gz` (this plugin).
+- **If `missing_verbs` is empty:** ask where to install. Suggest `~/.local/bin` (no `sudo` needed). If that directory isn't on `PATH`, show the shell profile line needed to add it and let the user approve editing it. Then run `--install-to` and re-probe.
+- **If `missing_verbs` is non-empty:** the latest public release predates this skill. Stop and report the release tag, missing verbs, and release URL. Do not install it or substitute old commands.
 
-**3 `tars`.** `probe.py --stage tars` lists the providers and, per provider, whether its
-env var is set / its CLI is on PATH. If there is no tars config or no provider and
-`claude` is on PATH, the default is Claude Code itself: propose the two `claude_cli`
-blocks of `$S/reference.md` § No API key (`claude_critic` on opus, `claude_fixer` on
-sonnet with `tools = "default"`). They sign in with the person's `claude login`, so no
-key is asked for; mention that a fixer from another family would keep the review more
-independent, and move on. Without `claude`, the same holds for `codex` (`codex_cli`).
-With neither, ask which model access the person has, then propose one `[providers.<id>]`
-block per provider (format and fields: `$S/reference.md` § tars providers; types: `openai`, `openai_compat`,
-`anthropic`, `gemini`, `bedrock`, `vllm`, `mlx`, `llamacpp`, `claude_cli`, `claude_sdk`,
-`codex_cli`, `opencode`, `antigravity`). Writing the tars config is global: show the
-block and ask. An API-key provider uses
-`auth = { kind = "secret", secret = { source = "env", var = "NAME" } }`; `claude_cli`
-uses the person's `claude login` and takes no `auth`.
-`tars_loads_in_arc` has arc read the file itself (`arc init` in a throwaway repo), so
-a field tars refuses fails here, in tars's words, before stage 4.
+**3. `tars` (model provider config)**
+- `probe.py --stage tars` lists configured providers and whether their env vars are set / CLIs are on `PATH`.
+- If no config or providers exist and `claude` is on `PATH`, default to Claude Code: propose the two `claude_cli` blocks in `$S/reference.md` § No API key (`claude_critic` on `opus`, `claude_fixer` on `sonnet` with `tools = "default"`). These use the user's `claude login`, so no API key is needed; mention that using a different model family for the fixer keeps reviews more independent, and move on.
+- If `claude` is absent but `codex` is on `PATH`, do the same with `codex_cli`.
+- If neither is present, ask which model provider the user has access to, then propose `[providers.<id>]` blocks using `$S/reference.md` § Every type (supported types: `openai`, `openai_compat`, `anthropic`, `gemini`, `bedrock`, `vllm`, `mlx`, `llamacpp`, `claude_cli`, `claude_sdk`, `codex_cli`, `opencode`, `antigravity`).
+- Show the exact TOML block and ask before writing `~/.tars/config.toml`. API-key providers use `auth = { kind = "secret", secret = { source = "env", var = "NAME" } }`; `claude_cli` uses `claude login` and takes no `auth`.
+- `tars_loads_in_arc` verifies that `arc` can actually parse the config (by running `arc init` in a temporary repo), catching any invalid keys before stage 4.
 
-**4 `roles`.** Run `arc init`. Off a terminal (you) it writes
-`.arc/config.toml.example`, prints `arc init needs an interactive terminal…` and exits 1
-— expected; it also creates `.arc/.gitignore` and `.arc/tars/` (arc's own state). The
-example puts the first tars id arc listed on every critic role and the second on
-`fixer` — an order, not a choice: ask for the critic and the fixer, copy the example to
-`.arc/config.toml`, and overwrite every `[roles]` line: `default`/`critic`/`critic_l4`/`critic_l5` to
-the critic, `fixer` to the fixer. `fixer` must be written out
-(`crates/infra/llm/src/roles/mod.rs:96`). A fixer of a different model family than the
-critic keeps the review independent; when the probe's `fixer_family_differs` is `null`,
-ask which family the provider serves. A `claude_cli` fixer needs `tools = "default"`, a
-`codex_cli` fixer `sandbox = "workspace-write"`, on the tars provider
-(`$S/reference.md`). What `arc fix` hands the fixer as the checks to run is the repo's committed
-`presubmit.toml` — the same checks `arc submit` runs; `.arc/config.toml` holds none.
+**4. `roles`**
+- Run `arc init`. Non-interactively it writes `.arc/config.toml.example`, prints `arc init needs an interactive terminal…`, and exits `1` (expected); it also creates `.arc/.gitignore` and `.arc/tars/`.
+- The example assigns the first configured provider to every critic role and the second to `fixer` purely by order. Ask the user which provider should be critic and which should be fixer, copy the example to `.arc/config.toml`, and set `[roles]`: `default`, `critic`, `critic_l4`, and `critic_l5` to the critic, and `fixer` explicitly to the fixer (it never falls back to `default`).
+- A fixer from a different model family than the critic keeps reviews independent; if `probe.py` reports `fixer_family_differs` as `null`, ask the user which model family that provider serves.
+- Ensure the fixer provider has edit permissions in `~/.tars/config.toml`: `tools = "default"` for `claude_cli`, or `sandbox = "workspace-write"` for `codex_cli`.
+- Checks run by `arc fix` before claiming a fix come from the repo's committed `presubmit.toml` (not `.arc/config.toml`).
 
-**5 optional: `merge_gate`, `release`.** Ask whether a merge machine will land / deploy
-this repo; skip when no.
-- *Merge gate*: draft `.github/workflows/merge.yml` from the repo's existing CI — only
-  `run:` steps, `on: workflow_dispatch: {}` only, no `${{ … }}`, `uses:` only
-  `actions/checkout`, `actions/setup-node|python|go`, `dtolnay/rust-toolchain`; a
-  compiled language's build must compile tests too; keep test runners arc reads (cargo, nextest, vitest, tsc,
-  pytest, Playwright) on the console. Rules: `$S/reference.md` § Merge gate. Verify
-  each job with `arc workflow .github/workflows/merge.yml --job <job> --list` (it prints
-  how many steps run and names the first step it refuses).
-- The merge machine reads `merge.yml` from the target branch, so it only takes effect
-  once committed and landed there. Committing and pushing it are the person's call:
-  say so, and leave it uncommitted unless they ask.
-- *Release*: `[release]` in `.arc/config.toml`, a deploy job with a `concurrency:` group,
-  and exactly one `[builds.*]` in `.arc/delivery.toml` naming the same workflow and job
-  (`$S/reference.md` § Deploy). Verify with `arc workflow <file> --job <job> --list`.
-  Never run a deploy job without `--list`, and never `arc deploy` (it asks this
-  machine to deploy).
-- Registering the repo on a merge machine (`~/.arc/machine.toml`, `arc-server tenant add`)
-  is the operator's; say so.
+**5. Optional: `merge_gate`, `release`**
+Ask whether a self-hosted merge machine will land/deploy this repo; skip if not.
+- **Merge gate:** Draft `.github/workflows/merge.yml` from the repo's existing CI — `run:` steps only, `on: workflow_dispatch: {}` only, no `${{ … }}` expressions, and `uses:` restricted to `actions/checkout`, `actions/setup-node|python|go`, and `dtolnay/rust-toolchain`. Compiled languages must also compile tests; keep supported test runner output (`cargo`, `nextest`, `vitest`, `tsc`, `pytest`, `Playwright`) on stdout. Validate each job with `arc workflow .github/workflows/merge.yml --job <job> --list`.
+- The merge machine reads `merge.yml` from the target branch, so it only takes effect once committed and merged. Leave it uncommitted unless the user asks you to commit.
+- **Release:** Configure `[release]` in `.arc/config.toml`, a deploy job with a `concurrency:` group, and one `[builds.*]` entry in `.arc/delivery.toml` referencing the same workflow and job (`$S/reference.md` § Deploy). Validate with `arc workflow <file> --job <job> --list`. Never run a deploy job without `--list`, and never run `arc deploy`.
+- Registering the repo on a merge machine is an operator task; note that clearly.
 
-**6 optional: `agents`.** As the Fixer: covered by stage 4 (`claude_cli` / `codex_cli` /
-`antigravity`). As a participant: the bridge needs an operator's arc-bridge server
-address. Without one, skip and say why. With one, show the person the hook block for
-their agent from `$S/reference.md` § Bridge and the `~/.arc/client.toml` line
-(`web = "http://<host>:<port>"`); write them only on their yes. Verify:
-`arc bridge inbox`.
+**6. Optional: `agents`**
+- As Fixer: already covered in stage 4 (`claude_cli` / `codex_cli` / `antigravity`).
+- As Bridge participant: requires an operator's `arc-bridge` server URL. Without one, skip and explain why. With one, show the hook snippet from `$S/reference.md` § Bridge and the `~/.arc/client.toml` line (`web = "http://<host>:<port>"`); write them only after user approval. Verify with `arc bridge inbox`.
 
-**7 `smoke`.** Read-only checks first — they are the probe's `smoke` stage:
-`arc rot --no-judge` must exit 0. Then report the facts that decide what works next:
-- The personal edition needs no server. `arc local-review` reviews the branch's change
-  on this clone's own `.arc/review.db` and `arc fix` answers it there; neither reads
-  `~/.arc/machine.toml`. Both need an `origin` whose default branch they review against,
-  and someone to name as the runner: an agent session (Claude Code, Codex, agy) or a
-  `gh` login, else they refuse with `cannot tell who is submitting`. The person pushes
-  the result with `git push`. When the probe's `gh_authed` is false, say what that
-  costs: inside an agent session nothing; from a plain terminal, `local-review` and
-  `fix` refuse; `arc submit` (team edition) cannot run. To fix it the person installs
-  GitHub's CLI (https://cli.github.com — `brew install gh`, or their distribution's
-  package) and runs `gh auth login` themselves: it is interactive and signs them in,
-  so never run it for them.
-- `review_service_here` false (the usual case) only means no team-edition review service
-  serves this repo from this machine, so nothing here would review a PR `arc submit`
-  opens. Say so plainly; it does not stop the personal edition.
-- No LLM call has been proven yet: arc has no stand-alone provider check, and
-  `arc rot` (with its judge, `critic_l5`) calls the model only when it finds suspects.
-  Say which provider calls are still unproven.
-- `arc submit` is the team edition's hand-off: it pushes the branch, opens a PR (needs
-  `origin` and `gh auth`) and puts it on a review service's queue. It is an outward
-  action: ask, and run it only on a yes. Without a review service watching the repo,
-  nothing will review the PR it opens — say that before asking.
+**7. `smoke`**
+Run read-only checks first — `arc rot --no-judge` must exit `0`. Then summarize what works right now:
+- **Personal edition** needs no server: `arc local-review` and `arc fix` work locally using `.arc/review.db`. Both require an `origin` remote (to diff against its default branch) and an identity — either running inside a coding agent session or having `gh auth login` configured (otherwise they fail with `cannot tell who is submitting`). If `gh_authed` is `false`, explain the impact: inside an agent session, local commands still work; from a plain terminal, `local-review` and `fix` will refuse, and `arc submit` cannot run. To fix it, the user should install `gh` (https://cli.github.com) and run `gh auth login` themselves (it's interactive, so never run it for them).
+- If `review_service_here` is `false` (normal for personal setups), note plainly that no team review service is watching this repo from this machine, though the personal edition works fine.
+- Note which providers haven't made a live LLM call yet (arc has no standalone ping command, and `arc rot` only calls `critic_l5` if it finds structural suspects).
+- `arc submit` pushes the branch, opens a PR, and queues it for a team review service. It is an outward action — always ask before running it, and warn the user if no review service is watching the repo.
 
 ## Troubleshooting
 
 When a command fails:
-1. `diagnose.py -- <the same command>` — or, for a command that must not run twice
-   (anything outward), `diagnose.py --from -` with the output you already have.
-2. A match → tell the person the cause and the fix in that row, with its `source`; do
-   the fix only if it is local, else ask.
-3. No match → stop. Show the command, the exit code and the raw output (trimmed, never
-   reworded), and what you checked. Do not guess a cause.
-4. Re-run the stage's `verify`, then the probe.
+1. Run `diagnose.py -- <the same command>` (or `diagnose.py --from -` with existing output for outward commands that shouldn't run twice).
+2. If it matches a known issue, show the cause and fix; apply local fixes if appropriate, otherwise ask.
+3. If there is no match, stop and show the command, exit code, raw output (trimmed, never paraphrased), and what you checked. Do not guess a cause.
+4. Re-run the stage's `verify` command, then re-run `probe.py`.
 
 ## Hand-off
 
-End with one table, every stage on its own row:
+End with a summary table covering every stage:
 
 | Stage | Result | Evidence |
 |---|---|---|
-| prereq … smoke | done / already there / skipped (why) / failed / needs an operator | the verify command and its result, or the raw error |
+| `prereq` … `smoke` | `done` / `already there` / `skipped (<why>)` / `failed` / `needs an operator` | Verify command & output, or raw error |
 
-Then the next useful step. Personal edition: on a feature branch, `arc local-review`, then
-`arc fix`, then `git push`; and `arc rot` for a whole-repo structural review (uses
-`critic_l5`). Team edition, once an operator's review service serves the repo: `arc submit`.
+Then give the next useful command:
+- **Personal edition:** on a feature branch, run `arc local-review`, then `arc fix`, then `git push` (and `arc rot` for a whole-repo structural check).
+- **Team edition** (once an operator's review service is watching the repo): `arc submit`.
