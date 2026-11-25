@@ -72,7 +72,7 @@ def main() -> int:
     ap.add_argument("--stage-dir", required=True, help="an empty scratch directory to download into")
     ap.add_argument("--install-to", help="directory to move arc into (the person's choice)")
     release = ap.add_mutually_exclusive_group()
-    release.add_argument("--version", help="getarc release tag, e.g. v1.3.0 (default: the latest)")
+    release.add_argument("--version", help="getarc release tag, e.g. vX.Y.Z (default: the latest)")
     release.add_argument("--from", dest="mirror", metavar="URL",
                          help="fetch URL/<asset> (a mirror, or a file:// directory)")
     a = ap.parse_args()

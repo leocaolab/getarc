@@ -48,7 +48,7 @@ curl -fsSLO https://github.com/leocaolab/getarc/releases/latest/download/SHA256S
 shasum -a 256 -c SHA256SUMS --ignore-missing   # Linux: sha256sum -c SHA256SUMS --ignore-missing
 tar -xzf arc-darwin-arm64.tar.gz arc
 mv arc ~/.local/bin/                            # anywhere on your PATH
-arc --version                                   # arc 1.3.0-b04 (d39aba5 2026-11-21T05:00:28Z)
+arc --version                                   # arc X.Y.Z (<commit> <build time>)
 ```
 
 **VS Code extension:** `arc-vscode.vsix` is an asset of the same release; install it with `code --install-extension arc-vscode.vsix`.
@@ -133,7 +133,7 @@ The CLI, on each machine:
 
 ```bash
 curl -fsSL https://github.com/leocaolab/getarc/releases/latest/download/install.sh | sh                          # the latest release
-curl -fsSL https://github.com/leocaolab/getarc/releases/latest/download/install.sh | sh -s -- --version v1.3.0   # one release, also to go back
+curl -fsSL https://github.com/leocaolab/getarc/releases/latest/download/install.sh | sh -s -- --version vX.Y.Z   # one release, also to go back
 ```
 
 The skills plugin is upgraded through Claude Code ([Skills and plugins](skills.md#upgrade)).

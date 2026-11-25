@@ -36,7 +36,7 @@ All jobs in the file run, one after another, **in the order they are written**, 
 
 ## When it runs
 
-1. A PR enters the merge queue when its **pass** matches its current head. The review service grants the pass when the reviewers your repo's routes name say LGTM ([Configuration](configuration.md#arcmachinetoml--the-pipeline-machine)). A new push is a new head, so it needs a new LGTM. A PR labelled `arc-hold` gets no pass.
+1. A PR enters the merge queue when its **pass** matches its current head. The review service grants the pass when the reviewers your repo's routes name say LGTM ([Configuration](configuration.md#arcmachinetoml--the-pipeline-machine)). A new push is a new head, so it needs a new LGTM. A PR labelled `arc-hold` is skipped even with a pass ([`arc-hold`](working-on-the-board.md#keeping-a-pr-from-landing-arc-hold)).
 2. The merge machine takes one PR at a time. For it, it:
    - fetches the target branch and checks out its tip — the **base**;
    - reads `merge.yml` and `.arc/gate.toml` from the base;
