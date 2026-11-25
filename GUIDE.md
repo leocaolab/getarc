@@ -1,16 +1,15 @@
 # A.R.C. — User Guide
 
-The user guide lives on the website, in English and Chinese:
+The user guide is in this repository: [English](docs/user-guide/README.md) · [中文](docs/user-guide.zh-CN.md).
 
-**<https://arc-site.hucao1.workers.dev/docs/>** · 中文:**<https://arc-site.hucao1.workers.dev/zh/docs/>**
-
-- [Install](https://arc-site.hucao1.workers.dev/docs/start/install/) — the one-line installer and what each release file is
-- [Configuration](https://arc-site.hucao1.workers.dev/docs/start/configuration/) — which file holds what
-- [The commands](https://arc-site.hucao1.workers.dev/docs/guides/commands/) — `arc local-review`, `arc fix`, then push
-- [How arc reviews (L4)](https://arc-site.hucao1.workers.dev/docs/concepts/review/) · [Rot (L5)](https://arc-site.hucao1.workers.dev/docs/concepts/rot/)
-- [Connecting your coding agent](https://arc-site.hucao1.workers.dev/docs/guides/coding-agents/) — Claude Code, Codex CLI, agy
-- [Custom rubrics](https://arc-site.hucao1.workers.dev/docs/guides/custom-rubrics/) · [Troubleshooting](https://arc-site.hucao1.workers.dev/docs/faq/troubleshooting/)
-- Team edition: [the merge gate](https://arc-site.hucao1.workers.dev/docs/guides/merge-gate/) — writing `merge.yml` · [Releases and deploys](https://arc-site.hucao1.workers.dev/docs/guides/release/)
+- [Install](docs/user-guide/install.md) — the one-line installer and what each release file is
+- [Configuration](docs/user-guide/configuration.md) — which file holds what
+- [Set up the pipeline](docs/user-guide/onboarding.md) — the services on your own machine, your first PR landing
+- [The commands](docs/user-guide/commands.md) — `arc local-review`, `arc fix`, `arc submit`
+- [How arc reviews (L4)](docs/user-guide/review.md) · [Rot (L5)](docs/user-guide/rot.md)
+- [Connecting your coding agent](docs/user-guide/coding-agents.md) — Claude Code, Codex CLI, agy
+- [Review on the pipeline](docs/user-guide/pipeline-review.md) · [Merge](docs/user-guide/merge-gate.md) · [Releases and deploys](docs/user-guide/release.md)
+- [Custom rubrics](docs/user-guide/custom-rubrics.md) · [Troubleshooting](docs/user-guide/troubleshooting.md)
 
 Install and a quick start are in the [README](README.md#get-started).
 

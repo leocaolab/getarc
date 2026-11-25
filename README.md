@@ -3,8 +3,6 @@
 **From watching the screen to autopilot: why we built infrastructure for coding agents
 instead of writing one more workflow.**
 
-[Website](https://arc-site.hucao1.workers.dev/) · [Docs](https://arc-site.hucao1.workers.dev/docs/) · [中文文档](https://arc-site.hucao1.workers.dev/zh/docs/) · [Get started](#get-started) · [Report a problem](https://github.com/leocaolab/getarc/issues)
-
 **arc is for you if** you run a one-person company or a tiny team, you have a few
 machines of your own, GitHub's CI costs too much for what you build, you can no longer
 read every line your agents write, and you want development to run on its own.
@@ -337,7 +335,7 @@ timeout_secs = 900
 ```
 
 Any other model works too — `anthropic`, `openai`, `gemini`, `bedrock`, `codex_cli`,
-local servers ([all types](https://arc-site.hucao1.workers.dev/docs/start/configuration/)).
+local servers ([all types](docs/user-guide/configuration.md)).
 Then, in the repository, on a feature branch:
 
 ```bash
@@ -379,13 +377,13 @@ files arc's reviewer reads.
 
 Pick an always-on Linux x86_64 machine with systemd, plenty of cores and disk (macOS runs
 the services, but has no systemd to deploy or restart them). Then follow
-[Set up the pipeline](https://arc-site.hucao1.workers.dev/docs/team/onboarding/):
+[Set up the pipeline](docs/user-guide/onboarding.md):
 
 1. unpack `arc-suite-linux-x64.tar.gz` there and start the services;
 2. connect your repository and write its `.github/workflows/merge.yml` — the same
-   jobs-and-`run`-steps shape you already know ([the merge gate](https://arc-site.hucao1.workers.dev/docs/team/merge-gate/));
+   jobs-and-`run`-steps shape you already know ([the merge gate](docs/user-guide/merge-gate.md));
 3. point each coding machine at it with `~/.arc/client.toml`, and connect your agents to
-   [arc bridge](https://arc-site.hucao1.workers.dev/docs/team/bridge/);
+   [arc bridge](docs/user-guide/bridge.md);
 4. from then on an agent runs `arc submit`: the branch is reviewed, and lands on `main`
    only after the reviewers say LGTM and `merge.yml` shows no new failure. Label a pull
    request `arc-hold` to keep it from landing.
