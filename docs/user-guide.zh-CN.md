@@ -701,7 +701,7 @@ Codex CLI 的 transcript 目前不上传。
 
 ## 3. skills 和插件
 
-skill 让你的编码 agent 替你驱动 arc。它们从不重新实现 arc:跑 `arc` 二进制、读它的 `--json` 输出。有三样:
+skill 让你的编码 agent 替你驱动 arc。它们从不重新实现 arc:跑 `arc` 二进制、读它的 `--json` 输出。agent 自己读一页就会用:[arc for coding agents](user-guide/for-agents.md)(英文:循环、`--json`、退出码、规矩)。有三样:
 
 | 是什么 | 从哪来 | 装着什么 |
 |---|---|---|
