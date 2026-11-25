@@ -1,6 +1,17 @@
 # A.R.C. — User Guide
 
-## Agent setup
+**Let your coding agents write the code. arc checks it before it lands.**
+
+A.R.C. (Adversarial Resolution Cycle) is a code-review tool. Two models work against each other: a **Critic** reads your change and points out problems (each one is a **finding**), and a **Fixer** edits the code and answers each finding. They go back and forth until the Critic says LGTM ("looks good to me"), or a person steps in. arc keeps every finding and every answer in `<repo>/.arc/` (SQLite), with a timeline of events that is only ever added to.
+
+arc has two parts, and you install both:
+
+- **The `arc` command**, on every machine where people or agents write code. Before a change leaves your machine, run `arc local-review` to review it there, and `arc fix` to let the Fixer work on the findings until the Critic says LGTM. Then `arc submit` sends it to the pipeline.
+- **The pipeline**, a set of services on one machine you own. A review service reviews every PR. A merge server lands a PR only after its reviewers say LGTM and your own `merge.yml` finds no new failure. A nightly release and deploys ship what landed. Agents and people talk to each other on a chat server (`arc bridge`).
+
+Every flag is in `arc <command> --help`.
+
+## Install it with your coding agent
 
 Paste this into your coding agent (Claude Code, Codex, or another) in the repository you want arc in:
 
@@ -8,27 +19,18 @@ Paste this into your coding agent (Claude Code, Codex, or another) in the reposi
 Set up A.R.C. (arc) in this repository with the arc-setup skill. If you're in Claude Code, run `claude plugin marketplace add leocaolab/getarc`, then `claude plugin install arc@getarc`. If you're in another agent, run `npx skills add leocaolab/getarc --skill arc-setup` and select your agent. Use one installation method. You can read the skill directly at https://github.com/leocaolab/getarc/blob/main/skills/arc-setup/SKILL.md (raw: https://raw.githubusercontent.com/leocaolab/getarc/main/skills/arc-setup/SKILL.md). Then use the arc-setup skill to install and configure arc here.
 ```
 
-The agent installs arc and walks you through each step, asking before it touches anything outside the repository. **If you are that agent,** start with [arc for coding agents](for-agents.md): the quick start, the install route, the commands, the exit codes and the rules, on one page.
+The agent installs arc and takes you through each step. It asks before it changes anything outside the repository. **If you are that agent,** read [arc for coding agents](for-agents.md) first: the quick start, the install steps, the commands, the exit codes and the rules, on one page.
 
----
-
-A.R.C. (Adversarial Resolution Cycle) is a code-review tool. A **Critic** LLM reads your code and files findings; a **Fixer** LLM edits files; they go round per finding until the reviewer says LGTM or a person steps in. Findings persist as entities in `<repo>/.arc/` (SQLite) with an append-only event timeline.
-
-arc is two halves that you install together:
-
-- **The `arc` CLI**, on every machine where people or agents write code. Before a change leaves your machine, arc reviews it there (`arc local-review`) and the Fixer answers the findings until the reviewer says LGTM (`arc fix`). `arc submit` then hands it to the pipeline.
-- **The pipeline**, a self-hosted server suite on one machine you own: a review service reviews every PR, a merge server lands it only on the reviewers' LGTM and your own `merge.yml`, a nightly release and deploys ship what landed, and agents and people team up on a chat server (`arc bridge`).
-
-Every flag is in `arc <command> --help`.
+To install by hand, start at [Install](install.md).
 
 ## Contents
 
 **Install and set up**
 
-- [Install — the CLI on each machine, the server suite on the pipeline machine, upgrading](install.md)
-- [Configuration — the files, whose fact each one holds, every key of `machine.toml`](configuration.md)
-- [Set up the pipeline — initialize the repo, register it, start the services, connect the clients, land a first PR](onboarding.md)
-- [Skills and plugins — install the skills, see them, upgrade; arc-room](skills.md)
+- [Install — the `arc` command on each machine, the services on the pipeline machine, upgrading](install.md)
+- [Configuration — each settings file, what goes in it, every key of `machine.toml`](configuration.md)
+- [Set up the pipeline — prepare the repo, register it, start the services, connect your machines, land a first PR](onboarding.md)
+- [Skills and plugins — install the skills, list them, upgrade; arc-room](skills.md)
 - [Connecting your coding agent — Claude Code, Codex CLI, agy](coding-agents.md)
 
 **Review your change before you submit**
@@ -53,12 +55,12 @@ Every flag is in `arc <command> --help`.
 
 ## What arc is (and is not)
 
-- **It reviews OTHER people's code, in 9 languages** (Rust, Python, TS, JS, Go, Java, C, C++, Swift). The language drivers fire on the *target* repo's language.
-- **It is an advisory detector.** Finding rot or bugs is not a build failure by itself; `arc` reports, you (or the Fixer) decide. On the pipeline, what decides a landing is the reviewers' LGTM and your own `merge.yml`.
-- **No LLM is bundled.** You point arc at providers you configure in tars.
-- **Not a style linter.** Formatting is for `clippy` / `ruff` / `eslint` / `gofmt`. arc targets *semantic* hazards and *structural* rot.
+- **It reviews your code, in 9 languages:** Rust, Python, TS, JS, Go, Java, C, C++, Swift. arc picks the language support by the language of the repo it reviews.
+- **It reports; it does not block on its own.** A finding does not fail your build. arc tells you what it found, and you (or the Fixer) decide what to do. On the pipeline, two things decide whether a PR lands: the reviewers' LGTM and your own `merge.yml`.
+- **It comes with no model.** You choose the models (providers) in tars, and arc uses them.
+- **It is not a style linter.** Formatting is the job of `clippy` / `ruff` / `eslint` / `gofmt`. arc looks for problems in what the code means and in how the codebase is put together.
 
-arc works at two altitudes: **L4** — per-file contracts ([review.md](review.md)) — and **L5** — whole-repo structural rot ([rot.md](rot.md)). Both run on your machine and on the pipeline.
+arc reviews at two levels: **L4**, each file against its contracts ([review.md](review.md)), and **L5**, the whole repo for structural rot ([rot.md](rot.md)). Both run on your machine and on the pipeline.
 
 ---
 
