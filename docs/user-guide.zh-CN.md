@@ -1138,130 +1138,138 @@ arc fix --dry-run       # Fixer 对每条 finding 只读评估,什么都不改
 
 ## 12. 组队:arc bridge
 
-agent 会话、流水线的各个服务和人,都接在同一个聊天服务器 arc-bridge 上。每个会话有一个唯一的名字;消息发给名字,或者发进频道;
-会话停下时把信取进上下文。评审的 finding 就是这样送到作者会话的,落地消息就是这样送到提交者的,两个 agent 就是这样一起做一个
-milestone 的。英文页:[Team up](user-guide/bridge.md)、[Connecting your coding agent](user-guide/coding-agents.md);每个子命令以
-`arc bridge <sub> --help` 为准。
+arc-bridge 是一个聊天服务器,agent 会话、流水线的各个服务和人都在上面说话。每个会话有一个名字;消息发给某个名字,或者发进某个频道;会话停下的时候才去取信。
+评审员的 finding 送到写代码的会话、PR 落地的消息送到提交它的人、两个 agent 一起做一个 milestone、你在网页上回 agent 的话,走的都是它。
+
+要用它,得先起好服务端套件(§2),每台机器上有 `~/.arc/client.toml`,再给你的 agent 装好 hook(§11)。英文页:[Team up](user-guide/bridge.md)、
+[Connecting your coding agent](user-guide/coding-agents.md)。下面每个命令的准确用法以 `arc bridge <sub> --help` 为准。
 
 ### 12.1 名字、房间和频道
 
-**会话名。** 一个在线会话就是一个地址,所以同一时间两个在线会话不能用同一个名字,否则会收到对方的信。
+**名字。** 信是按名字送的,所以一个名字只给一个会话用:两个开着的会话用同一个名字,就会收到对方的信。
 
-- Claude Code 用启动时的会话名(`claude -n NAME`),没有就用 session id;也可以在 hook 那一行用 `--name` 定死。
-- `arc bridge launch <ROLE>` 以 `<仓名>-<ROLE>-<MMDD><字母>` 起一个 Claude Code、Codex CLI 或 agy 会话,名字取没有在线会话占着的,并打印出来。
+- Claude Code 用启动时的会话名(`claude -n NAME`),没起名就用 session id;也可以在 hook 那一行用 `--name` 写死。
+- `arc bridge launch <ROLE>` 起一个 Claude Code、Codex CLI 或 agy 会话,名字是 `<仓名>-<ROLE>-<MMDD><字母>`,挑一个没有在线会话占着的,并打印出来。
 
-**房间和频道。** 每个会话有一个自己的房间,就是它的频道 `feed:<会话名>`:记着这个会话说了什么,别人对它说了什么。其余的都走下面四类频道:
+**房间和频道。** 每个会话有自己的房间,也就是它的频道 `feed:<会话名>`,里面是这个会话说过的话和别人对它说的话。其他消息走频道,常见的有四种:
 
-| 频道 | 里面有什么 | 怎么加入 |
+| 频道 | 里面有什么 | 怎么进 |
 |---|---|---|
-| `pr:<owner>/<name>#<n>` | 一个 PR 的全过程:评审服务的 finding、合并机的结论、落地 | `arc submit` 把 PR 登记到你的会话,你自动在里面 |
-| `release:<owner>/<name>` | 这个仓的部署,以及每次部署带上线的 PR | 会话开始时自动加入它所在仓的这个频道 |
+| `pr:<owner>/<name>#<n>` | 一个 PR 的全过程:评审服务的 finding、合并机的结论、落地 | `arc submit` 把 PR 登记到你的会话,你就在里面了 |
+| `release:<owner>/<name>` | 这个仓的每次部署,以及每次部署带上线的 PR | 会话一启动就自动进它所在仓的这个频道 |
 | `landings` | 每个落到 main 的改动一行:分支、落地后的 sha、动了哪些路径 | 自己 `arc bridge join landings` |
-| `room:<16 位十六进制>` | 一支队的协商频道(§12.6) | 开队时双方自动加入 |
+| `room:<16 位十六进制>` | 一支队的频道(§12.6) | 开队时两边自动进 |
 
-### 12.2 收发消息和问人
-
-都以你所在会话的名字发,或用 `--as NAME`。没送达就以非零退出,带着服务器的原话:
+### 12.2 发消息、问人
 
 ```bash
 arc bridge send codex@review "the fix is pushed"         # 私信给一个名字
-arc bridge post 'pr:acme/app#514' "pushed the fix"       # 发进频道;不用是成员
-arc bridge join landings                                 # 之后的新消息进你的收件箱
+arc bridge post 'pr:acme/app#514' "pushed the fix"       # 发进频道;不是成员也能发
+arc bridge join landings                                 # 以后这个频道的新消息进你的收件箱
 arc bridge leave landings
-arc bridge inbox                                         # 看未读,不回执
+arc bridge inbox                                         # 看看未读,不标已读
 arc bridge inbox --wait 55                               # 没有就最多等 55 秒
 ```
 
-**问人。** agent 需要人拍板时:
+发信人是你所在会话的名字,也可以用 `--as NAME` 指定。没送到就以非零退出,并打印服务器的原话。
+
+**问人。** agent 要人拍板时:
 
 ```bash
-arc bridge ask "Start R1 now?" --on b/12 --option "A: start" --option "B: wait"     # 关于某个 PR 时加 --pr <n>
+arc bridge ask "Start R1 now?" --on b/12 --option "A: start" --option "B: wait"     # 问的是某个 PR 就加 --pr <n>
 ```
 
-它先在这个 checkout 的 issue 板上,把问题开成 b/12 上的一个 `q/<n>`(带选项),再把它发进你自己的房间。人在看板的项目页(Projects)上
-看到这个问题,每个选项一个按钮;点一下,就用那个选项的原话裁定 `q/<n>`,再以点的人的名义发回你的房间,到你这里是 `【名字】选项`。
+它先在这个 checkout 的 issue 板上,把问题开成 b/12 下的一个 `q/<n>`(带上选项),再把它发到你自己的房间。人在看板的 Projects 页上看到这个问题,
+每个选项一个按钮;点一下,这个 `q/<n>` 就按那个选项的原话定下来,答案以点按钮的人的名义发回来,你收到的是 `【名字】选项`。
 
-### 12.3 信怎么进会话
+### 12.3 信什么时候进会话
 
-- **停下时取信。** 会话只在停下时收信:Stop hook 向服务器取一次。有该打断的信,就拦下这次停下,把全部未读作为下一条输入塞进会话;
-  只有安静的信,就放行,它们留在收件箱里等下一次打断,一条不丢;空的就放行。
-- **空闲时被叫醒。** Claude Code 用第二条 Stop hook `arc bridge await-mail`(配 `"asyncRewake": true`),停下后替它等信,来信就叫醒;
-  Codex CLI 和 agy 在 Stop 那行加 `--mail waiter`。
-- **出错就放行。** hook 出任何错都放行,原因写 stderr,以 `[arc bridge]` 开头;没有 `client.toml` 就什么都不做。
+- **停下时取信。** 会话只在停下的时候收信:Stop hook 去服务器取一次。有该打断的信,就拦下这次停下,把所有未读作为下一条输入塞给会话;
+  只有不打断的信,就让它停,信留在收件箱里等下次一起送,一条不丢;没有信就直接停。
+- **闲着时被叫醒。** Claude Code 再挂一条 Stop hook `arc bridge await-mail`(配 `"asyncRewake": true`),停下以后替它等着,一来信就把它叫醒;
+  Codex CLI 和 agy 在 Stop 那一行加 `--mail waiter`。
+- **出错不拦。** hook 出了任何错都让会话照常停下,原因写到 stderr,以 `[arc bridge]` 开头;机器上没有 `client.toml` 就什么都不做。
 
-§3 的 `arc-room` 插件更进一步:任何人在你房间里说的话,都作为提示进到会话。
+§3 的 `arc-room` 插件更进一步:任何人在你房间里说的话,都直接作为提示进到会话。
 
-### 12.4 各 agent 的 hook 怎么挂
+### 12.4 各个 agent 的 hook 怎么挂
 
 | agent | 写在哪 | 挂什么 |
 |---|---|---|
-| Claude Code | `~/.claude/settings.json` | `SessionStart`、`UserPromptSubmit`、`PreToolUse`、`PostToolUse` / `PostToolUseFailure`(matcher `Bash`)、`SessionEnd` 各挂 `arc bridge hook <事件>`。`Stop` 挂两条:`arc bridge hook Stop --mail waiter` 和 `arc bridge await-mail`(`"asyncRewake": true`,`timeout` 86400);不想空闲时被叫醒,只挂前一条 |
-| Codex CLI | `~/.codex/config.toml` | `[features] hooks = true`;`SessionStart`、`PreToolUse`、`Stop`、`SessionEnd` 各挂 `arc bridge hook <事件> --agent codex --name <名字>`(`--agent codex` 必须写),`Stop` 那行可加 `--mail waiter`。改完重启,在 `/hooks` 里信任 |
-| agy | `~/.gemini/config/hooks.json` 或仓库根的 `.agents/hooks.json`(全局和仓库只装一份) | 只挂 `PreInvocation` 和 `Stop`:`arc bridge hook <事件> --agent agy --name <名字>`,`Stop` 那行可加 `--mail waiter` |
+| Claude Code | `~/.claude/settings.json` | `SessionStart`、`UserPromptSubmit`、`PreToolUse`、`PostToolUse` / `PostToolUseFailure`(matcher `Bash`)、`SessionEnd` 各挂一条 `arc bridge hook <事件>`。`Stop` 挂两条:`arc bridge hook Stop --mail waiter` 和 `arc bridge await-mail`(`"asyncRewake": true`,`timeout` 86400);不想闲着时被叫醒,只挂前一条 |
+| Codex CLI | `~/.codex/config.toml` | `[features] hooks = true`;`SessionStart`、`PreToolUse`、`Stop`、`SessionEnd` 各挂 `arc bridge hook <事件> --agent codex --name <名字>`(`--agent codex` 一定要写),`Stop` 那行可以加 `--mail waiter`。改完重启,在 `/hooks` 里点信任 |
+| agy | `~/.gemini/config/hooks.json` 或仓库根的 `.agents/hooks.json`(全局和仓库二选一,只装一份) | 只挂 `PreInvocation` 和 `Stop`:`arc bridge hook <事件> --agent agy --name <名字>`,`Stop` 那行可以加 `--mail waiter` |
 
 几点说明:
 
-- **Claude Code 的减速带。** `UserPromptSubmit` 在上次模型调用超过 1 小时、或上下文超过 10 万 token 时先拦一次,再发一次(这句或别的)就放行。
-  短暂离开用 `/loop 55m` 保温(只回复 ok),下班前写交接再 `/clear`。
-- **agy 只挂两项。** `PreInvocation` 那一行照 agy 的线上 hooks 文档写,还没在真 agy 上跑过。不挂 `PreToolUse`(它是权限 hook,没在真 agy 上验证过,
-  挂错了每次工具调用都受影响)、`PostToolUse`(arc 靠 transcript 记改了哪些文件,agy 留不留这个 hook 的输出没有验证)、`PostInvocation`(和
-  `PreInvocation` 重复)、`SessionStart`(1.2.11 没有这个事件)。agy 没有会话结束事件,30 分钟没有 hook 才算下线。
+- **Claude Code 的减速带。** 距上次模型调用超过 1 小时,或上下文超过 10 万 token 时,`UserPromptSubmit` 会先拦一次,再发一次(同一句或别的)就放行。
+  短暂离开用 `/loop 55m` 保温(只回 ok);下班前写好交接再 `/clear`。
+- **agy 为什么只挂两项。** `PreInvocation` 那一行是照 agy 的线上 hooks 文档写的,还没在真 agy 上跑过。其他几个不挂:`PreToolUse` 是权限 hook,没在真 agy 上验证过,
+  挂错了每次工具调用都受影响;`PostToolUse`:arc 靠 transcript 记改了哪些文件,agy 留不留这个 hook 的输出没验证过;`PostInvocation` 和 `PreInvocation` 重复;
+  `SessionStart` 在 1.2.11 里没有这个事件。agy 也没有会话结束事件,30 分钟没有 hook 才算下线。
 
-### 12.5 决定什么能打断你
+### 12.5 哪些信能打断你
 
-信有多响由发信人定。你可以在服务器上存条件把它收窄:一条都没存,所有该打断的信都打断你;存了至少一条,就只有命中的还能打断,其余变安静,
-但仍在收件箱里。条件只会让信更安静,不会更响。
+一封信响不响,由发信人决定。你可以在服务器上存几条条件把范围收窄:一条都没存时,所有该打断的信都打断你;存了至少一条以后,只有命中条件的还能打断,
+其余的变成不打断,但仍在收件箱里。条件只会让信变安静,不会让信变响。
 
 ```bash
 arc bridge interest add mine            # 发给你的私信,加上 arc submit 登记在你名下的 PR 频道
-arc bridge interest add from:<名字>      # 那个发信人
-arc bridge interest add tag:escalate    # 那个标签(intervene | escalate | wake)
+arc bridge interest add from:<名字>      # 这个人发的
+arc bridge interest add tag:escalate    # 带这个标签的(intervene | escalate | wake)
 arc bridge interest list
 ```
 
 ### 12.6 两个 agent 组队
 
-一支队是两个会话带着一个范围一起干,双方都说做完才算完。范围在开队时写定:一个 milestone `b/<n>`,或一份设计文档加它的 commit。
+一支队就是两个会话一起做一件事,两边都说做完了才算完。做什么在开队时就定下:一个 milestone `b/<n>`,或者一份设计文档加它所在的 commit。
 
 ```bash
 arc bridge team open --milestone b/42 --with codex@review              # 打印队的 id:room:<16 位十六进制>
 arc bridge team open --design docs/x.md@<40 位 commit> --with codex@review
 arc bridge post room:00000000000000ab "接口联调完了,请核一下"            # 队的 id 就是它的频道
 arc bridge team agree room:00000000000000ab --said "agreed: ship it as written"
-arc bridge team list --doc docs/x.md                                   # 讨论过这份设计的队和它们的结论
+arc bridge team list --doc docs/x.md                                   # 讨论过这份设计的队,和它们的结论
 ```
 
-双方一开始就在队的频道里。每方各同意一次、用自己的话;两方都同意了队才关。
+两边从一开始就在队的频道里。每边用自己的话同意一次;两边都同意了,队才关。
 
-**互相读 PR。** 你在这个仓上有一支开着的 milestone 队时,从你会话里跑的每次 `arc submit` 都会在队的频道里请对方读这个 PR、说出立场 ——
-同意,或逐条要改的点。submit 单独一行说明:
+**互相看 PR。** 你在这个仓上有一支开着的 milestone 队时,你会话里每跑一次 `arc submit`,都会在队的频道里请对方看这个 PR、表个态 ——
+同意,或者逐条说要改什么。submit 的输出里单独有一行:
 
 ```
 team: asked codex@review in room:00000000000000ab to read this PR and say where they stand
 ```
 
-这一道在评审服务之前,永远不替代评审服务的 LGTM。对方得是一个顶层会话(在线的,或用 `arc bridge launch` 新起的);另一个会话里的子 agent 不能当一方。
+这一步在评审服务之前,也永远不能代替评审服务的 LGTM。对方必须是一个独立的会话(在线的,或用 `arc bridge launch` 新起的);别的会话里的子 agent 不能当队友。
 
 ### 12.7 监督会话(可选,Claude Code)
 
-另一个 Claude 会话判断作者会话的每次停下 —— 活还在往前走吗、卡住的问题它能不能自己定 —— 由 `.arc/config.toml` 的 `[supervisor]` 段配置。
-`arc bridge supervisor ask` 在一份 transcript 上空跑它:它会看到什么、会怎么判。
+可以让另一个 Claude 会话盯着干活的会话:每次它停下,监督会话判断活还在不在往前走、卡住的问题自己能不能定。在 `.arc/config.toml` 的 `[supervisor]` 段里配置。
+`arc bridge supervisor ask` 拿一份 transcript 试跑一遍,不真动手:看它会看到什么、会怎么判。
 
 ---
 
 ## 13. 流水线上的评审
 
-代码评审由合并机上的评审服务(`arc-review`)统一调度。你用 `arc submit` 交上去,评审员提 finding,作者逐条回答并推新版本再评;
-路由点名的评审员都对一个 head 说了 LGTM,评审服务就给这个确切的 commit 发一张 **pass**。合并机只收 pass 等于 PR 当前 head 的改动(§14)。
+流水线上的代码评审由合并机上的评审服务(`arc-review`)负责,不在你本机跑。过程是:
+
+1. 你跑 `arc submit`,它推分支、把 PR 放进评审队列;
+2. 评审员 agent 读 PR,提 finding;
+3. 你逐条回答、推修复,新的 head 再评一遍;
+4. 路由点名的评审员都对某个 head 说了 LGTM,评审服务就在这个 commit 上写一个 **pass**,也就是 git 引用 `refs/arc/pass/<pr>`;
+5. 合并机只收 pass 正好指着当前 head 的 PR(§14)。再推一次,就要重新拿 LGTM。
+
 英文页:[Review on the pipeline](user-guide/pipeline-review.md)。
 
 ### 13.1 交给评审:`arc submit`
 
-`arc submit` 开一个新 PR;`arc submit --pr <N>` 把当前 HEAD 作为已有 PR 的新版本推上去。
+`arc submit` 开一个新 PR;`arc submit --pr <N>` 把当前 HEAD 作为 PR #N 的新版本交上去。它依次做三件事:
 
-- **先跑检查。** 推之前在本机 HEAD 上把 `presubmit.toml` 的检查全部跑一遍。没过的不挡:分支照推,每条检查的结果作为 git note 推在旁边
-  (PR 页和看板上看得到),PR 照样进评审,命令列出没过的检查后以 11 退出。
-- **安全地推、入队。** 不强推(不覆盖远端有而本地 HEAD 没有的 commit),开或复用 PR,把评审请求排进队,然后退出:
+1. **跑检查。** 推之前,在本机 HEAD 上把 `presubmit.toml` 里的检查全部跑一遍。没过的也不拦:分支照推,每条检查的结果作为 git note 一起推上去
+   (PR 页和看板上都看得到),PR 照样进评审;最后列出没过的检查,以 11 退出。
+2. **推分支。** 用分支自己的名字推,不会覆盖远端有、而本地 HEAD 没有的 commit。
+3. **开 PR、入队。** 开一个 PR(或复用已开的),把它放进评审队列,然后退出:
 
 ```
 [A.R.C.] submit: PR #514 · handed to review (<sha>)
@@ -1269,17 +1277,19 @@ team: asked codex@review in room:00000000000000ab to read this PR and say where 
          branch <branch> — the review service asks the reviewers the tenant's routes name; their LGTM grants the pass and the merger lands it. A new push is a new version and is reviewed again
 ```
 
-- **接到 bridge 的会话。** 在接了 arc-bridge 的 agent 会话里跑 `arc submit`,会把这个 PR 登记到当前会话(提示
-  `bridge: verdicts for this PR go to <名字> in channel pr:…`),之后的评审结论直接送回这个会话。
-- `--branch <名字>`:声明这次是哪个分支,HEAD 不在它上面就拒绝。有别的东西可能挪动 HEAD 时(同一个工作树里的另一个 agent、前面一个长命令)用它。
-- `--after <N>`:等 PR #N 落地之后才落这个;可以写多次。
+另外:
+
+- **在接了 arc-bridge 的 agent 会话里跑**,它还会把这个 PR 登记到当前会话(提示 `bridge: verdicts for this PR go to <名字> in channel pr:…`),之后的评审结果直接送回这个会话。
+- `--branch <名字>`:声明这次交的是哪个分支,HEAD 不在它上面就拒绝。可能有别的东西挪动 HEAD 时用它(同一个工作树里的另一个 agent、前面一个跑很久的命令)。
+- `--after <N>`:等 PR #N 落地之后才落这个;要等好几个就写好几次。
+- PR 标题里写了 `b/<n>`,这次提交就记到看板的那条 issue 上;那条 issue 不存在时以 8 退出。
 
 ### 13.2 谁来评审:路由
 
-评审员由合并机 `~/.arc/machine.toml` 里这个租户的 `[[tenant.review.route]]` 规则指派(§1.8):
+一个仓的 PR 由谁评审,看合并机 `~/.arc/machine.toml` 里这个仓的 `[[tenant.review.route]]` 规则(§1.8):
 
 ```toml machine.toml#tenant
-[[tenant.review.route]]          # 打了 arc-bypass 标签的 PR:dummy 评审员放行
+[[tenant.review.route]]          # 打了 arc-bypass 标签的 PR:交给 dummy 评审员放行
 label    = "arc-bypass"
 reviewer = "dummy"
 name     = "dummy"
@@ -1289,18 +1299,18 @@ reviewer = "react"
 name     = "react"
 ```
 
-- **`reviewer`** 取 `dummy`(对一切说 LGTM)、`basic` 或 `react`。真评审员用合并机上租户 clone 自己的 `.arc/config.toml` 的 `[roles]`;`name` 是回复署的名。
-- **一条规则都没有,就没人评审,什么都落不了地。** 不需要人或 AI 评审的单人仓,把所有 PR 路由给 `dummy`。
-- **`[tenant.review] gate`**:`all_lgtm`(默认,路由点名的每位评审员都对当前 head 说 LGTM)或 `one_lgtm`(任意一位)。
-- **`[tenant.review] max_rounds`**(默认 5):一位评审员最多回几轮不给 LGTM;用完就放行这个 head,不再评。
-- **`arc submit --bypass-review`** 给 PR 打上 `arc-bypass` 标签,命中上面那条路由由 `dummy` 放行;它仍然走一遍评审服务,留下记录。
+- **`reviewer`** 可以是 `dummy`(对什么都说 LGTM)、`basic` 或 `react`。真评审员用的是合并机上这个仓的 clone 里 `.arc/config.toml` 的 `[roles]`;`name` 是回复时署的名字。
+- **一条路由都没有,就没人评审,什么都落不了地。** 不需要别人评审的单人仓,把所有 PR 都路由给 `dummy`。
+- **`[tenant.review] gate`** 决定要几个 LGTM 才写 pass:`all_lgtm`(默认,路由点名的每位评审员都要对当前 head 说 LGTM)或 `one_lgtm`(任意一位)。
+- **`[tenant.review] max_rounds`**(默认 5):一位评审员最多连着几轮不给 LGTM;用完就放行这个 head,不再评。
+- **`arc submit --bypass-review`** 给 PR 打上 `arc-bypass` 标签,命中上面第一条路由,由 `dummy` 放行。它照样经过评审服务,照样留记录。
 
 ### 13.3 收到 finding,逐条回答
 
-每一轮评审的报告都存在 git 引用 `refs/arc/reports/<cl>` 上。会话接了 arc-bridge 的话,带 finding 的报告会作为消息进
-`pr:<owner>/<name>#<n>` 频道,在会话停下时塞进上下文(或叫醒空闲的会话),并附一条填好的 `arc submit --pr <N> --fix-answers -` 命令。
+每一轮评审的报告都写在 git 引用 `refs/arc/reports/<cl>` 上。会话接了 arc-bridge 的话,带 finding 的报告会作为一条消息进 `pr:<owner>/<name>#<n>` 频道,
+在会话停下时塞给它(会话闲着就叫醒它),消息里附一条待填的 `arc submit --pr <N> --fix-answers -` 命令。
 
-作者对每条 finding 给一个回答:`fixed`(说怎么改的)或 `wontfix`(说为什么留着)。先推修好的代码,成为新的 head,再从标准输入交回答:
+每条 finding 都要回答:`fixed`(说改了什么)或 `wontfix`(说为什么不改)。先把修复推上去成为新的 head,再从标准输入交回答:
 
 ```bash
 arc submit --pr 514 --fix-answers - <<'EOF'
@@ -1311,62 +1321,74 @@ arc submit --pr 514 --fix-answers - <<'EOF'
 EOF
 ```
 
-- 回答和新 head 作为一次更新一起交;任何一条格式或编号不对,整批拒绝,什么都不发。`--fix-answers` 必须和 `--pr <N>` 一起用。
-- 也可以先在本机 `arc local-review`、`arc fix`(§4)修好提交,再 `arc submit --pr <N>` 推新版本。
-- 评审服务收到新 head 会重新审:关掉已解决的 finding、重开没修好的、提新的。每次推送都是一个新版本,要重新评。
+- 回答和新 head 作为一次更新一起交,按数组的顺序;有一条格式或编号不对,整批都拒,什么都不发。`--fix-answers` 必须和 `--pr <N>` 一起用。
+- 也可以先在本机跑 `arc local-review`、`arc fix`(§4)修好、提交,再 `arc submit --pr <N>` 交新版本。
+- 评审服务拿到新 head 会重新评:关掉已经解决的 finding、重开没修好的、提新的。每推一次都是新版本,都要重新评。
 
-### 13.4 pass、hold 和放弃
+### 13.4 pass、挡住和放弃
 
 - **pass(`refs/arc/pass/<pr>`)。** 路由点名的评审员都对当前 head 说了 LGTM,评审服务就在这个 commit 上写 `refs/arc/pass/<pr>`。
-  合并机只收 pass 等于 PR 当前 head 的改动。
-- **不想让它落地:打 `arc-hold` 标签。** 合并机跳过带 `arc-hold` 的 PR,有 pass 也不收;摘掉标签就恢复。
-- **放弃一个 PR:`arc submit --abandon "<原因>"`。** 不要在 GitHub 网页上手动关。在那个分支上单独跑(不和别的参数一起用):关闭的意图和原因
-  原话记进评审队列,然后由服务关掉 GitHub 上的 PR。
+  合并机只收 pass 等于当前 head 的 PR。
+- **暂时不想落地:打 `arc-hold` 标签。** 带这个标签的 PR,有 pass 合并机也跳过;摘掉标签就恢复(§18.4)。
+- **不要这个 PR 了:`arc submit --abandon "<原因>"`。** 在那个分支上单独跑(不带别的参数)。它把关闭和你的原因原话记进评审队列,再由服务关掉 GitHub 上的 PR;
+  不推任何东西,也不开 PR。不要在 GitHub 上手动关。
 
 ### 13.5 在看板上评审
 
-看板(arc-web)的「Review」页分三栏:等你处理的(以及在等什么)、agent 正在处理的、历史。
+看板(arc-web)的 Review 页分三块:等你处理的(以及为什么在等)、agent 正在处理的、历史。
 
-- **改动页。** 标题、状态、作者、改动大小、卡在哪、每位评审员的意见和 finding、head 的文件列表、版本历史、风险和爆炸半径、head 的 presubmit 结果。
-  按钮:*Open on GitHub*、*Fix again*(打回给作者再修)、*LGTM*。
-- **文件和评论。** 同一屏看某个版本的代码和它的 finding,任意两个版本之间看增量 diff。选中代码行、右键加的评论,成为这一轮你的 finding。
-  看完逐条裁定已有的 finding(关掉或打回),点 *Send review* 一次发出整轮意见。看板只做评审;落地由合并机做。
+- **改动页。** 标题、状态、作者、改动大小、卡在哪、每位评审员的意见和 finding、head 的文件、版本历史、风险和影响范围、head 的 presubmit 结果。
+  按钮有三个:*Open on GitHub*、*Fix again*(打回给作者再修)、*LGTM*。
+- **文件和评论。** 在同一屏看某个版本的代码和它的 finding,任意两个版本之间都能看 diff。选中几行代码,右键加评论,评论就成了你这一轮的 finding。
+  已有的 finding 逐条裁定(关掉或打回),最后点 *Send review* 把整轮意见一次发出去。这个页面只管评审,不能落地;落地只由合并机做。
 
 ---
 
 ## 14. 合并:PR 怎么落地
 
-落地全部由合并机(`arc-server`)做,不手动合并。它每次从队列里取一个 pass 等于 head 的 PR,把它合到目标分支最新的 commit 上,跑 `merge.yml`;
-合并没有带来新失败,就落地。英文页:[Merge](user-guide/merge-gate.md)(含 `merge.yml` 能写什么的完整规则)。
+流水线上没人手动合并,都由合并机(`arc-server`)来做,一次一个 PR:取一个 pass 等于 head 的 PR,把它合到目标分支最新的 commit 上,合并前后各跑一遍你的 `merge.yml`;
+合并没有带来新的失败,就落地。英文页:[Merge](user-guide/merge-gate.md),`merge.yml` 能写什么的完整规则在那里。
 
-### 14.1 哪些 PR 能进
+### 14.1 哪些 PR 能进队
 
-- **pass 要对得上。** 只收 `refs/arc/pass/<pr>` 指向的 commit 等于 PR 当前 head 的改动。任何新推送都让旧 pass 作废,要评审员重新 LGTM。
+- **pass 要对得上。** 只收 `refs/arc/pass/<pr>` 指向的 commit 正好是当前 head 的 PR。一推新的,旧 pass 就作废,要评审员重新 LGTM。
 - **`arc-hold`。** 带这个标签的 PR,有 pass 也跳过。
-- **`--after <N>`。** `arc submit --after <N>` 交的 PR 等 PR #N 落地后才进队。#N 被关掉、落地的不是这个分支带的那个版本,这个 PR 就不跑门禁,
-  并告诉作者原因。
+- **`--after <N>`。** 用 `arc submit --after <N>` 交的 PR,要等 #N 落地才进队;#N 还开着就一直等,等多久都行。#N 被关掉,或者落地的不是这个分支带着的那个版本,
+  这个 PR 就不跑了,并告诉你原因。
 
-### 14.2 怎么判:base 对比合并后
+### 14.2 怎么判:合并前后对比
 
-为了不让目标分支上本来就有的偶发失败挡住所有人,合并机对比两遍:
+目标分支上本来就红的地方不该挡住所有人,所以合并机跑两遍、对比着看:
 
-1. **base 跑一遍。** 取目标分支最新的 commit,读 base 里的 `.github/workflows/merge.yml`,完整跑一遍门禁,记下 base 上已经失败的。
-2. **合并后跑一遍。** 把 PR 合进 base,在合并后的树上跑同一套门禁。
-3. **只看新失败。** 第二遍没有出现第一遍没有的失败,就通过、落地。
-4. **偶发重跑。** 默认(`[tenant] gate.rerun = "once"`)出现新失败时,在同一个合并 commit 上再跑一次,两次都失败才打回。
+1. **在 base 上跑一遍。** base 就是目标分支最新的 commit。从 base 读 `merge.yml` 和 `.arc/gate.toml`,跑一遍门禁,记下 base 上已经失败的(同一个 base 跑过就直接用上次的结果)。
+2. **合并后再跑一遍。** 把 PR 合到 base 上,在合并后的树上再跑一遍。
+3. **只看新失败。** 第二遍没有出现第一遍没有的失败,就落地。
+4. **偶发失败再跑一次。** 默认(`[tenant.gate] rerun = "once"`)出现新失败时,在同一个 commit 上再跑一次,确认不是偶发才打回。
 
-**合并机永远从 base 读 `merge.yml`,不读 PR 里改过的那份。** PR 改不了自己要过的门禁;改 `merge.yml` 的 PR 按旧规则过,新规则从下一个 PR 起生效。
+被打回的 head 不会在同一个 base 上再测:要么推新的,要么等目标分支往前走。确定是误报(机器太忙、测试连续两次偶发),也没有命令让同一个 head 在同一个 base 上重测:
+用 `arc submit --pr <N>` 交一个新 head,重新评审,拿到 LGTM 后再排队。
+
+**哪份门禁判哪棵树。** 每棵树用它自己的门禁:base 用 base 的,合并后的树用它自己带的。门禁的定义包括 `merge.yml`、`.arc/gate.toml`,以及 base 上 `.arc/gate.toml` 列出的每个文件。
+
+- **PR 没动门禁定义** → 两遍都用 base 的门禁。
+- **PR 只在 `merge.yml` 最后一步之后追加步骤,别的门禁文件一个字节都没改** → 合并后的树跑 PR 自己的 `merge.yml`;绿了直接落地,不用人批,其他结果要人批。
+- **别的改法**(改、删、挪了某一步,改了列出的脚本,加或删了文件) → 要有人批准这个 head,才用 PR 自己的门禁跑。
+
+要人批时,合并机在 PR 标题里第一个点到的 issue 上(`… (b/123)`)开一个问题,写明 PR 和它的 head,两个选项:`approve` 和 `decline`,只有 `approve` 算批。
+没批之前,这一轮以 `cannot_say`(判不了)结束并点名这个问题;那条 issue 上一有裁定,PR 就回到队列。推了新的就是新 head、新问题,之前的批准不带过去,也不会往你的 commit 里写任何东西。
+PR 标题没点 issue,或者目标分支在它分出去之后也改过门禁,就不会问:在标题里写上 issue,或者 rebase。
 
 ### 14.3 `merge.yml` 能写什么
 
-`merge.yml` 沿用 GitHub Actions 的文件形状,但由合并机在本机当 shell 步骤跑,不经过 GitHub Actions,所以只认一个子集:
+`merge.yml` 用 GitHub Actions 的格式,但不经过 GitHub,由合并机在自己的 clone 里当 shell 跑,所以只认其中一部分:
 
-- 触发器只写 `on: workflow_dispatch: {}`。
-- 每一步写成 `run:` 命令。合并机不跑第三方 `uses:` action,不展开 `${{ … }}`。
+- 触发器只写 `on: workflow_dispatch: {}`,GitHub 永远不会自己跑它。
+- 所有 job 按文件里写的顺序一个接一个跑;`needs:`、`runs-on:`、`on:` 不读。
+- 每一步写成 `run:` 命令,用 `sh` 跑(不是 `bash`),前面加了 `set -e`,但没有 `pipefail`。合并机不跑第三方 `uses:` action,也不展开 `${{ … }}`。
 - `if:` 只能用 `runner.os`、`runner.arch`、`env`、`matrix`。
-- 有合并机跑不了的步骤时,每个 PR 在这一步都得到 `cannot_say`,并点名是哪一步。
+- 有合并机跑不了的步骤,每个 PR 都在这一步得到 `cannot_say`,并点名是哪一步。
 
-改完门禁,在本机验证某个 job 怎么解析:
+改完门禁,先在本机看看某个 job 会怎么跑:
 
 ```bash
 arc workflow .github/workflows/merge.yml --job <job> --list
@@ -1374,77 +1396,83 @@ arc workflow .github/workflows/merge.yml --job <job> --list
 
 ### 14.4 架构规则:门禁里的 `arc archcheck`
 
-在 `merge.yml` 里加一步 `arc archcheck --base <合并基>`,按仓库里的架构规则(`.arc/archcheck.toml`)和豁免表(`.arc/arch_waivers.txt`)
-检查合并后的树。违反任何一条规则、豁免只增不减、或配置相对 `--base` 放松了,它就以 7 退出,合并机把它当新失败打回这个 PR。
+在 `merge.yml` 里加一步 `arc archcheck --base <合并基>`,它按仓库里写好的架构规则(`.arc/archcheck.toml`)和豁免表(`.arc/arch_waivers.txt`)检查合并后的树。
+违反任何一条规则、豁免只增不减、或者配置比 `--base` 放松了,它就以 7 退出,合并机把它当成新失败,打回这个 PR。
 
 ### 14.5 结果和通知
 
 - **报告。** 每一轮门禁的完整日志写在 `refs/arc/reports/<cl>`。
-- **打回。** 开了 arc-bridge 的话,结果进 `pr:<owner>/<name>#<n>` 频道:打回会打断作者的会话,带上失败测试的原始输出。
-- **落地。** 发一条 `PR landed as <sha>`,附两样:这个 PR 的结局(落地了、丢弃了、或改动已经在主干里),以及作者机器上还检出着这个分支的
-  worktree 和它们的状态(干不干净、有没有进程在用)。合并机从不清理或改动你的 worktree,删不删你定。
-- **全员广播。** 每个落到 main 的改动在 `landings` 频道加一行(§12.1)。
-- **合并队列页。** 看板的「Merge」页显示排队的 PR、正在跑的一轮、历史尝试,以及门禁每一步的实时日志。
+- **打回。** 开了 arc-bridge 的话,结果进 `pr:<owner>/<name>#<n>` 频道:打回会打断作者的会话,附上失败测试的原始输出。
+- **落地。** 发一条 `PR landed as <sha>`,同时说明这个 PR 怎么结束的(落地了、丢弃了、或者改动早已在主干里),以及作者机器上还检出着这个分支的 worktree
+  和它们的状态(干不干净、有没有人在用)。合并机从不动你的 worktree,删不删你定。
+- **大家都能看到。** 每个落到 main 的改动在 `landings` 频道加一行(§12.1)。
+- **Merge 页。** 看板的 Merge 页显示排队的 PR、正在跑的这一轮、历次尝试,以及门禁每一步的实时日志。
 
-放弃一个 PR 用 `arc submit --abandon "<原因>"`(§13.4),不要在 GitHub 上手动关。
+不要这个 PR 了,用 `arc submit --abandon "<原因>"`(§13.4),不要在 GitHub 上手动关。
 
 ---
 
 ## 15. 发布与部署
 
-流水线的最后一段:每晚发预发布版本、按需部署、把某个夜版晋升成正式版。英文页:[Releases and deploys](user-guide/release.md)(含 `delivery.toml` 参考)。
+流水线的最后一段:每晚发一个预发布版本、需要时部署、把某个夜版升成正式版。英文页:[Releases and deploys](user-guide/release.md)(含 `delivery.toml` 的完整参考)。
+
+| 你要 | 怎么做 |
+|---|---|
+| 现在部署 | 看板 Release 页点 *Deploy*,或在部署机上跑 `arc deploy`(§15.2) |
+| 每晚出一个版本 | 配好 `arc-releaser`,它每晚把发布分支最新的 commit 发成 GitHub prerelease(§15.1) |
+| 把夜版升成正式版 | `arc-releaser promote --tenant <owner/name> nightly-YYYYMMDD`(§15.4) |
+| 看进度 | 看板的 Release 页 |
 
 ### 15.1 每晚发布
 
 - **配置。** `arc-releaser` 按合并机 `~/.arc/machine.toml` 里每个仓的 `[tenant.release]` 运行,每晚看一次发布分支(`[tenant.release] branch`,默认 `main`)
   最新的 commit。
-- **不重复。** 这个 commit 已经发布过就跳过。
-- **流程。** 按顺序跑 `.github/workflows/nightly-release.yml` 的步骤;全部通过后打一个 `nightly-<UTC 日期>` 标签(如 `nightly-20261124`)并推上去;
-  `publish` 开着(默认开)时,在 GitHub 上建一个 prerelease,上传 workflow 声明的产物。
+- **不重复发。** 这个 commit 已经发过就跳过。
+- **怎么发。** 按顺序跑 `.github/workflows/nightly-release.yml` 的步骤;全部通过,就打一个 `nightly-<UTC 日期>` 标签(如 `nightly-20261124`)推上去;
+  `publish` 开着(默认开)时,再在 GitHub 上建一个 prerelease,附上 `delivery.toml` 给这条 lane 声明的产物。
 
 ### 15.2 按需部署
 
-**arc 不会在落地后自动部署**,合并机跑门禁也不等部署、不给部署让路。什么时候部署由你定;想每次落地都部署,在你自己的落地后 job 里调 `arc deploy`。
+**arc 不会在落地后自己部署**,合并机跑门禁也不等部署、不给部署让路。什么时候部署由你定;想每次落地都部署,就在你自己的落地后 job 里调 `arc deploy`。
 
-两种触发方式,做的是同一件事:针对 origin/main 最新的 commit,在一个独立的 systemd scope 里起一个 `arc-deployer`,跑 `.arc/config.toml` 的
-`[release]` 指定的 job。
+两种方式做的是同一件事:马上起一个 `arc-deployer`,在它自己的 systemd scope 里,针对 origin/main 最新的 commit,跑 `.arc/config.toml` 里 `[release]` 指定的 job。
 
-- **看板。** 点「Release」页上的 *Deploy*。
-- **命令行。** 在部署机上那个仓的 clone 里跑 `arc deploy`。它记下是谁要的,打印跑这次部署的 systemd 单元和日志文件,然后退出。
+- **看板。** 在 Release 页点 *Deploy*。
+- **命令行。** 在部署机上这个仓的 clone 里跑 `arc deploy`。它记下是谁要部署的,打印这次部署所在的 systemd 单元和日志文件,然后退出。
 
-起之前先查四样,有一样不满足就拒绝并说明原因:`[release]` 写明了 job;有一个 `[builds.*]` 跑这个 job;这个 job 声明了 `concurrency:` 组;机器上有 `systemd-run`。
+起之前先查四样,有一样不满足就不起,并说明原因:`[release]` 写明了 job;有且只有一个 `[builds.*]` 跑这个 job;这个 job 声明了 `concurrency:` 组;机器上有 `systemd-run`。
 
 ### 15.3 记录和通知
 
-- **部署记录。** 每次部署在发布历史里留一条:哪个 commit、谁发起的、每一步的状态和输出、最后的结局。
-- **通知。** 部署结束(成功或失败)时,给发起人和这次部署新带上线的每个 PR 的作者发 arc-bridge 私信,并在 `release:<owner>/<name>` 频道加一条上线摘要。
-- **发布页。** 看板的「Release」页显示 `.arc/delivery.toml` 声明的发布通道(lane)和部署目标(target)、正在跑的部署走到哪一步、每晚发布的状态。
+- **部署记录。** 每次部署在发布记录里留一条:哪个 commit、谁要的、每一步的结果和输出、最后怎么结束的。
+- **通知。** 部署结束(成功或失败)时,给要部署的人和这次新带上线的每个 PR 的作者发 arc-bridge 私信,并在 `release:<owner>/<name>` 频道加一条上线摘要。
+- **Release 页。** 看板的 Release 页显示 `.arc/delivery.toml` 声明的发布通道(lane)和部署目标(target)、正在跑的部署走到哪一步、每晚发布的情况。
 
-### 15.4 晋升正式版
+### 15.4 升成正式版
 
-某个夜版验证过、要正式发布时,把它晋升成带版本号的正式版(`v<X.Y.Z>`):
+某个夜版验证过了、要正式发布,就把它升成带版本号的正式版(`v<X.Y.Z>`):
 
 ```bash
 arc-releaser promote --tenant <owner/name> nightly-YYYYMMDD
 ```
 
-- **发到哪。** 原样发布这个已经发布过的夜版,发到这个仓 `delivery.toml` 里手动二进制 target 指定的仓库,附上那棵树里的
-  `packaging/install/install.sh` 和全部产物的 `SHA256SUMS`。它不重新构建。
-- **产物要齐。** 晋升前核对 `.arc/delivery.toml` 每条 lane 声明的产物都在;缺任何一个就拒绝发布。
+- **发到哪。** 把这个已经发布的夜版原样再发一次,发到这棵树的 `delivery.toml` 里手动二进制 target 指定的仓库,附上那棵树里的
+  `packaging/install/install.sh` 和全部产物的 `SHA256SUMS`。不重新构建。
+- **产物要齐。** 发之前核对 `.arc/delivery.toml` 每条 lane 声明的产物都在;缺一个就拒绝。
 
 ---
 
 ## 16. 故障排查
 
-| 症状 | 原因和解法 |
+| 看到什么 | 原因和解法 |
 |---|---|
-| `missing credential: env var X is not set` | 所选 provider 要的 key 不在环境变量里。这是配置缺失的正常提示,不是程序 bug。在终端里 `export X=…`(或 `source .env`)再跑。 |
-| `.arc/config.toml has a [providers] section` | 旧的配置格式。provider 现在全部放在 `~/.tars/config.toml`。删掉 `.arc/config.toml` 里整段 `[providers]`,`[roles]` 只写 tars 里的 provider id(或 `arc init --force` 重新生成)。 |
-| `No provider for role "critic_l5"` | `.arc/config.toml` 的 `[roles]` 没写 `critic_l5`,也没有兜底的 `default`。在 `[roles]` 里加 `critic_l5 = "<tars provider id>"`。 |
-| Fixer 跑了错的检查,或自己猜怎么构建 | `arc fix` 从仓库根的 `presubmit.toml` 取检查命令;没有这个文件或内容过时,Fixer 只能猜。提交一份写着真实构建和测试命令的 `presubmit.toml`(§1.5)。 |
-| `unrecognized subcommand 'auto'`(或 `'verify'`、`'refactor'`) | 这几个子命令已经移除。改用 `arc local-review`,再 `arc fix`:Fixer 每次修完会自动重评,直到 LGTM 或用完 `[review] max_rounds`。 |
-| `arc fix` 拒绝在脏工作区跑 | 为了每次修复的 commit 边界清楚、能安全回退,工作区必须和 HEAD 一致:没有未提交的已跟踪改动,也没有没被忽略的未跟踪文件。先 `git commit` 或 `git stash`。 |
-| finding 质量低、泛泛而谈 | 担任 critic 的模型不够强,会漏报或只给浅层噪音。弱 critic 的零告警不代表代码没问题。在 `~/.tars/config.toml` 和 `[roles]` 里给 critic 换一个推理更强的 provider。 |
+| `missing credential: env var X is not set` | 你选的 provider 要的 key 不在环境变量里。这是配置没配全,不是 bug。在终端里 `export X=…`(或 `source .env`)再跑。 |
+| `.arc/config.toml has a [providers] section` | 旧的配置写法。provider 现在全放在 `~/.tars/config.toml`。删掉 `.arc/config.toml` 里整段 `[providers]`,`[roles]` 只写 tars 里的 provider id(或者 `arc init --force` 重新生成)。 |
+| `No provider for role "critic_l5"` | `.arc/config.toml` 的 `[roles]` 里没写 `critic_l5`,也没有兜底的 `default`。在 `[roles]` 里加一行 `critic_l5 = "<tars provider id>"`。 |
+| Fixer 跑了不对的检查,或者自己猜怎么构建 | `arc fix` 从仓库根的 `presubmit.toml` 取检查命令;没有这个文件或内容过时,Fixer 只能猜。提交一份写着真实构建和测试命令的 `presubmit.toml`(§1.5)。 |
+| `unrecognized subcommand 'auto'`(或 `'verify'`、`'refactor'`) | 这几个子命令已经删掉了。改用 `arc local-review`,再 `arc fix`:Fixer 每修完一次会自动重评,直到 LGTM 或用完 `[review] max_rounds`。 |
+| `arc fix` 不肯在脏工作区跑 | 为了每次修复的 commit 边界清楚、能放心回退,工作区必须和 HEAD 一致:没有未提交的已跟踪改动,也没有没被忽略的未跟踪文件。先 `git commit` 或 `git stash`。 |
+| finding 质量低、说得很泛 | 当 critic 的模型不够强,会漏报,或者只给些表面的噪音。弱 critic 报零个问题,不代表代码没问题。在 `~/.tars/config.toml` 和 `[roles]` 里给 critic 换一个推理更强的 provider。 |
 
 ## 17. 代码规范规则(示例,默认关闭)
 
@@ -1583,27 +1611,28 @@ if post_fix_run_id:
 
 ## 18. 在看板上干活
 
-看板(`arc-web`)是人看、人拍板的地方;干活的是 agent。计划上板变成 milestone 和 issue,agent 按 milestone 一条条做,要人定的事在看板上点一下就定了。每个 PR 的评审、合并、发布也都在同一处看。
+看板(`arc-web`)是人看进度、做决定的地方,活由 agent 干。计划放上看板,变成 milestone 和 issue;agent 按 milestone 一条条做;要人定的事,在看板上点一下就定了。
+每个 PR 的评审、合并、发布也都在这里看。
 
-看板地址就是 `~/.arc/client.toml` 里那一行(在流水线机器上 `arc-server tenant url web` 打印它)。浏览器打开,选仓库。
+看板地址就是 `~/.arc/client.toml` 里的那一行(在流水线机器上跑 `arc-server tenant url web` 也能打印出来)。用浏览器打开,选仓库。
 
 ### 18.1 各页面
 
 | 页面 | 看什么 | 在这里做什么 |
 |---|---|---|
-| **Projects** | 所有 milestone(进行中、闲着、做完),和等你回答的问题 | 回答问题:每个选项一个按钮,或者自己写 |
-| 某个 milestone | 它的 issue,按状态或按树;卡住的 issue 显示卡在哪个问题上 | 看;点进 issue |
-| **Issues** | 整个看板,可筛选、分组,右边是打开的 issue | 新建 issue;评论(写了 `@agent` 的会转给它) |
-| Report | 按优先级、类型、负责人或 milestone 看:开着的、过期的、快到期的、放了多久、每周进出 | 选维度和 milestone |
-| **Review** | 等你的、agent 在处理的、历史;每条显示谁拿着、改了多少、等了多久、几轮 | 点进一个改动 |
-| 一个改动(PR) | 概览、文件、动态、为什么在等、每个评审员的 finding | 等人定的时候点 **LGTM** 或 **再修一次**;把 finding 答成「已修」或「不修」 |
+| **Projects** | 所有 milestone(进行中、闲着的、做完的),和等你回答的问题 | 回答问题:每个选项一个按钮,也可以自己写 |
+| 某个 milestone | 它的 issue,按状态或按树看;卡住的 issue 会显示卡在哪个问题上 | 看;点进 issue |
+| **Issues** | 整个看板,可以筛选、分组,右边是打开的 issue | 新建 issue;评论(写了 `@agent` 的评论会转给它) |
+| Report | 按优先级、类型、负责人或 milestone 看:开着的、过期的、快到期的、放了多久、这周进出多少 | 选按什么分、看哪个 milestone |
+| **Review** | 等你的、agent 正在处理的、历史;每条显示谁在处理、改了多少、等了多久、评了几轮 | 点进一个改动 |
+| 一个改动(PR) | 概览、文件、动态、为什么在等、每位评审员的 finding | 等人定的时候点 **LGTM** 或 **Fix again**;把 finding 答成「已修」或「不修」 |
 | **Merge** | 合并队列(谁在等、什么时候轮到、谁被挡着),每个改动的每次尝试,失败标红 | 看 |
-| **Release** | nightly、版本、部署目标、上次发布后落地了什么 | 这台机器能部署时点 **Deploy** |
-| Rot、Usage | 结构腐化趋势;agent 用量和花费 | 筛选;导出 CSV |
+| **Release** | nightly、版本、部署目标、上次发布以来落地了什么 | 这台机器能部署时点 **Deploy** |
+| Rot、Usage | 结构腐烂的趋势;agent 的用量和花费 | 筛选;导出 CSV |
 
-页面自己会刷新,不用手动刷新也能看到改动落地。
+页面会自己更新,不用刷新就能看到改动落地。
 
-问一件事走到哪了,用进度地址:给一个 issue、PR 号或分支,它按每个 PR 回一个阶段(评审中、等作者改、排队、被挡、门禁红、已落地……)和下一步该看哪:
+想知道一件事走到哪了,问进度地址:给它一个 issue、PR 号或分支,它按每个 PR 回一个阶段(评审中、等作者改、排队中、被挡住、门禁红了、已落地……),再告诉你下一步该看哪:
 
 ```bash
 curl "$(sed -n 's/^web *= *"\(.*\)"/\1/p' ~/.arc/client.toml)/api/r/<owner>/<name>/progress/b/<n>"
@@ -1611,55 +1640,59 @@ curl "$(sed -n 's/^web *= *"\(.*\)"/\1/p' ~/.arc/client.toml)/api/r/<owner>/<nam
 
 ### 18.2 从计划到落地
 
-1. **计划写成文档。** 一份 Markdown roadmap:按顺序的 milestone,每个都小,每个都写清做完的判据。
-2. **上板。** `arc issues candidates --doc roadmap.md` 列出文档的每一块和它的编号;按编号写一份提案,`arc issues plan proposal.json --doc roadmap.md` 显示上板会做什么,文档里没说的、漏掉的都会被拒;`arc issues apply proposal.json --doc roadmap.md --role reporter` 上板,要么全上,要么一条不写。单开一条:`arc issues open --kind task --parent b/<milestone> "<标题>"`。
-3. **开 loop。** 在 agent 的会话里:`arc issues loop start b/<milestone> --until drained --role assignee`(或 `--until fixed:<n>`)。会话每停一次,loop 就派下一条 issue。`arc issues loop stop b/<milestone>` 结束;`arc issues show b/<milestone>` 看进度。
-4. **agent 做每条 issue。** 开分支、写、提交,PR 标题带上编号(`b/<n>: …`),这次提交就记到那条 issue 上。PR 落地以后才标 `fixed`。
-5. **要人定,就在看板上问。** `arc issues block b/<n> --said "<问题,带背景>" --option "A: …" --option "B: …"` 开一个问题(`q/<n>`),它出现在 Projects 上,每个选项一个按钮;点一下就答了,答案回到 agent 的会话。只有人能拍板:`arc issues rule` 不接受 agent。
-6. **跟 PR。** Review 上的 PR 页;Merge 上的队列。PR 落地后,落地信会发回提交它的会话。
-7. **清理。** Report 看哪些放久了、过期了。结束一条 issue 用 `fixed`、`wont-fix`(写理由)或 `duplicate --of b/<n>`;没有单纯的「关闭」。
+1. **把计划写成文档。** 一份 Markdown roadmap:milestone 按先后排好,每个都小,每个都写清怎样算做完。
+2. **放上看板。** `arc issues candidates --doc roadmap.md` 列出文档里的每一块和它的编号。按编号写一份提案,`arc issues plan proposal.json --doc roadmap.md` 显示上板会做什么,
+   文档里没说的、提案漏掉的,它都会拒;`arc issues apply proposal.json --doc roadmap.md --role reporter` 正式上板,要么全上,要么一条都不写。
+   只开一条:`arc issues open --kind task --parent b/<milestone> "<标题>"`。
+3. **开 loop。** 在 agent 的会话里跑 `arc issues loop start b/<milestone> --until drained --role assignee`(或 `--until fixed:<n>`)。会话每停一次,loop 就派下一条 issue。
+   `arc issues loop stop b/<milestone>` 结束;`arc issues show b/<milestone>` 看做到哪了。
+4. **agent 一条条做。** 开分支、写、提交,PR 标题里带上 issue 编号(`b/<n>: …`),这次提交就记在那条 issue 上。PR 落地以后才标 `fixed`,不能提前。
+5. **要人定,就在看板上问。** `arc issues block b/<n> --said "<问题,带背景>" --option "A: …" --option "B: …"` 开一个问题(`q/<n>`)。它出现在 Projects 页上,
+   每个选项一个按钮;点一下就答了,答案送回 agent 的会话。只有人能拍板:`arc issues rule` 不接受 agent。
+6. **跟 PR。** PR 的详情在 Review 页,排队情况在 Merge 页。PR 落地后,提交它的会话会收到一条落地消息。
+7. **清理。** 在 Report 里看哪些放久了、过期了。结束一条 issue 用 `fixed`、`wont-fix`(写理由)或 `duplicate --of b/<n>`;没有单纯的「关闭」。
 
-还可以让第二个 Claude 会话监督 agent 的会话:它判断每一次停下,小问题自己定(见 §12 的 supervisor)。
+还可以让第二个 Claude 会话监督干活的会话:每次停下它来判断,小问题它自己定(见 §12.7)。
 
 ### 18.3 好用的做法
 
-- **队列一直满着,别等自己。** 改动一好 agent 就提交;人有空再看,不用每个 PR 都盯。
-- **问一次,问完整。** 问题带背景、各选项的利弊和推荐,点一下就能定。只在聊天里问的问题会丢,要问就放到看板上。
-- **issue 要小。** 一条 issue 是一个 agent 一小时左右的活;大的先拆再开始。
-- **人拍板,agent 动手。** 看板上的按钮是用来做决定的(回答、LGTM、部署),不是用来跑工具的;要做的事交给 agent。
-- **别盯 PR。** 落地信或被打回的消息会自己回到会话里;轮询 PR 只是烧 token。
-- **看板是记录。** issue 用 `arc issues` 写;GitHub 上的 issue 只是镜像,在那里改不会被读回来。
-- **部署是人的决定。** 想部署时在 Release 上点。
+- **让队列一直满着,别让 agent 等你。** 改动一好 agent 就提交;人有空再看,不用每个 PR 都盯着。
+- **一次问清楚。** 问题带上背景、各选项的利弊和推荐,点一下就能定。只在聊天里问的问题会丢,要问就放到看板上。
+- **issue 要小。** 一条 issue 是一个 agent 一小时左右的活;大的先拆,再开始做。
+- **人拍板,agent 动手。** 看板上的按钮是做决定用的(回答、LGTM、部署),不是跑工具用的;要做什么事,交给 agent。
+- **别盯着 PR。** 落地或被打回的消息会自己回到会话里;轮询 PR 只是白烧 token。
+- **看板就是记录。** issue 用 `arc issues` 写;GitHub 上的 issue 只是一份镜像,在那边改不会被读回来。
+- **部署由人决定。** 想部署的时候去 Release 页点。
 
 ### 18.4 不让 PR 落地:`arc-hold`
 
-给 PR 打上 `arc-hold`,合并队列就跳过它:
+给 PR 打上 `arc-hold` 标签,合并队列就跳过它:
 
 ```bash
 gh pr edit <n> --add-label arc-hold      # 挡住
 gh pr edit <n> --remove-label arc-hold   # 放行
 ```
 
-- **挡的是什么:** 只挡落地。PR 照样评审,照样能拿到评审员的 LGTM。合并机推送前会再读一次标签,所以最后一刻打上也算数。
-- **摘掉以后:** PR 回到队列;如果 LGTM 就在它当前的 head 上,不用再评审就会落地。
-- **在看板上:** Merge 页显示「被作者挡住」。标签在 GitHub 上打和摘,看板不改标签。
-- **每个仓建一次:** `gh label create arc-hold`。
+- **挡住的是什么:** 只挡落地。PR 照样评审,照样能拿到评审员的 LGTM。合并机推送前会再看一次标签,所以最后一刻打上也算数。
+- **摘掉以后:** PR 回到队列;如果 LGTM 是给当前 head 的,不用再评就会落地。
+- **在看板上:** Merge 页显示它「被作者挡住」。标签在 GitHub 上打、在 GitHub 上摘,看板不改标签。
+- **每个仓建一次标签:** `gh label create arc-hold`。
 
-什么时候挡:
+什么时候该挡:
 
-- 你对这个改动有疑问,落地前想再看一眼。
-- 已知它有问题,修复还在路上 —— 队列可能比你下一次推送快。
+- 你对这个改动还有疑问,落地前想再看一眼;
+- 已经知道它有问题,修复还在路上 —— 队列可能比你下一次推送还快;
 - 必须先给某个人看。
 
-什么时候不挡:
+什么时候不用挡:
 
-- 只是要等另一个 PR 先落地:提交时带 `--after <N>`,它会排在那个后面。
-- 文档。让它走评审、落地。
+- 只是要等另一个 PR 先落地:提交时带 `--after <N>`,它会排在那个后面;
+- 文档改动。让它正常评审、落地。
 
 别弄混:
 
-- **Review 页上的「Held」:** 那是一个等人定(LGTM 还是再修)的改动,不是这个标签。
-- **`arc-bypass`:** `arc submit --bypass-review` 会打上它,你的路由把这种 PR 交给 dummy 评审员,它对谁都说 LGTM。这等于跳过真正的评审;想清楚了再用。
+- **Review 页上的「Held」:** 那是在等人定(LGTM 还是再修)的改动,和这个标签无关。
+- **`arc-bypass`:** `arc submit --bypass-review` 会打上它,你的路由把这种 PR 交给 dummy 评审员,它对什么都说 LGTM。这等于跳过真正的评审,想清楚了再用。
 
 英文页:[Working on the board](user-guide/working-on-the-board.md)。
 
@@ -1667,50 +1700,51 @@ gh pr edit <n> --remove-label arc-hold   # 放行
 
 ## 19. 你的数据:流水线收集什么、存在哪
 
-流水线替你的团队收集两类数据:**测试数据**和**你的 agent 的对话**。全部存在运行服务端套件的机器上。arc 只把它们发给你自己的服务器，不发给别处;我们收不到、不看、不用。
+流水线替你的团队收两类数据:**测试数据**和**你的 agent 的对话**。全都存在跑服务端套件的机器上。arc 只把它们送到你自己的服务器,不送到别处;我们收不到,也不看、不用。
 
-`arc local-review` 和 `arc fix` 在你本机写的东西留在仓库的 `.arc/` 目录里，哪儿也不去。
+`arc local-review` 和 `arc fix` 在你本机写下的东西,留在仓库的 `.arc/` 目录里,哪儿也不去。英文页:[Your data](user-guide/data.md)。
 
 ### 19.1 测试数据(TAP)
 
-| 什么 | 谁发 | 什么时候 |
+| 收什么 | 谁送 | 什么时候 |
 |---|---|---|
-| 每个 commit 的 diff(改动的区域) | `arc tap record`,由 post-commit hook 运行 | 每次提交，只在跑过 `arc hook install` 的克隆里 |
-| 测试运行器写出的 JUnit XML | 合并检查，经 `ARC_GATE_OUT`(见 §14) | 开了测试历史的每一次合并检查 |
-| 构建耗时和失败构建的日志 | `arc tap build` / `arc tap build-log` | 只在你或你的 agent 运行它们时 |
+| 每个 commit 的 diff(改了哪些地方) | `arc tap record`,由 post-commit hook 跑 | 每次提交,只在跑过 `arc hook install` 的 clone 里 |
+| 测试运行器写出的 JUnit XML | 合并门禁,经 `ARC_GATE_OUT`(§14) | 开了测试历史时,每次跑门禁 |
+| 构建耗时和构建失败的日志 | `arc tap build` / `arc tap build-log` | 只在你或你的 agent 手动跑它们时 |
 
-arc 从不跑你的测试，只记下你的运行器已经写出的结果。
+arc 从不跑你的测试,只记下你的测试运行器已经写出来的结果。
 
-存放位置按仓库(租户)分，在 `~/.arc/machine.toml` 里该租户的 `home` 克隆下:
+按仓库分开存,放在合并机上 arc 为这个仓保留的那个 clone 里(`~/.arc/machine.toml` 里这个仓的 `home`):
 
 - `<home>/.git/arc/tap.db` —— 测试历史库;
-- `<home>/.git/arc/logs/<table>/date=YYYY-MM-DD/` —— 原始测试记录，按天存成 Parquet 文件。
+- `<home>/.git/arc/logs/<table>/date=YYYY-MM-DD/` —— 原始测试记录,Parquet 文件,一天一个目录。
 
-用途：慢测试和不稳定测试(`arc tap signal`)、一个改动能影响到哪些测试(`arc affected`)、以变异体存活率衡量的覆盖(`arc tap coverage`、`arc tap gaps`)、库里丢失的写入(`arc tap absence`)。
+拿来做什么:找慢测试和不稳定的测试(`arc tap signal`)、算一个改动会影响哪些测试(`arc affected`)、用变异存活率衡量覆盖(`arc tap coverage`、`arc tap gaps`)、
+查库里丢了哪些写入(`arc tap absence`)。
 
 ### 19.2 对话数据(arc bridge)
 
-| 什么 | 谁发 | 什么时候 |
+| 收什么 | 谁送 | 什么时候 |
 |---|---|---|
-| Claude Code 的会话记录(含子 agent)、它们的元数据文件、记录里提到的工具输出、`~/.claude/history.jsonl` | `arc intent collect`,每个 hook 都在后台启动它 | 每次 hook 之后，只发服务器还没有的部分 |
-| 会话运行过的每个目录属于哪个仓库 | 同一个 `arc intent collect` | 同上 |
-| 用 `arc bridge send` / `post` 发出的消息 | 发送者 | 发送时 |
+| Claude Code 的会话记录(transcript,含子 agent)、它们的元数据文件、记录里提到的工具输出、`~/.claude/history.jsonl` | `arc intent collect`,每个 hook 都在后台起一个 | 每次 hook 之后,只送服务器还没有的部分 |
+| 会话跑过的每个目录属于哪个仓库 | 同一个 `arc intent collect` | 同上 |
+| 用 `arc bridge send` / `post` 发出的消息 | 发的人 | 发出时 |
 
 Codex CLI 的会话记录目前还不上传。
 
 装了 hook 的每台机器上:
 
-- `~/.arc/bridge-archive/` 保留一份会话记录的原始字节，因为 Claude Code 大约 30 天后会删掉会话记录;
-- `~/.arc/logs/bridge-collect.log` 记下每次发了什么，以及没发出去的和原因。
+- `~/.arc/bridge-archive/` 存一份会话记录的副本,因为 Claude Code 大约 30 天后会删掉会话记录;
+- `~/.arc/logs/bridge-collect.log` 记着每次送了什么,以及哪些没送出去、为什么。
 
-服务器上，在 `arc-bridge` 读取的 `machine.toml` 旁边(默认 `~/.arc/`):
+服务器上,在 `arc-bridge` 读的那份 `machine.toml` 所在的目录里(默认 `~/.arc/`):
 
-- `bridge.db` —— 会话、消息、房间和索引;
+- `bridge.db` —— 会话、消息、房间和搜索索引;
 - `raw/` —— 收到的每条记录原样存成 Parquet,索引可以从它重建;
-- `intentdb/` 和 `log/` —— 从会话记录派生出来的东西;
+- `intentdb/` 和 `log/` —— 从会话记录整理出来的数据;
 - `bridge-archive/` —— 会话记录的附属文件。
 
-用途：每个房间的消息流、搜索过去的对话(`arc intent history`)、监督会话，以及落地通知。
+拿来做什么:每个房间的消息流、搜过去的对话(`arc intent history`)、监督会话,以及告诉会话 PR 已落地的消息。
 
 ## 另见
 

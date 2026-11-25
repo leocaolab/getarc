@@ -1,13 +1,22 @@
 # Releases and deploys
 
-arc can ship what lands: build it and install it on a machine (a **deploy**), or tag it and publish a GitHub prerelease every night (the **nightly release**). Both are steps you write in a workflow file, both are recorded, and the release page of arc's web board shows each run.
+arc can ship what lands, in two ways:
 
-This is the last stage of the pipeline, after [Merge](merge-gate.md). In short:
+- **Deploy:** build it and install it on a machine.
+- **Nightly release:** tag it and publish a GitHub prerelease every night.
 
-- **Nightly.** Once a night, `arc-releaser` builds the release branch's tip and publishes it as a GitHub prerelease tagged `nightly-<UTC date>` ([below](#the-nightly-release)).
-- **Deploy.** From the **Deploy** button on the board's **Release** page, or with `arc deploy` on the deploy machine, arc starts the deploy job your `[release]` names on the spot ([below](#deploys)); arc never deploys on its own after a landing. The run is recorded; whoever asked gets a message when it ends, and so does everyone whose PR it shipped.
-- **Where to look.** The board's **Release** page: the lanes and targets `.arc/delivery.toml` declares, the current deploy and its steps, and the nightlies.
-- **Versioned releases.** `arc-releaser promote --tenant <owner/name> nightly-YYYYMMDD` promotes a nightly to a versioned release (`v<X.Y.Z>`) published on getarc, with `install.sh` and `SHA256SUMS` beside it; it refuses while any lane's declared assets are missing.
+Both are steps you write in a workflow file, both are recorded, and the **Release** page of arc's web board shows every run. This is the last stage of the pipeline, after [Merge](merge-gate.md).
+
+| You want to | Do this |
+|---|---|
+| Deploy now | Click **Deploy** on the board's **Release** page, or run `arc deploy` on the deploy machine ([Deploys](#deploys)). arc never deploys on its own after a landing |
+| Publish a build every night | Set up `arc-releaser`; it builds the release branch's latest commit and publishes it as a GitHub prerelease tagged `nightly-<UTC date>` ([below](#the-nightly-release)) |
+| Turn a nightly into a versioned release | `arc-releaser promote --tenant <owner/name> nightly-YYYYMMDD` (below) |
+| See what is happening | The board's **Release** page: the lanes and targets `.arc/delivery.toml` declares, the current deploy and its steps, and the nightlies |
+
+When a deploy ends, whoever asked for it gets a message, and so does everyone whose PR it shipped.
+
+**Promoting a nightly.** `arc-releaser promote --tenant <owner/name> nightly-YYYYMMDD` publishes a nightly, unchanged, as a versioned release (`v<X.Y.Z>`) on the repository that the tree's manual binary target names, with `install.sh` and `SHA256SUMS` attached. It builds nothing. It refuses while any lane's declared assets are missing.
 
 arc does not look for a file called `release.yml`. A deploy runs the job that `[release]` in `.arc/config.toml` names, in whatever file it names; the nightly runs `.github/workflows/nightly-release.yml`.
 
@@ -15,26 +24,26 @@ arc does not look for a file called `release.yml`. A deploy runs the job that `[
 
 ### The pieces
 
-| Piece | Where | Committed? | Says |
+| Piece | Where | Committed? | What it says |
 |---|---|---|---|
 | the deploy job | a workflow file, e.g. `.github/workflows/deploy.yml` | yes | the steps |
 | `[release]` | `.arc/config.toml` of the clone on the deploy machine | no | which job *is* the deploy |
-| `[builds.<id>]` | `.arc/delivery.toml` | yes | the lane the deploy is filed under |
-| `[targets.<id>]` | `.arc/delivery.toml` | yes | where the output ends up — a card on the release page |
+| `[builds.<id>]` | `.arc/delivery.toml` | yes | the lane the deploy is recorded under |
+| `[targets.<id>]` | `.arc/delivery.toml` | yes | where the output ends up — a card on the Release page |
 
-The deploy runs on the merge machine, in the repo's clone there (the tenant's `home`), so that clone is where `[release]` must be written.
+The deploy runs on the merge machine, in the clone arc keeps of the repo there (the `home` path in `~/.arc/machine.toml`). That clone is where you write `[release]`.
 
 ### 1. Write the deploy job
 
-The job follows the rules in [What arc runs in a workflow file](merge-gate.md#what-arc-runs-in-a-workflow-file), with one difference: **one step arc cannot run refuses the whole deploy** before anything is touched, so no machine is left half-upgraded.
+The job follows the rules in [What arc runs in a workflow file](merge-gate.md#what-arc-runs-in-a-workflow-file), with one difference: **if arc cannot run even one step, it refuses the whole deploy** before touching anything, so no machine is left half-upgraded.
 
-Beyond that, a deploy job needs:
+A deploy job also needs:
 
-- **A `concurrency:` group.** It keeps two deploys from running at once. Without one, neither the Deploy button nor `arc deploy` will start the job. Both spellings work: `concurrency: deploy-app` or `concurrency: { group: deploy-app, cancel-in-progress: false }`. A second run waits for the group up to 30 minutes (`arc-deployer --lock-wait`, default 1800 seconds), then gives up, naming who holds it.
-- **Build somewhere of its own.** The clone the deploy starts in is the merge gate's working copy, which moves to a different commit every round. Fetch the commit to deploy into `$RUNNER_TEMP` — a fresh directory per run, removed when the job ends — and build there.
-- **Deploy the commit it was given.** `$ARC_DEPLOY_REF` holds the commit arc decided to deploy. Read it as `${ARC_DEPLOY_REF:-main}`, so a run by hand gets the branch.
-- **Say what it shipped.** Write the full commit sha to the file named by `$ARC_SHIPPED_SHA`: `git rev-parse HEAD > "$ARC_SHIPPED_SHA"`. Do it right after checking out, so a run that stops later still names its commit. Without it, the record names no commit.
-- **Mark the going-live steps `phase: deploy`.** When a run fails, the failing step's phase decides how it is recorded: `test` / `lint` → *verify failed*, `build` → *build failed*, `deploy` → *deploy failed*. A step without `phase:` is guessed from its name (lint words → `lint`; `test`, `check`, `verify` → `test`; anything else → `build`) and is never guessed as `deploy`.
+- **A `concurrency:` group,** so two deploys never run at once. Without one, neither the Deploy button nor `arc deploy` starts the job. Both forms work: `concurrency: deploy-app` or `concurrency: { group: deploy-app, cancel-in-progress: false }`. A second run waits for the group for up to 30 minutes (`arc-deployer --lock-wait`, default 1800 seconds), then gives up and says who holds it.
+- **Its own build directory.** The clone the deploy starts in is the merge gate's working copy, which moves to a different commit every round. Fetch the commit to deploy into `$RUNNER_TEMP` — a fresh directory for each run, removed when the job ends — and build there.
+- **The commit arc chose.** `$ARC_DEPLOY_REF` holds the commit arc decided to deploy. Read it as `${ARC_DEPLOY_REF:-main}`, so a run by hand gets the branch.
+- **A note of what it shipped.** Write the full commit sha to the file `$ARC_SHIPPED_SHA` names: `git rev-parse HEAD > "$ARC_SHIPPED_SHA"`. Do it right after checkout, so a run that fails later still names its commit. Without it, the record names no commit.
+- **`phase: deploy` on the steps that go live.** When a run fails, the failing step's phase decides how the failure is recorded: `test` / `lint` → *verify failed*, `build` → *build failed*, `deploy` → *deploy failed*. A step without `phase:` is guessed from its name (lint words → `lint`; `test`, `check`, `verify` → `test`; anything else → `build`) and is never guessed as `deploy`.
 
 Every step runs with `PATH` set to `[machine] path` from `~/.arc/machine.toml`.
 
@@ -98,56 +107,63 @@ promote = "auto"      # shown on the release page; see the table below
 from    = "app"       # a build id, or another target's id
 ```
 
-- The `[builds.*]` entry must name the same `workflow` and `job` as `[release]`, written the same way. Exactly one build may do so: with none, or two, a deploy has no lane to be recorded under and is refused.
-- A deploy run that `[release]` does not name is refused: a deploy that leaves no record would be invisible on the release page.
+- The `[builds.*]` entry must name the same `workflow` and `job` as `[release]`, written the same way. Exactly one build may do so. With none, or with two, the deploy has no lane to be recorded under and is refused.
+- A deploy run that `[release]` does not name is refused, because a deploy that leaves no record would be invisible on the Release page.
 
-### 3. Two ways a deploy starts
+### 3. Start a deploy
 
-When a deploy runs is your call: arc never deploys on its own after a landing, and the merge machine never waits for or yields to a deploy. Both ways below start one `arc-deployer` for `origin/main`'s tip on the spot, in a systemd scope of its own (a deploy restarts what started it), and use the same check first: `[release]` names a job, exactly one `[builds.*]` runs it, and the job has a `concurrency:` group. When the check fails, or the machine has no `systemd-run`, nothing starts and you get the reason.
+You decide when to deploy. arc never deploys on its own after a landing, and the merge machine never waits for a deploy or makes way for one. There are two ways to start one; both start one `arc-deployer` for the latest commit of `origin/main`, right away, in its own systemd scope (a deploy restarts the services that started it).
 
-1. **The Deploy button** on the release page. When the check fails, the button is disabled and the page says what is missing.
-2. **`arc deploy`**, run in the tenant's clone on the deploy machine. It names who asked, prints the unit the deploy runs in and its log, and exits; progress and the result are on the release page. When the check fails it exits non-zero with the reason.
+Both check the same things first: `[release]` names a job, exactly one `[builds.*]` runs that job, and the job has a `concurrency:` group. If a check fails, or the machine has no `systemd-run`, nothing starts and you are told why.
 
-To deploy after every landing, call `arc deploy` from your own post-landing job. Two deploys started close together run one at a time under the job's `concurrency:` group, and one whose lane already deployed that commit records *skipped*.
+1. **The Deploy button** on the Release page. When a check fails, the button is disabled and the page says what is missing.
+2. **`arc deploy`**, run in the repo's clone on the deploy machine. It records who asked, prints the systemd unit the deploy runs in and its log, and exits; progress and the result are on the Release page. When a check fails it exits non-zero with the reason.
 
-To try the job's steps without recording a deploy, run `arc workflow .github/workflows/deploy.yml --job deploy --list` (prints the plan) or without `--list` (runs it and records nothing).
+To deploy after every landing, call `arc deploy` from your own post-landing job. Two deploys started close together run one at a time under the job's `concurrency:` group, and one whose lane already deployed that commit is recorded as *skipped*.
+
+To try the job's steps without recording a deploy, run `arc workflow .github/workflows/deploy.yml --job deploy --list` (prints the plan) or the same without `--list` (runs it and records nothing).
 
 ### What gets recorded
 
-Each deploy is one row in the repo's release record, opened before the first step and closed after the last: the commit from `$ARC_SHIPPED_SHA`, each step's result and output, who asked, and how it ended — *published*, *verify failed*, *build failed*, *deploy failed*, or *machine* when the machine itself was the problem. The release page's "current deploy" reads it.
+Each deploy is one row in the repo's release record, opened before the first step and closed after the last. It holds the commit from `$ARC_SHIPPED_SHA`, each step's result and output, who asked, and how it ended: *published*, *verify failed*, *build failed*, *deploy failed*, or *machine* when the machine itself was the problem. The Release page's "current deploy" is read from it.
 
 <a id="delivery-toml"></a>
 ## `.arc/delivery.toml` reference
 
-It declares builds (how a shippable thing is made) and targets (where it ends up). The release page is drawn from it; there are no built-in stage names.
+This file declares builds (how a shippable thing is made) and targets (where it ends up). The Release page is drawn from it; there are no built-in stage names.
 
-What actually **runs** today: the build whose `workflow` + `job` is the declared deploy (started by the button or `arc deploy`, as above), and `builtin = "nightly"` (started by the nightly timer, below). Everything else in this file is parsed and drawn on the page but starts nothing — the table marks those keys *not implemented*.
+What actually **runs** today:
+
+- the build whose `workflow` + `job` is the declared deploy (started by the button or `arc deploy`, as above);
+- `builtin = "nightly"` (started by the nightly timer, below).
+
+Everything else in this file is read and shown on the page but starts nothing; the tables mark those keys *not implemented*.
 
 **`[builds.<id>]`**
 
 | Key | Default | Meaning |
 |---|---|---|
-| `from` | `"main"` | branch it is built from |
-| `on` | — | `"merge"`: the release page draws the Deploy button on this lane's targets; a landing starts nothing — call `arc deploy` from your own post-landing job for that. Anything else is read as a tag pattern (`"v*"`, `"tag v*"`) — *not implemented*: shown on the page, and pushing a tag starts nothing. |
-| `cron` | — | a schedule, shown as written — the machine's timer is what actually fires (only the nightly has one). Not together with `on`. |
-| `workflow` + `job` | — | the steps live in that workflow job |
+| `from` | `"main"` | the branch it is built from |
+| `on` | — | `"merge"`: the Release page shows the Deploy button on this lane's targets. A landing starts nothing — call `arc deploy` from your own post-landing job for that. Any other value is read as a tag pattern (`"v*"`, `"tag v*"`) — *not implemented*: shown on the page, but pushing a tag starts nothing. |
+| `cron` | — | a schedule, shown as written. The machine's timer is what actually starts a run (only the nightly has one). Cannot be combined with `on`. |
+| `workflow` + `job` | — | the steps are in that workflow job |
 | `builtin` | — | `"nightly"`: arc's nightly release (below) |
-| `steps` | `[]` | step names listed in place, for a repo with no workflow file |
+| `steps` | `[]` | step names listed here, for a repo with no workflow file |
 | `artifacts` | `[]` | what it produces, shown on the page |
-| `confirm` | `false` | *not implemented*: parsed, but nothing asks anyone to confirm |
+| `confirm` | `false` | *not implemented*: read, but nothing asks anyone to confirm |
 
-A build has at most one of `on` / `cron` (neither = only by hand), and its steps in exactly one place: `workflow`, `builtin` or `steps`. `job` without `workflow` is refused.
+A build has at most one of `on` / `cron` (neither means it only runs by hand), and its steps in exactly one place: `workflow`, `builtin` or `steps`. `job` without `workflow` is refused.
 
-**`[targets.<id>]`** — every key is drawn on the release page; arc does not move anything to a target by itself (*not implemented*), so `promote`, `soak` and `rollback` describe intent only.
+**`[targets.<id>]`** — every key is shown on the Release page. arc does not move anything to a target by itself (*not implemented*), so `promote`, `soak` and `rollback` only describe what you intend.
 
 | Key | Default | Meaning |
 |---|---|---|
 | `from` | required | a build id, or another target's id (`production` ← `staging` ← `app`) |
 | `kind` | `"service"` | `"service"` or `"binary"` |
-| `promote` | `"manual"` | `"auto"` or `"manual"`, as you mean it to happen |
+| `promote` | `"manual"` | `"auto"` or `"manual"`, as you intend it to happen |
 | `channel` | — | for a binary: where it is published (`internal`, `prerelease`, …) |
 | `audience` | — | who can get it, shown as written |
-| `soak` | — | how long it sits upstream first, shown as written (`3d`) |
+| `soak` | — | how long it stays at the previous target first, shown as written (`3d`) |
 | `rollback` | — | where to roll back to |
 
 A `from` that names nothing, or a chain of `from`s that loops, is refused when the file is read.
@@ -155,9 +171,14 @@ A `from` that names nothing, or a chain of `from`s that loops, is refused when t
 <a id="the-nightly-release"></a>
 ## The nightly release
 
-Once a night, `arc-releaser` takes the tip of the release branch (`[tenant.release] branch`, default `main`), runs the steps in `.github/workflows/nightly-release.yml` from that tip, and — when every step passed — pushes the tag `nightly-<UTC date>` and, with `publish` on, creates a GitHub prerelease with the assets the lane declares attached. A tip already released is not released again.
+Once a night, `arc-releaser`:
 
-It is configured per repo on the merge machine, in `~/.arc/machine.toml`:
+1. takes the latest commit of the release branch (`[tenant.release] branch`, default `main`) — and skips the night if that commit was already released;
+2. runs the steps in `.github/workflows/nightly-release.yml` from that commit;
+3. if every step passed, pushes the tag `nightly-<UTC date>`;
+4. with `publish` on, creates a GitHub prerelease with the assets the lane declares attached.
+
+Set it up per repo on the merge machine, in `~/.arc/machine.toml`:
 
 ```toml machine.toml#tenant
 [tenant.release]
@@ -170,17 +191,17 @@ artifact = "target/release/widgets"            # required, relative to clone
 # timeout_secs = 3600
 ```
 
-and installed with `arc-releaser install <owner/name>`, which writes a systemd timer.
+Then install it with `arc-releaser install <owner/name>`, which writes a systemd timer.
 
-`nightly-release.yml` must hold exactly one job. Its steps get these variables:
+`nightly-release.yml` must contain exactly one job. Its steps get these variables:
 
 | Variable | Value |
 |---|---|
 | `ARC_RELEASE_BUILD` | `[tenant.release] build` |
 | `ARC_RELEASE_ARTIFACT` | `[tenant.release] artifact` |
-| `ARC_RELEASE_ASSETS` | the directory, outside the clone, to leave every asset in |
+| `ARC_RELEASE_ASSETS` | a directory outside the clone; put every asset here |
 | `ARC_RELEASE_ASSET_NAMES` | the names `artifacts` declares, one per line |
-| `ARC_RELEASE_TARBALL` | where to leave the one tarball a tip without fixed `artifacts` attaches (outside the clone); going away |
+| `ARC_RELEASE_TARBALL` | where to put the single tarball, for a commit that declares no fixed `artifacts` (outside the clone); being phased out |
 | `ARC_RELEASE_VERIFY` | `[tenant.release] verify`, empty when not set |
 
 A minimal one: check the tree, build, package.
@@ -205,9 +226,13 @@ jobs:
           tar -C "$(dirname "$ARC_RELEASE_ARTIFACT")" -czf "$ARC_RELEASE_ASSETS/widgets-linux-x64.tar.gz" "$(basename "$ARC_RELEASE_ARTIFACT")"
 ```
 
-With `publish` on, the release attaches exactly the files `delivery.toml` declares as the nightly lane's `artifacts`, taken from `$ARC_RELEASE_ASSETS`; before the tag is pushed, `arc-releaser` checks each is there, and a missing one stops the night as a build failure naming it. Use names of `A-Z a-z 0-9 . _ -` only, not starting with `.`, and free of versions, so `releases/download/<tag>/<name>` keeps its shape. A tip that declares nothing, or only `<...>` templates such as `widgets-<version>.tar.gz`, still gets the old behaviour for now: the release attaches the one tarball left at `$ARC_RELEASE_TARBALL`. Any other name that breaks those rules, alone or beside good ones, stops the night as a declaration failure naming it.
+**Which files are attached.** With `publish` on, the release attaches exactly the files `delivery.toml` declares as the nightly lane's `artifacts`, taken from `$ARC_RELEASE_ASSETS`. Before the tag is pushed, `arc-releaser` checks that each one is there; a missing one stops the night as a build failure and names the file.
 
-The release body ends with a trailer: `Build: <version>-bNN`, the build the night produced as its binaries' `--version` names it (only when the tree names a version), then `Attached:` and the file names. A lane that adds files to the night's release later, from another machine, reads its ordinal from the `Build:` line, so its binaries name the same build.
+- Use names made of `A-Z a-z 0-9 . _ -` only, not starting with `.`, and without versions in them, so the download URL `releases/download/<tag>/<name>` stays the same from night to night.
+- A commit that declares nothing, or only `<...>` templates such as `widgets-<version>.tar.gz`, still gets the old behaviour for now: the release attaches the one tarball left at `$ARC_RELEASE_TARBALL`.
+- Any other name that breaks these rules, alone or next to valid ones, stops the night as a declaration failure and names it.
+
+**The release notes** end with `Build: <version>-bNN` — the build number the night's binaries report in `--version` (only when the tree names a version) — then `Attached:` and the file names. A lane that adds files to the same night's release later, from another machine, reads its build number from the `Build:` line, so its binaries report the same build.
 
 ```toml delivery.toml
 [builds.nightly]
