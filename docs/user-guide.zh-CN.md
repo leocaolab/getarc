@@ -70,7 +70,7 @@ fixer  = "claude_fixer"
 - **审的是你的代码,8 种语言。** Rust、Python、TypeScript、JavaScript、Go、Java、C、C++,按目标仓库的语言启用。
 
 **目录** —— 安装和搭建:§0 安装 · §1 配置 · §2 搭流水线 · §3 skills 和插件。提交前在本机评审:§4 命令 ·
-§5–§10 arc 怎么审、腐烂、自定义 rubric · §11 接入编码 agent。流水线:§18 在看板上干活 · §12 组队 · §13 流水线上的评审 · §14 合并 · §15 发布与部署。
+§5–§10 arc 怎么审、腐烂、自定义 rubric · §11 接入编码 agent。流水线:§18 在看板上干活 · §12 组队 · §13 流水线上的评审 · §14 合并 · §15 发布与部署 · §19 你的数据。
 §16 故障排查 · §17 代码规范规则。每个 flag 和 `--json` 信封的细节见 `usage.md`。
 
 ---
@@ -1664,6 +1664,53 @@ gh pr edit <n> --remove-label arc-hold   # 放行
 英文页:[Working on the board](user-guide/working-on-the-board.md)。
 
 ---
+
+## 19. 你的数据:流水线收集什么、存在哪
+
+流水线替你的团队收集两类数据:**测试数据**和**你的 agent 的对话**。全部存在运行服务端套件的机器上。arc 只把它们发给你自己的服务器，不发给别处;我们收不到、不看、不用。
+
+`arc local-review` 和 `arc fix` 在你本机写的东西留在仓库的 `.arc/` 目录里，哪儿也不去。
+
+### 19.1 测试数据(TAP)
+
+| 什么 | 谁发 | 什么时候 |
+|---|---|---|
+| 每个 commit 的 diff(改动的区域) | `arc tap record`,由 post-commit hook 运行 | 每次提交，只在跑过 `arc hook install` 的克隆里 |
+| 测试运行器写出的 JUnit XML | 合并检查，经 `ARC_GATE_OUT`(见 §14) | 开了测试历史的每一次合并检查 |
+| 构建耗时和失败构建的日志 | `arc tap build` / `arc tap build-log` | 只在你或你的 agent 运行它们时 |
+
+arc 从不跑你的测试，只记下你的运行器已经写出的结果。
+
+存放位置按仓库(租户)分，在 `~/.arc/machine.toml` 里该租户的 `home` 克隆下:
+
+- `<home>/.git/arc/tap.db` —— 测试历史库;
+- `<home>/.git/arc/logs/<table>/date=YYYY-MM-DD/` —— 原始测试记录，按天存成 Parquet 文件。
+
+用途：慢测试和不稳定测试(`arc tap signal`)、一个改动能影响到哪些测试(`arc affected`)、以变异体存活率衡量的覆盖(`arc tap coverage`、`arc tap gaps`)、库里丢失的写入(`arc tap absence`)。
+
+### 19.2 对话数据(arc bridge)
+
+| 什么 | 谁发 | 什么时候 |
+|---|---|---|
+| Claude Code 的会话记录(含子 agent)、它们的元数据文件、记录里提到的工具输出、`~/.claude/history.jsonl` | `arc intent collect`,每个 hook 都在后台启动它 | 每次 hook 之后，只发服务器还没有的部分 |
+| 会话运行过的每个目录属于哪个仓库 | 同一个 `arc intent collect` | 同上 |
+| 用 `arc bridge send` / `post` 发出的消息 | 发送者 | 发送时 |
+
+Codex CLI 的会话记录目前还不上传。
+
+装了 hook 的每台机器上:
+
+- `~/.arc/bridge-archive/` 保留一份会话记录的原始字节，因为 Claude Code 大约 30 天后会删掉会话记录;
+- `~/.arc/logs/bridge-collect.log` 记下每次发了什么，以及没发出去的和原因。
+
+服务器上，在 `arc-bridge` 读取的 `machine.toml` 旁边(默认 `~/.arc/`):
+
+- `bridge.db` —— 会话、消息、房间和索引;
+- `raw/` —— 收到的每条记录原样存成 Parquet,索引可以从它重建;
+- `intentdb/` 和 `log/` —— 从会话记录派生出来的东西;
+- `bridge-archive/` —— 会话记录的附属文件。
+
+用途：每个房间的消息流、搜索过去的对话(`arc intent history`)、监督会话，以及落地通知。
 
 ## 另见
 
