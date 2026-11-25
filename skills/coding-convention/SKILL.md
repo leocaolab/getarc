@@ -162,7 +162,7 @@ pub fn first(&self) -> CoreId
   - **transparent**: 有不变量的字段私有、只经 `parse` / `new` 构造; 没有的字段公开。
 - **为事实建模, 不为今天的调用方建模**: 读不到是 `Result` 的 `Err`, 不是这个东西的一个变体。
 - **错误按失败的种类**: 几种 → 枚举, 每个变体带类型化的事实; 一种 → 字段全类型化的结构体; 种类不写进 `String`, 底层错误不抹成 `Box<dyn Error>`。
-- 逐个过 `name-check` skill 与 `${CLAUDE_PLUGIN_ROOT}/rubrics/type_design.yaml` (判据原文)。名字检查过了不等于过关: 改了名的胶水照样是胶水。
+- 逐个过 `${CLAUDE_PLUGIN_ROOT}/rubrics/type_design.yaml` (判据原文)。名字检查过了不等于过关: 改了名的胶水照样是胶水。
 
 ### 命名
 
@@ -182,11 +182,10 @@ pub fn first(&self) -> CoreId
 - **生成式测试 (proptest、排列、批大小穷举) 只打纯判断**: 每个用例毫秒级、不起进程、不开库、不写文件; 性质说的是判断 (幂等、到达先后无关、等于预言模型折叠), 就让判断吃事实做参数来测。真 git / 真库 / 真 `sh` 只留一两条手写的端到端用例证明接线。生成式测试要先 push 进仓库、开库才测得到, 说明判断还埋在机制里, 先拆判断, 不给机制加重放 trait、模板库、并行来提速 (一个真实的例子: 256 个生成的脚本, 每个起 30 多个 git 进程, 一共两万五千个进程跑了 8 分钟; 另一个把 120 种排列各开一次数据库、各跑一遍全部迁移)。
 - **每一行都有代价**: 删掉一行行为不变, 它就不该存在。**特殊情况在数据结构里消掉**, 不在每个函数里补。**同一个事实只存一份。接口要窄, 实现可以深**: 没有外部调用方的不 `pub`。
 - **能在语义上让错误不存在, 就别让它成为错误**, 但真实的失败带着原因返回。**只解决现在知道要解决的问题。改签名之前先看调用方。**
-- 四路审查用 `taste-check` skill。
 
 ### 错误处理
 
-每个 `Option` / `Result` 先问真实世界里会不会发生: 会, 带着原始输入和真实错误传给能决定的那一层; 不会但编译器不知道, 改类型让它写不出来; 类型改不了才 `expect("<证明>")`。不顺手 `unwrap`, 也不吞 (`unwrap_or(默认)` / `.ok()` / `let _ =`), 也不机械地 `?` (主循环里一个 `?` 会把一条小失败放大成停机)。守则全文在 `error-check` skill, 规则原文在 `${CLAUDE_PLUGIN_ROOT}/rubrics/l4_contracts.yaml` 与 `rust_best_practices.yaml`; 审一段代码用 `error-check` skill。
+每个 `Option` / `Result` 先问真实世界里会不会发生: 会, 带着原始输入和真实错误传给能决定的那一层; 不会但编译器不知道, 改类型让它写不出来; 类型改不了才 `expect("<证明>")`。不顺手 `unwrap`, 也不吞 (`unwrap_or(默认)` / `.ok()` / `let _ =`), 也不机械地 `?` (主循环里一个 `?` 会把一条小失败放大成停机)。规则原文在 `${CLAUDE_PLUGIN_ROOT}/rubrics/l4_contracts.yaml` 与 `rust_best_practices.yaml`。
 
 依据: Google [C++ 风格指南](https://google.github.io/styleguide/cppguide.html#Comments)与 [Python 风格指南](https://google.github.io/styleguide/pyguide.html#38-comments-and-docstrings)的注释一节、Google 审查指南[《审查看什么》](https://google.github.io/eng-practices/review/reviewer/looking-for.html)、Rust [RFC 1574](https://rust-lang.github.io/rfcs/1574-more-api-documentation-conventions.html) 与 [API Guidelines](https://rust-lang.github.io/api-guidelines/)。
 

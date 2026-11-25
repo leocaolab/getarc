@@ -369,7 +369,6 @@ npx skills add leocaolab/getarc
 |---|---|---|
 | Set up and look after arc | [`arc-setup`](skills/arc-setup/SKILL.md) (start here), [`maintain`](skills/maintain/SKILL.md) | yes |
 | Drive arc | [`review`](skills/review/SKILL.md), [`fix`](skills/fix/SKILL.md), [`rot`](skills/rot/SKILL.md), [`automate`](skills/automate/SKILL.md) | yes |
-| Review code yourself | [`taste-check`](skills/taste-check/SKILL.md), [`smell-check`](skills/smell-check/SKILL.md), [`error-check`](skills/error-check/SKILL.md), [`test-check`](skills/test-check/SKILL.md), [`name-check`](skills/name-check/SKILL.md) | no |
 | Write it right the first time | [`coding-principles`](skills/coding-principles/SKILL.md), [`coding-convention`](skills/coding-convention/SKILL.md), [`comment-clean`](skills/comment-clean/SKILL.md), [`type-naming`](skills/type-naming/SKILL.md) | no |
 | Per language | `shift-left-` + `rust`, `python`, `typescript`, `javascript`, `go`, `java`, `c`, `cpp`, `swift` | no |
 

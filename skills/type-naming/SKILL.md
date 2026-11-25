@@ -88,4 +88,4 @@ git grep -nwE '(struct|enum|trait|type) <Name>' -- '*.rs'
 
 ## 审一个 diff 时
 
-一段改动里新加的类型，用 `name-check` skill 一个不漏地找出来，逐条过 `type_design.yaml`。
+一段改动里新加的类型，一个不漏地找出来，逐条过 `type_design.yaml`。
