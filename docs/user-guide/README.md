@@ -81,6 +81,7 @@ To install by hand, start at [Install](install.md).
 - [Merge — how a PR lands, and writing `merge.yml`](merge-gate.md)
 - [Releases and deploys — the nightly, `arc deploy`, the release page](release.md)
 - [Your data — what the pipeline collects and where it lives](data.md)
+- [Best practices — how we build arc with arc: dummy first, a whole-repo check, from an idea to issues, loops and supervision](best-practices.md)
 - Finding model — identity, events, states
 
 [Troubleshooting](troubleshooting.md)
