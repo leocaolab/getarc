@@ -1,20 +1,27 @@
 # arc for coding agents
 
-This page is for you, the coding agent (Claude Code, Codex CLI, agy) that has to use arc. Read it once; it says what arc does, which command to run at each step, what comes back, and what you must never do. Every flag is in `arc <command> --help`, which is the source of truth when this page and the binary disagree.
+This page is for you, the coding agent (Claude Code, Codex CLI, agy) that uses arc. Read it once. It says what arc does, which command to run at each step, what comes back, and what you must never do. Every flag is in `arc <command> --help`; when this page and the binary disagree, `--help` is right.
 
 ## Quick start
 
 You were asked to set up arc, or to use it. In order:
 
-1. **Is arc here?** `arc --version`. If not, or if the repo has no `.arc/config.toml` or no pipeline yet, run the install route below with the arc-setup skill (`claude plugin install arc@getarc`, or `npx skills add leocaolab/getarc --skill arc-setup`).
-2. **Before you submit a change:** on a feature branch, `arc --json local-review`; then `arc --json fix` until the review is closed (section 2).
-3. **Submit:** `arc --json submit --target origin/main --base "$(git merge-base HEAD origin/main)"`, after asking the person — it pushes.
-4. **Answer what comes back:** findings arrive in your session; fix, push, `arc submit --pr <N> --fix-answers -`. The merge machine lands the PR after every reviewer's LGTM.
-5. **Working through a milestone:** `arc issues loop start b/<milestone> --until drained --role assignee`; ask a person with `arc issues block b/<n> --said … --option … --option …` and wait for the ruling in your session. The board side of this: [Working on the board](working-on-the-board.md).
+1. **Is arc installed?** Run `arc --version`. If it is not, or the repo has no `.arc/config.toml`, or there is no pipeline yet, follow the install steps below with the arc-setup skill (`claude plugin install arc@getarc`, or `npx skills add leocaolab/getarc --skill arc-setup`).
+2. **Before you submit a change:** on a feature branch, run `arc --json local-review`, then `arc --json fix` until the review is closed (section 2).
+3. **Submit:** ask the person first, because this pushes. Then run `arc --json submit --target origin/main --base "$(git merge-base HEAD origin/main)"`.
+4. **Answer what comes back:** the reviewers' findings arrive in your session. Fix them, push, and run `arc submit --pr <N> --fix-answers -`. The merge machine lands the PR after every reviewer says LGTM.
+5. **Working through a milestone:** run `arc issues loop start b/<milestone> --until drained --role assignee`. To ask a person, run `arc issues block b/<n> --said … --option … --option …` and wait for their answer in your session. How this looks on the board: [Working on the board](working-on-the-board.md).
 
 ## The install route
 
-arc-setup walks these stages in order. At each one it probes what is already there (`probe.py --machine coding|pipeline|both --stage <id>`), asks the person only what the probe cannot tell, does only what is missing, and verifies the stage with one command before the next. A failed verify stops the route with the real error. Each stage follows a page of this guide.
+arc-setup goes through these stages in order. At each stage it:
+
+1. checks what is already there (`probe.py --machine coding|pipeline|both --stage <id>`);
+2. asks the person only what that check cannot tell;
+3. does only what is missing;
+4. runs the stage's verify command before going on. If the verify fails, the install stops with the real error.
+
+Each stage follows a page of this guide.
 
 | # | Stage | Machine | Verify | Guide |
 |---|---|---|---|---|
@@ -35,64 +42,64 @@ arc-setup walks these stages in order. At each one it probes what is already the
 | 15 | `first_pr` | coding | `curl -fsS <web>/api/r/<owner>/<name>/merger` | [Set up the pipeline](onboarding.md) |
 | 16 | `release` (optional) | pipeline | `arc workflow <deploy workflow> --job <job> --list` | [Releases and deploys](release.md) |
 
-When the pipeline machine is not one you can run commands on, give the person each stage's commands, one stage at a time, judge the output they paste back, and verify from the coding machine what the board shows (stage `client` asks it whether it serves this repo).
+If you cannot run commands on the pipeline machine, give the person each stage's commands, one stage at a time, and judge the output they paste back. Then verify from the coding machine what the board shows (stage `client` asks the board whether it serves this repo).
 
 ## 1. What arc is, and the one loop
 
-- arc reviews code changes. A reviewer model files **findings** on your change; you (or arc's Fixer) answer each one **fixed** or **won't fix**; the reviewer reads the new head again.
-- It runs in two places: on your machine (`arc local-review`, `arc fix`), and on the pipeline, a server suite that reviews every PR, grants a **pass** on LGTM, and lands the PR.
-- Only the review service grants a pass (`refs/arc/pass/<pr>`), and only for the exact head it reviewed. Only the merge machine lands. Nobody merges by hand.
-- Findings, rounds and answers are recorded; you never edit them, you answer them.
-- arc is a detector. A finding is the reviewer's opinion; a reasoned won't-fix is a valid answer.
+- arc reviews code changes. A reviewer model reports **findings** on your change. You (or arc's Fixer) answer each one **fixed** or **won't fix**. The reviewer then reviews the new head.
+- It runs in two places: on your machine (`arc local-review`, `arc fix`), and on the pipeline, a set of services that reviews every PR, grants a **pass** on LGTM, and lands the PR.
+- A **pass** is permission to land one exact commit. Only the review service grants it (`refs/arc/pass/<pr>`), and only for the head it reviewed. Only the merge machine lands PRs. Nobody merges by hand.
+- arc records findings, rounds and answers. You never edit them; you answer them.
+- arc reports; it does not decide for you. A finding is the reviewer's opinion, and a won't-fix with a reason is a valid answer.
 
 The loop, and whose move each step is:
 
 | Step | What happens | Whose move |
 |---|---|---|
-| 1 | `arc local-review` — review the branch's change here, as a local PR | you |
+| 1 | `arc local-review` — review the branch's change on this machine; the findings are kept as a local PR in `.arc/review.db` | you |
 | 2 | `arc fix` — the Fixer answers the open findings, one commit per fix, and the change is reviewed again until LGTM or the reviewer's turns run out | you |
 | 3 | `arc submit` — push, open the PR, hand it to the review service | you |
-| 4 | The reviewers file findings; the letter arrives in your session (section 4) | the review service |
+| 4 | The reviewers report findings; a message with them arrives in your session (section 4) | the review service |
 | 5 | Fix, push, then `arc submit --pr <N> --fix-answers -` | you |
 | 6 | Every reviewer the routes asked says LGTM, the service grants the pass | the review service |
-| 7 | The merge machine runs the repo's `merge.yml` and lands the PR, or bounces it with the failing output | the merge machine |
-| 8 | A landing letter arrives: how the PR ended and which worktree on this machine still holds the branch | you decide about the worktree |
+| 7 | The merge machine runs the repo's `merge.yml` and lands the PR, or sends it back with the failing output | the merge machine |
+| 8 | A landing message arrives: how the PR ended, and which worktree on this machine still has the branch checked out | you decide what to do with the worktree |
 
-A person steps in when: a run exits 9 (a finding escalated to a person), you ask a question (section 4), or someone labels the PR `arc-hold` (the merge machine then does not take it; the review still runs and a pass is still granted). A reviewer has `[review] max_rounds` turns (default 5) of replies without an LGTM; when it has used them, it lets that head through.
+A person steps in when a run exits 9 (a finding was escalated to a person), when you ask a question (section 4), or when someone labels the PR `arc-hold`. With `arc-hold`, the merge machine does not take the PR; the review still runs and a pass is still granted. A reviewer may reply `[review] max_rounds` times (default 5) without an LGTM; after that, it lets that head through.
 
 ## 2. The commands you run
 
-Add the global `--json` to any of them: stdout then carries exactly one JSON line and no human text; diagnostics (`-v`) go to stderr. Decide success by the **exit code** (section 3), then read the line. On a failure stdout is usually empty and stderr has one line `[A.R.C.] <verb>: <the real error>`; quote that line, do not paraphrase it.
+Add the global `--json` to any of them: stdout then has exactly one JSON line and no human text; diagnostics (`-v`) go to stderr. Judge success by the **exit code** (section 3), then read the line. On a failure, stdout is usually empty and stderr has one line, `[A.R.C.] <verb>: <the real error>`. Quote that line; do not paraphrase it.
 
 | Command | When | Notes |
 |---|---|---|
 | `arc local-review` | before you submit | `--since <rev>` reviews only what changed since that commit. Never edits code. |
-| `arc local-review --show` | to read where each finding stands | no model call, no write |
+| `arc local-review --show` | to see the state of each finding | no model call, no write |
 | `arc fix` / `arc fix <F-id>` / `arc fix <path>` | to let the Fixer answer the findings | needs a clean tree and a local PR; each fix is a commit; undo with `git reset --hard refs/arc/before-fix/<branch>`. `--dry-run` only assesses. |
 | `arc presubmit --base <sha> --target origin/main` | to run `presubmit.toml`'s checks without pushing | exits 11 when a check did not pass |
 | `arc submit --target origin/main --base <sha>` | to open the PR and hand it to review | runs presubmit first; `--branch <name>` refuses if HEAD moved; `--after <N>` lands only after PR N |
 | `arc submit --pr <N>` | to hand a new head of PR N to review | refused without `--pr` when the branch already has an open PR |
 | `arc submit --pr <N> --fix-answers -` | to answer PR N's findings | reads a JSON array on stdin (below); push the fix first |
-| `arc submit --abandon "<why>"` | to end a PR without landing it | the only way to close a PR; your reason is kept verbatim |
+| `arc submit --abandon "<why>"` | to end a PR without landing it | the only way to close a PR; your reason is kept word for word |
 | `arc issues ...` | to read or write the issue board | every write states `--role` (reporter, assignee, verifier, human); judging verbs need `--said` |
 | `arc bridge inbox` / `send` / `post` / `ask` | to talk to sessions and people | section 4 |
 
 Fill `--base` with the merge base after a fetch: `git fetch origin && arc submit --target origin/main --base "$(git merge-base HEAD origin/main)"`.
 
-Answers for `--fix-answers`, one item per finding, `finding` being its number as the review gave it:
+The JSON for `--fix-answers` has one item per finding; `finding` is the finding's number as the review gave it:
 
 ```json
 [{"finding": 3, "kind": "fixed", "text": "carried the error typed"},
  {"finding": 5, "kind": "wontfix", "text": "the empty string is the wire format the client expects"}]
 ```
 
-One bad item refuses them all and nothing is sent.
+If one item is invalid, all are refused and nothing is sent.
 
 ### The `--json` lines
 
-Every envelope starts with `command`. The shapes below are read from the code; values are illustrative.
+Every JSON line starts with `command`. The shapes below are taken from the code; the values are examples.
 
-`arc local-review --json` — `reviewed: false` with nothing beside it means the change changes nothing:
+`arc local-review --json` — `reviewed: false` with no other field means the branch changes nothing:
 
 ```json
 {"command": "local-review", "reviewed": true, "pr": "7", "head": "<40-hex>", "closed": false,
@@ -121,9 +128,9 @@ Every envelope starts with `command`. The shapes below are read from the code; v
  "action_required": true, "success": true}
 ```
 
-`success: false` comes with `error` (the real error text) and nothing else beside `command`, `run_id` and `action_required: false`: the record was not read, so do not read it as "nothing to fix".
+`success: false` comes with `error` (the real error text) and no other fields except `command`, `run_id` and `action_required: false`. It means arc could not read the record; do not take it as "nothing to fix".
 
-`arc submit --json` — `outcome` says which of three:
+`arc submit --json` — `outcome` is one of three:
 
 ```json
 {"command": "submit", "outcome": "submitted", "branch": "<branch>", "sha": "<40-hex>", "pr": 514, "pr_url": "https://...",
@@ -162,7 +169,7 @@ Other commands with `--json` print their own one-line report; read their fields,
 | 5 | filesystem or storage error | report the error | `crates/review/cli/src/error.rs:159` |
 | 6 | transient: rate limit, timeout, outage | retry later | `crates/review/cli/src/error.rs:161` |
 | 7 | a check answered "no": `arc archcheck` found a broken rule | read the report and fix what it names | `crates/review/cli/src/error.rs:164` |
-| 8 | your write took, a record owed elsewhere did not: `arc submit` could not list the PR on a board issue its title names; `arc issues` could not mirror a write to GitHub | do **not** rerun the same command (it would write twice); follow the stderr line (for issues: `arc issues mirror`) | `crates/review/cli/src/error.rs:167` |
+| 8 | your write succeeded, but a second record that should follow it was not written: `arc submit` could not list the PR on a board issue its title names, or `arc issues` could not copy a write to GitHub | do **not** rerun the same command (it would write twice); follow the stderr line (for issues: `arc issues mirror`) | `crates/review/cli/src/error.rs:167` |
 | 9 | the reviewer escalated a finding to a person | stop and hand over; tell the person what is escalated | `crates/review/cli/src/error.rs:170` |
 | 10 | the reviewer's call failed; no round was written | read the error; rerunning calls the reviewer again | `crates/review/cli/src/error.rs:173` |
 | 11 | a presubmit check did not pass, timed out or did not start. `arc submit` still pushed and handed the PR to review | fix the check's failure, push, `arc submit --pr <N>` | `crates/review/cli/src/error.rs:178` |
@@ -170,17 +177,17 @@ Other commands with `--json` print their own one-line report; read their fields,
 
 ## 4. Messages: how they reach you, how you ask a person
 
-You are on the chat server (arc-bridge) under your session's name (`claude -n NAME`; an unnamed session goes by its session id). The hook lines that put you there are in [Connecting your coding agent](coding-agents.md#2-the-agent-as-a-participant-bridge); `arc bridge install-hooks --agent <claude|codex|agy>` writes them and `arc bridge doctor` says why they would not run.
+You are on the chat server (arc-bridge) under your session's name (`claude -n NAME`; a session without a name uses its session id). The hook lines that connect you are in [Connecting your coding agent](coding-agents.md#2-the-agent-as-a-participant-bridge); `arc bridge install-hooks --agent <claude|codex|agy>` writes them and `arc bridge doctor` says why they would not run.
 
-**Mail arrives when your session stops.** The Stop hook asks the server once:
+**Mail arrives when your session stops.** The Stop hook checks the server once:
 
 | In your inbox | What happens |
 |---|---|
-| a message that should interrupt | the stop is held, and the unread mail becomes your next input |
+| a message that should interrupt you | you do not stop; the unread mail becomes your next input |
 | only quiet messages | you stop; they stay in the inbox |
 | nothing | you stop |
 
-Review letters for a PR you submitted, bounces from the merge machine (with the failing tests' output) and landing letters all come this way. Act on them: a review letter carries the findings and the `arc submit --pr <N> --fix-answers -` command to fill in.
+Reviews of a PR you submitted, PRs the merge machine sent back (with the failing tests' output), and landing messages all arrive this way. Act on them: a review message has the findings and the `arc submit --pr <N> --fix-answers -` command to fill in.
 
 | Command | What it does |
 |---|---|
@@ -190,9 +197,9 @@ Review letters for a PR you submitted, bounces from the merge machine (with the 
 | `arc bridge ask "<question>" --on b/<n> --option "A: ..." --option "B: ..."` | ask a person; at least two options |
 | `arc issues block b/<n> --role assignee --said "<question>" --option "..."` | mark an issue blocked on a person's ruling |
 
-**Asking a person.** `arc bridge ask` opens the question as a `q/<n>` on that board issue and posts it into your own room. A person answers it with one click on the board's Projects page; the answer comes back into your room, and so into your session, as `【name】option`. Ask in the checkout whose board holds the issue. Ask when the decision is a person's (scope, a design fork, loosening a rule, deleting something that may be used); decide yourself what the code, the docs or `--help` already settle. A question carries its background, the options with their pros and cons, and your recommendation.
+**Asking a person.** `arc bridge ask` adds the question to that board issue as `q/<n>` and posts it in your own room. A person answers with one click on the board's Projects page. The answer comes back into your room, and so into your session, as `【name】option`. Run it in the checkout whose board has the issue. Ask when the decision belongs to a person (scope, a choice between designs, loosening a rule, deleting something that may be in use). Decide yourself anything the code, the docs or `--help` already answer. A question gives the background, the options with their pros and cons, and your recommendation.
 
-A message that is not delivered exits non-zero with the server's own words; report those words.
+If a message is not delivered, the command exits non-zero with the server's own words; report those words.
 
 ## 5. Rules
 
@@ -207,9 +214,9 @@ A message that is not delivered exits non-zero with the server's own words; repo
 | remove or add the `arc-hold` label unless a person asked | leave it; it is a person's hold |
 | rerun after exit 8 | follow the stderr line; the write already took |
 | summarize a failure ("it failed", "parse error") | quote the real error text, exit code and command |
-| `git reset` away a fix run you do not understand | read `arc local-review --show` first; undo only on purpose, with `refs/arc/before-fix/<branch>` |
+| `git reset` a fix run you do not understand | read `arc local-review --show` first; undo only on purpose, with `refs/arc/before-fix/<branch>` |
 
-On any failure, report: the command you ran, the exit code, and the stderr line or the `error` field as printed. A short excerpt of real output beats a description of it.
+On any failure, report the command you ran, the exit code, and the stderr line or the `error` field exactly as printed. A short excerpt of the real output is better than a description of it.
 
 ## 6. Config: where it lives, what you may touch
 
@@ -220,7 +227,7 @@ On any failure, report: the command you ran, the exit code, and the stderr line 
 | `<repo>/presubmit.toml` | the checks `arc submit` runs before it pushes | yes, as a code change that goes through review |
 | `<repo>/.github/workflows/merge.yml` | the merge gate the merge machine runs | only when the task is the gate itself; it goes through review like code |
 | `<repo>/.arc/delivery.toml`, `.arc/archcheck.toml`, `.arc/arch_waivers.txt` | how the project ships; its architecture rules and waivers | only as a reviewed change; loosening a rule or adding a waiver is a person's decision |
-| `~/.arc/client.toml`, `~/.arc/machine.toml` | the pipeline's address; the pipeline machine's tenants | no |
+| `~/.arc/client.toml`, `~/.arc/machine.toml` | the pipeline's address; the repos the pipeline machine serves | no |
 
 arc takes its runtime inputs as flags, not environment variables: an `ARC_*` variable it does not know stops it (exit 1). To use another provider file, pass `--tars-config <file>` to every call. [Configuration](configuration.md) explains each file.
 
