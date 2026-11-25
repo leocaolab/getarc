@@ -383,7 +383,7 @@ web = "http://<看板主机>:<端口>"
 ```
 
 只有这一个键,写错会被拒绝,不会被忽略。客户端别的都向看板要 —— 聊天服务器在哪、这个仓的测试历史写到哪 —— 地址只在合并机上写一次;
-在合并机上 `arc-server tenant url web` 打印该写的值。没有 `client.toml` 时,bridge 的 hook 一律放行,`arc tap` 写仓里自己的 `.arc/tap.db`。
+在合并机上 `arc-server tenant url web` 打印该写的值。没有 `client.toml` 时,bridge 的 hook 一律放行;`arc tap` 不记测试历史，直接报错说没连上 arc-tap —— 它没有本地的退路。
 
 ### 1.8 `~/.arc/machine.toml`:合并机
 
@@ -827,8 +827,8 @@ skill 让你的编码 agent 替你驱动 arc。它们从不重新实现 arc:跑 
 - **`arc hook install`** —— 每次提交后在后台评审(`arc local-review`),日志在 `.arc/critic.log`;跳过 linked worktree 里的提交、rebase / cherry-pick
   过程中的提交、amend,以及已经评审过的提交。它从不改代码;它也用 `arc tap record` 记下每次提交的 diff(日志在 `.arc/tap.log`)。`arc hook uninstall` 卸掉。
 - **`arc tap`** / **`arc affected`** —— 测试历史,以及一个改动能碰到哪些测试。arc 从不跑你的测试:`arc tap init` 让 JUnit XML 成为你正常跑测试的副产物,
-  `arc tap test` 收进来,`arc tap signal` 显示慢测试和不稳定(flaky)测试。这台机器的看板为这个仓指了集中的 arc-tap(或给了 `--tap-server`)时写进集中库,
-  否则写仓里的 `.arc/tap.db`。
+  `arc tap test` 收进来,`arc tap signal` 显示慢测试和不稳定(flaky)测试。它写进集中的 arc-tap:`--tap-server` 指定的那个，或这台机器的看板为这个仓指的那个;
+  两样都没有就报错停下，不会改写到本地。
 - **`arc reset --yes`** —— 清掉这个仓的本地 arc 历史;保留配置。
 
 ### 5. 命令索引
@@ -1067,16 +1067,17 @@ rules:
   `--rubric-file` 和 `--extra-rubrics` 已经移除。
 - **覆盖还是追加。** 文件名(stem)和内置文件同名(如 `rust_best_practices.yaml`)时,整份覆盖内置的那组规则;
   新文件名则追加到这次评审生效的规则里。
-- **按 commit 读。** 评审读的是被评审的那个 commit 里的 `rubrics/*.yaml`,不是工作树里没提交的文件。改了规则
-  要先提交,之后的评审才会用上。
-- **`.arc/config.toml` 不管规则文件。** 它的 `[review]` 段不能写额外的 rubric 路径;`enable`、`disable`、
-  `experimental` 三个字段还能解析,但运行时已经不读 —— 本地评审只跑 `stable` 规则。
+- **按改动的起点读。** 评审读的是被评审改动的起点(base)上的 `rubrics/*.yaml`,不是工作树里没提交的文件，
+  也不是这次改动自己加的规则。新规则要先合进主干，之后的评审才会用上。
+- **`.arc/config.toml` 选跑哪些规则。** 它的 `[review]` 段不能写额外的 rubric 路径，但能选规则:默认只跑 `stable`;
+  `experimental = true` 把 `experimental` 的也加上;`enable = ["<规则 id>"]` 让列出的规则不管什么状态都跑(`deprecated` 也算);
+  `disable` 列出的永远不跑，同时写在 `enable` 里也不跑。本地评审和流水线上的评审都按它选。
 
 ### 10.3 常见的坑
 
 | 坑 | 怎么回事 |
 |---|---|
-| `status` 默认是 `experimental` | 评审只跑 `stable` 规则,所以省略 `status` 的规则不会生效,也不报错。要上线的规则必须写 `status: stable`。 |
+| `status` 默认是 `experimental` | 默认只跑 `stable` 规则，所以省略 `status` 的规则不会生效，也不报错。要上线的规则写 `status: stable`,或在 `[review]` 里 `enable` 它。 |
 | 未知字段直接报错 | 解析器开了 `deny_unknown_fields`:字段名拼错会让加载失败,而不是被悄悄忽略。 |
 | 语言范围 | 不写语言限制,规则对所有语言的文件都跑。要限定,在文件顶层写 `language: [rust, ...]`,或在单条规则里写 `universality: [rust]`。 |
 
@@ -1486,9 +1487,8 @@ arc 不是代码风格检查工具。代码格式和常规编码风格是传统�
 
 ### 17.1 怎么启用
 
-- **配置开关不管用。** `<repo>/.arc/config.toml` 的 `[review]` 里 `enable`、`disable`、`experimental` 还能解析,
-  但运行时已经不读。本地评审只跑 `status: stable` 的规则,所以 `deprecated` 规则不会执行。
-- **复制过去再启用。** 想用其中某条,把它的定义复制到你仓库的 `rubrics/*.yaml` 里,把状态改成 `status: stable`(§10)。
+- **在配置里打开。** 在 `<repo>/.arc/config.toml` 的 `[review]` 里写 `enable = ["<规则 id>"]`,这条规则就会跑，即使它是 `deprecated`。
+- **或者复制过去改。** 把它的定义复制到你仓库的 `rubrics/*.yaml` 里，按你团队的规范改，状态写成 `status: stable`(§10)。
 
 ### 17.2 内置示例(改前 X → 改后 Y)
 
