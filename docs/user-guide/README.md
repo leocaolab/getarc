@@ -21,7 +21,17 @@ Those tools were made for people. arc is made for a team where agents write most
 2. **Agents can leak.** An agent copies what it sees (logs, config, internal discussion) into what it writes. In arc, what agents write stays on your computer. Reviews and issues are copied to GitHub by default; set `github.mirror = false` for a repo and they stay only in arc ([Configuration](configuration.md#tenant--once-per-repo)).
 3. **arc keeps much more of what happened.** Every test result, every review with each finding and each answer, every issue, every merge and its log, and your agents' conversations. All of it is on your own computer, for you to search, to build your own RAG on, or for anything else ([Your data](data.md)).
 4. **One computer instead of a cloud bill.** The whole pipeline runs on one machine you own. A team that works remotely joins its machines into one company network with Tailscale. On our own repos, from Sep 7 to Oct 12, the merge checks took 2,776 runs, about 189 machine-hours; on GitHub's 16-core runners that is about $446 a month for merge checks alone.
-5. **Most important: infrastructure made for agents, managed by people.** An agent takes a task from the board, writes the code, gets it reviewed, answers the findings and lands it, without a person watching each step. Every command speaks `--json` and has fixed exit codes, so an agent can read what happened ([arc for coding agents](for-agents.md)). People set the rules, answer the questions agents ask, and decide what ships.
+5. **From human message bus to commander.** Without arc, a person passes everything along by hand: runs the tests, tells one agent what another found, rebases, merges, retries, deploys. arc takes over that work: testing, coordination between agents, review rounds, merging, releasing. You spend your time on what only you can do: the high-level discussion, the code and the design, and what your users experience.
+6. **Most important: infrastructure made for agents, managed by people.** An agent takes a task from the board, writes the code, gets it reviewed, answers the findings and lands it, without a person watching each step. Every command speaks `--json` and has fixed exit codes, so an agent can read what happened ([arc for coding agents](for-agents.md)). People set the rules, answer the questions agents ask, and decide what ships.
+
+## What it is like: arc's own numbers
+
+arc is built with arc. From Sep 7 to Nov 25, 2026, on arc's own repo:
+
+- **2,544 PRs landed.** The median PR landed 11 minutes after it was opened.
+- **A milestone in two days.** Multi-tenancy (milestone b/1867): 38 issues, from the first one opened to the last one fixed in 52 hours. The bridge gateway's first project: 31 issues in 52 hours.
+- **Through the night.** 323 PRs landed between midnight and 7 a.m. The longest unbroken run lasted 30.5 hours (Sep 26–27): a PR landed at least every two hours, 162 in all.
+- **Releases on their own.** 87 nightly release runs and 357 deploys. A nightly that failed its checks stopped itself and published nothing.
 
 ## Two parts
 
