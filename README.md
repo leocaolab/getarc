@@ -1,5 +1,18 @@
 # A.R.C. — infrastructure for agents
 
+## Agent setup
+
+Open Claude Code, Codex, or another coding agent inside the repository you want to use, and paste:
+
+<!-- The one source of this prompt: the arc site's homepage and the arc user guide copy it word for word. -->
+```text
+Install the arc-setup skill. If you're in Claude Code, run `claude plugin marketplace add leocaolab/getarc`, then `claude plugin install arc@getarc`. If you're in another agent, run `npx skills add leocaolab/getarc --skill arc-setup` and select your agent. Use one installation method. You can read the skill directly at https://github.com/leocaolab/getarc/blob/main/skills/arc-setup/SKILL.md (raw: https://raw.githubusercontent.com/leocaolab/getarc/main/skills/arc-setup/SKILL.md). Then use the arc-setup skill to install and configure arc in this repository.
+```
+
+The [arc-setup skill](skills/arc-setup/SKILL.md) installs the binary, configures your models (if `claude` is on your PATH, it reuses your Claude Code login with **no API key** needed), runs `arc init`, and verifies everything with a smoke check. It asks before writing anything outside your repo and stops with the exact error if anything fails.
+
+---
+
 **From watching the screen to autopilot: why we built infrastructure for coding agents instead of writing one more workflow.**
 
 **arc is for you if** you run a solo company or a small team, you have a few machines of your own, GitHub Actions costs too much or runs too slow for what you build, you can no longer read every line your agents write, and you want development to run on its own.
@@ -170,14 +183,7 @@ arc rolls out in two steps, each useful on its own:
 
 #### Option A: Let your coding agent set it up
 
-Open Claude Code, Codex, or another coding agent inside the repository you want to use, and paste:
-
-<!-- The one source of this prompt: the arc site's homepage and the arc user guide copy it word for word. -->
-```text
-Install the arc-setup skill. If you're in Claude Code, run `claude plugin marketplace add leocaolab/getarc`, then `claude plugin install arc@getarc`. If you're in another agent, run `npx skills add leocaolab/getarc --skill arc-setup` and select your agent. Use one installation method. You can read the skill directly at https://github.com/leocaolab/getarc/blob/main/skills/arc-setup/SKILL.md (raw: https://raw.githubusercontent.com/leocaolab/getarc/main/skills/arc-setup/SKILL.md). Then use the arc-setup skill to install and configure arc in this repository.
-```
-
-The [arc-setup skill](skills/arc-setup/SKILL.md) installs the binary, configures your models (if `claude` is on your PATH, it reuses your Claude Code login with **no API key** needed), runs `arc init`, and verifies everything with a smoke check. It asks before writing anything outside your repo and stops with the exact error if anything fails.
+Paste the prompt in [Agent setup](#agent-setup) at the top of this page.
 
 #### Option B: Install manually
 
