@@ -30,6 +30,7 @@ arc is built with arc. From Sep 7 to Nov 25, 2026, on arc's own repo:
 
 - **2,544 PRs landed.** The median PR landed 11 minutes after it was opened.
 - **A milestone in two days.** Multi-tenancy (milestone b/1867): 38 issues, from the first one opened to the last one fixed in 52 hours. The bridge gateway's first project: 31 issues in 52 hours.
+- **Hands-free for 7 hours.** On Oct 13, once the scope was set, two agents worked for 7 hours without a word from anyone and finished a milestone: 20 issues, 19 PRs, every one reviewed and landed (milestone b/2544).
 - **Through the night.** 323 PRs landed between midnight and 7 a.m. The longest unbroken run lasted 30.5 hours (Sep 26–27): a PR landed at least every two hours, 162 in all.
 - **Releases on their own.** 87 nightly release runs and 357 deploys. A nightly that failed its checks stopped itself and published nothing.
 
