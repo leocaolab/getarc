@@ -750,6 +750,21 @@ skill 让你的编码 agent 替你驱动 arc。它们从不重新实现 arc:跑 
 每个 skill 先跑同一套前置检查(`plugins/arc-skills/reference/preflight.md`),要查什么就读这本手册 —— 它随插件一起发布(插件的 `docs/`)。安装 agent 的路线是数据:`skills/arc-setup/roadmap.json`(各阶段和验收条件)、
 `known_issues.json`(真实报错 → 原因和解法),加三个只读的 Python 脚本(`probe.py`、`diagnose.py`、`fetch_arc.py`;只要 `python3` 标准库)。
 
+**工作流 skill —— 从一个想法到落地。** 同一个插件里还带着 arc 团队把一件大事从想法做到 PR 落地、并让 agent 一直盯在上面的 skill。
+它们怎么串起来、真实的例子见「最佳实践」。
+
+| skill | 这么说就会用它 | 产出 |
+|---|---|---|
+| `brainstorm` | 「把这段讨论记下来」 | 讨论记录:各个方向和各自的利弊、谁主张什么、最后的决定、对话原文 |
+| `design` | 「设计 X」「X 照设计做了吗」 | 能照着开发的设计文档:用户旅程、需求、组件、接口、测试、成功标准;之后还能核对代码是否照做 |
+| `impl-design` | 「这个设计怎么实现」 | 每条用户旅程写成步骤,每步对到文件和函数,再由一个新 agent 审(最多两轮) |
+| `impl-roadmap` | 「给 X 排路线」 | 按依赖和风险排好的 milestone,每个都能单独上线,并带证明它的测试 |
+| `sync-roadmap` | 「把路线铺到板上」 | `arc issues` 上的 milestone 和 issue,每条引着它来自文档的哪一行;编造或漏掉的,`arc issues plan` 会拒 |
+| `trim-backlog` | 「这个 milestone 还剩什么」 | 每条没关的 issue 对着 `main` 核一遍:已做完、不再需要、归别处、真的还开着,带证据;只写你点头的 |
+| `agent-brief` | 「派个 agent 去做」 | 给编码 agent 的 brief:任务、你的裁定原话、问题放最后;agent 先交模型再写代码 |
+| `loop-scheduler` | 「把这个 milestone 放进 loop」 | `arc issues loop start`:会话每停一次就拿到 milestone 的下一条 issue,直到做完 |
+| `supervisor` | 由第二个会话加载 | 读工作会话的每次停下,决定:放它走、答掉小问题、或在板上问人 |
+
 **审阅 skill —— 我们自己审代码、写代码用的方法。** 同一个 `arc-skills` 插件里还带着 arc 团队自己每天用的审阅方法。
 它们不需要 `arc` 二进制:只有 Markdown 和规则集 ——
 `plugins/arc-skills/rubrics/` 就是 arc 评审员读的那一份规则,不是副本,所以 skill 说的和 `arc local-review` 报的是同一套规则。
@@ -1763,6 +1778,107 @@ Codex CLI 的会话记录目前还不上传。
 - `bridge-archive/` —— 会话记录的附属文件。
 
 拿来做什么:每个房间的消息流、搜过去的对话(`arc intent history`)、监督会话,以及告诉会话 PR 已落地的消息。
+
+## 20. 最佳实践:我们怎么用 arc 做 arc
+
+arc 是用 arc 做出来的。这一节带你走一遍我们实际的做法,例子都来自 arc 自己的看板:每一步对 agent 说了什么、出来了什么、跳过一步时出了什么事。在你的仓里照样做。
+
+你不用敲斜杠命令。下面每一步都是对编码 agent 说一句普通的话,agent 自己加载对应的 skill。
+
+### 1. 第一天:所有 PR 都放行,之后再开真评审
+
+先把所有 PR 路由给 **dummy 评审员**:它不跑模型,对什么都说 LGTM,只有你的合并检查(`merge.yml`)能把 PR 打回。这样在花 token 做评审之前,整条流水线(提交、排队、合并、发布)先跑通。
+
+```toml machine.toml#tenant
+[[tenant.review.route]]
+reviewer = "dummy"
+name     = "dummy"
+```
+
+流水线跑顺了、token 也够了,再换成真评审员:
+
+```toml machine.toml#tenant
+[[tenant.review.route]]
+reviewer = "react"
+name     = "react"
+```
+
+**我们的做法。** 10 月 10 日为了省 token 关掉了模型评审,只留 dummy,合并检查是唯一能打回 PR 的东西。11 月 11 日我们说「之前因为 token 跳过了评审,现在够了,走评审吧」,11 月 12 日把评审模型换成 Sonnet。从那以后,评审意见开始带出真正的后续 PR。`arc-bypass`(把单个 PR 路由给 dummy 的标签)留给极少数真不需要评审的 PR。详见 §13。
+
+### 2. 全仓检查一遍,再让 agent 去修
+
+在已有代码上盖新东西之前,先找出已经错的地方,放上看板,让 agent 并行去修。
+
+> 对整个仓跑 `arc rot`,把找到的问题放上看板,一个问题一条 issue。
+
+agent 跑 `arc rot`(跨文件的结构腐烂)和 `arc local-review`(每个文件对照它的契约),把结果分组、开 issue。然后每组 issue 一个 agent 去修,一个修复一个 PR。
+
+**我们的做法。** 11 月 9 日,我们让 arc 的每一组 crate 同时被检查:每组一个只读 agent,用同一套规则。找出 15 个阻断问题和约 600 个小问题,全部写进一本带文件和行号的账。15 个阻断问题成了 milestone b/2955 下的 b/2956–b/2970,当天由三台机器上的 agent 全部修完;账上记着 30 个 PR 关掉了 371 条发现。剩下的留在看板上当 issue,不是留在谁脑子里的待办。
+
+### 3. 从一个想法到看板上的 issue
+
+大活要过五站。每一站都在仓里留下一个文件,或在看板上留下 issue,不靠一段会被忘掉的聊天。
+
+| 站 | 你说的话(我们的原话) | skill | 产出 |
+|---|---|---|---|
+| 头脑风暴 | 「看看我们 bridge 的设计,和成熟的聊天服务比缺什么?」(贴上问题) | `brainstorm` | 讨论记录:方向、利弊、决定 |
+| 设计 | 「开始设计,然后找另一个 agent 来攻击它。先数据,再鉴权,再频道。」 | `design` | `gateway-design.md` |
+| 实现方案 | 「别问我,我对这些一窍不通。借鉴现在的大聊天服务的设计。」 | `impl-design` | `gateway-impl.md`:每一步对到文件和函数,并审过 |
+| 路线 | 「分开实现,作为两个项目:先 data schema,再功能,鉴权最后。然后拆给很多 agent。」 | `impl-roadmap` | `gateway-roadmap.md`:milestone、79 个任务,每个一个 agent、不到一小时 |
+| 看板 | (同一句) | `sync-roadmap` | milestone b/3179 和 b/3180 及其 issue,每条引着它来自路线的哪一行 |
+
+**我们的做法。** 这是 bridge 网关,11 月 15 到 18 日。设计在 11 月 16 日 17:31 写完,当晚 20:23 上了看板,20:31 agent 开始做第一批 issue。
+
+路上学到的两件事:
+
+- **原型也要过每一站。** 11 月 15 日我们想直接跳到演示,结果重写了两次(「回去看看我们为什么做这个」)。原型的门可以轻,站不能跳。
+- **不懂就直说,让 agent 去借鉴。** 「我对这些一窍不通,借鉴大聊天服务」一句话,不开会就定了大部分技术问题。
+
+### 4. 一个 agent 设计,另一个攻击
+
+写东西的 agent 从不审自己写的。另找一个 agent,它唯一的活就是找错。
+
+> 开始设计,然后找另一个 agent 来攻击它。
+
+**我们的做法。** 网关设计挨了两轮攻击:第一轮 9 个阻断问题,第二轮 4 个,都在设计里答掉,然后停。实现方案写代码之前过了两次独立审查。代码写完后,每份报告都来自没写这段代码的 agent;每批修复再由一个只拿 diff 和规则、新起的 agent 查一遍。
+
+两轮就停。再多的轮次找不到真问题,只剩口味。
+
+### 5. 让 milestone 在 loop 里跑,并且监督它
+
+agent 擅长做一条 issue。放手让它干一件大活,它会追兔子:扩大范围、复查已经没问题的东西、做到一半停下。两样工具让它盯在看板的 issue 上。
+
+**loop。** 在 agent 的会话里:
+
+```bash
+arc issues loop start b/<milestone> --until drained --role assignee
+```
+
+会话每停一次,loop 就把 milestone 的下一条 issue 交给它,直到没有剩下的。我们最干净的一次:milestone b/2573(`arc archcheck` 的九条 issue)。loop 开始后没人对那个会话说过一句话,不到五小时九条全部落地,共 21 个 PR。
+
+**监督者。** 第二个会话读工作会话的每次停下,然后决定:还在推进,放它走;卡在小问题上,替它答掉;是真正的决定,到看板上问人。在第二个会话里加载 `supervisor` skill。设置方法见「组队」那一节。
+
+**agent 跑偏的地方,以及因此定下的规矩:**
+
+| 发生了什么 | 我们说了什么 | 现在的规矩 |
+|---|---|---|
+| 四个 agent 花了两小时轮询 GitHub 等合并结果 | 「为什么要轮询?这几个小时都在烧 token。」 | agent 的活到 `arc submit` 为止,结果会送到派它的会话 |
+| 一个 agent 照着监督会话对一段对话的转述做,做错了(扔掉 58 个文件) | 「你直接贴对话过去它都不会错。」 | brief 带原话,不带转述 |
+| 一次评审不停地派生复查,一直收不拢 | 「你是不是跑偏了?」 | 两轮之后,剩下的变成看板上的 issue |
+| 反过来:东西还没做完就开始评审 | 「不要着急评审,你要把所有缺的功能都做完。」 | 评审前先对着最初的问题清单核一遍做完没有 |
+| 一条流程围着一个出错的 agent 一补再补 | 「参与者适应流程,不要一堆补丁。」 | 修参与者,不修流程 |
+
+### 6. 通过 bridge 说话,不通过人
+
+agent、服务和人都在 arc 的聊天服务上说话。你在会话里会看到:
+
+- **评审员,有意见等你回时:** `review of 7d807b0: 6 open findings have no answer from you on #4566. Answer every one from this session with one arc submit --fix-answers …`
+- **合并服务,PR 落地时:** `fix/b1947-nextest-timeout landed as ad82e56b79bd`
+- **loop,带着下一条 issue:** `loop b/1680: progress 0/1; next b/1877 … (assigned to you)`
+- **一个会话对另一个,接手它的活之前:** `taking over #4461 (b/3069): … please stop the agent you sent on #4461`
+- **需要人的 agent** 在看板上开一个问题(`arc issues block b/<n> --said "…" --option "A: …" --option "B: …"`);人点一个答案,答案回到 agent 的会话里。
+
+没人需要盯着 PR,也没人需要转话。
 
 ## 另见
 

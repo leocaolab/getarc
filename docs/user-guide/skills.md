@@ -75,6 +75,22 @@ Every skill runs the same checks first (the plugin's `reference/preflight.md`) a
 
 The arc-setup skill's steps are stored as data: `skills/arc-setup/roadmap.json` (the steps and how each one is verified), `known_issues.json` (real error lines, each with its cause and fix), and three read-only Python scripts (`probe.py`, `diagnose.py`, `fetch_arc.py`; they need only `python3` and its standard library).
 
+## The workflow skills: from an idea to landed work
+
+The same plugin carries the skills arc's own team uses to take a big piece of work from an idea to landed PRs, and to keep agents on it. How they fit together, with real examples: [Best practices](best-practices.md).
+
+| Skill | Ask for it with | You get |
+|---|---|---|
+| `brainstorm` | "write up this discussion" | a record of the discussion: the directions, each with pros and cons, who argued what, the decision, and the conversation itself |
+| `design` | "design X", "does X follow its design?" | a design document ready to build from: user journeys, requirements, components, interfaces, tests, success criteria; later, a check that the code follows it |
+| `impl-design` | "how do we build this design?" | each user journey written as steps, each step mapped to files and functions, then audited by a fresh agent (at most two rounds) |
+| `impl-roadmap` | "make a roadmap for X" | milestones in order of dependency and risk, each one shippable on its own with the test that proves it |
+| `sync-roadmap` | "put the roadmap on the board" | milestones and issues on `arc issues`, each citing the line of the document it came from; `arc issues plan` refuses what was made up or missed |
+| `trim-backlog` | "what is left in this milestone?" | each open issue checked against `main`: done, no longer needed, owned elsewhere, or really open, with evidence; it writes only what you approve |
+| `agent-brief` | "send an agent to build this" | the brief for a coding agent: the task, your decisions in your own words, and the problem last; the agent hands in its model before code |
+| `loop-scheduler` | "loop this milestone" | `arc issues loop start`: each time the session stops, it gets the next issue of the milestone, until none is left |
+| `supervisor` | loaded by the second session | reads each stop of the working session and decides: let it go, answer a small question, or ask a person on the board ([how to set it up](bridge.md#the-supervisor-optional-claude-code)) |
+
 ## The review skills
 
 The same plugin carries the methods arc's own team uses to review and write code. They do not need the `arc` binary: they are Markdown plus the rubrics. The plugin's `rubrics/` is the same rule set arc's reviewer reads, not a copy, so what a skill tells you and what `arc local-review` reports come from one set of rules.
