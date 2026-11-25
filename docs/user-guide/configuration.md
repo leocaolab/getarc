@@ -20,7 +20,7 @@ Which files you need where:
 
 Each file is explained below. [Set up the pipeline](onboarding.md) writes them with you, in order.
 
-`arc` takes its runtime inputs as command-line flags, not environment variables. The one environment variable it reads for you is the API key a tars provider names (below).
+`arc` takes its runtime inputs as command-line flags, not environment variables. The environment variables it does read are the API key a tars provider names and `TARS_HOME` (both below).
 
 ## `~/.tars/config.toml` — providers and keys
 
@@ -47,7 +47,7 @@ tools = "default"        # a Fixer edits files; the default "disabled" cannot
 timeout_secs = 900       # the default is 300
 ```
 
-`arc init` then puts the critic roles on `claude_critic` and the fixer on `claude_fixer`. The [arc-setup skill](skills.md) writes exactly this when it finds `claude` on your PATH.
+`arc init` then asks which provider reviews and which one fixes: choose `claude_critic` and `claude_fixer`. (Pressing Enter at both questions takes the first provider listed, for both.) The [arc-setup skill](skills.md) writes exactly this when it finds `claude` on your PATH.
 
 ### No API key: use the Codex CLI you are signed in to
 
@@ -85,7 +85,7 @@ auth = { kind = "secret", secret = { source = "env", var = "GEMINI_API_KEY" } }
 
 Export the variable the provider names (`export GEMINI_API_KEY=…`) in the shell you run arc from.
 
-- **`type`** — one of `openai`, `openai_compat`, `anthropic`, `gemini`, `bedrock`, `vllm`, `mlx`, `llamacpp`, `claude_cli`, `claude_sdk`, `codex_cli`, `opencode`, `antigravity`.
+- **`type`** — one of `openai`, `openai_compat`, `anthropic`, `gemini`, `vllm`, `mlx`, `llamacpp`, `claude_cli`, `claude_sdk`, `codex_cli`, `opencode`, `antigravity`.
 - **`default_model`** — a model id to pin one model, or `<series>@latest` (for example `flash@latest`) to always take the newest model of a series. Only some providers define series; for the others, write a model id. Run records always name the model that actually ran, never `@latest`.
 - **`auth`** — `{ kind = "secret", secret = { source = "env", var = "NAME" } }` reads the key from an environment variable; `secret = { source = "file", path = "…" }` reads it from a file. `{ kind = "none" }` is for local servers. The CLI types (`claude_cli`, `codex_cli`) use your own login and take no `auth`.
 
@@ -131,7 +131,7 @@ exclude = ["**/tests/**", "**/docs/**", "**/vendor/**", "**/node_modules/**"]
 
 - `exclude` is the full list of paths that review and `arc rot` skip; arc has no built-in list. Each entry is a glob matched against the file's path from the repo root: `*` stays inside one directory, `**` crosses any number of them. To skip a directory, write `dir/**`. `"tests/**"` skips only the top-level `tests/`; `"**/tests/**"` skips every `tests/`. A malformed glob is an error when the file is read.
 - `max_rounds` (default 5) and `react_turns` (default 24) limit a **local** review: `arc local-review` and `arc fix` in this clone. The pipeline's review has its own limits in `machine.toml` (`review.max_rounds`, `review.react_turns`, [below](#arcmachinetoml--the-pipeline-machine)).
-- The keys `enable`, `disable`, `experimental` and `confidence_floor` are still accepted, but nothing reads them: a local review runs only the stable rules.
+- `enable`, `disable` and `experimental` choose which rules run, here and on the pipeline (the pipeline's reviewer reads the `[review]` of the repo's clone on the pipeline machine): by default only `stable` rules run; `experimental = true` adds the experimental ones; `enable = ["<rule id>"]` runs a rule whatever its status; `disable` turns a rule off, even one also in `enable` ([Custom rubrics](custom-rubrics.md)). `confidence_floor` is accepted, but nothing reads it.
 
 ### `[test]` — where your test results are
 
@@ -190,13 +190,13 @@ command = "cargo clippy --all-targets -- -D warnings"
 - `arc submit` runs the commands in the current branch's `presubmit.toml`, as you.
 - The checks run in order, through `sh -c`, at the repo root. Every check runs; one that fails does not stop the ones after it.
 - Each check runs in its own process group. When it ends, passed or not, arc kills the whole group. Ctrl-C (or a SIGTERM to arc) kills the check that is running.
-- No environment variable is set for a check.
+- A check gets your environment, plus `NO_COLOR=1`, `FORCE_COLOR=0` and `TERM=dumb`, so its output has no colour codes and arc can read the failure lines.
 - A check's output goes to a temporary file, not a pipe, so a background job that keeps the output open does not keep the run waiting. `timeout_seconds` limits the wait.
 
 ### Passes are remembered
 
 - A check that already passed on this commit is skipped. arc remembers each pass under `.arc/cache/presubmit/<commit>/`, one file per command, named by the hash of the command text with the placeholders filled in. So `arc presubmit` followed by `arc submit` of the same HEAD with the same flags runs nothing twice, and a rerun after a failure runs only what has not passed yet. If a pass cannot be written down, the run stops.
-- A check that does run needs a clean working tree (no uncommitted changes, untracked files included), because its pass is recorded for HEAD. If the tree changes or HEAD moves while it runs, no pass is recorded. When every check already passed on HEAD, nothing runs, and a dirty tree does not matter, since HEAD is what gets pushed.
+- A check that does run needs a clean working tree (no uncommitted changes, untracked files included), because its pass is recorded for HEAD. If the tree changes or HEAD moves while a check runs, the run stops with an error naming the changed paths: the remaining checks do not run, and `arc submit` pushes nothing. When every check already passed on HEAD, nothing runs, and a dirty tree does not matter, since HEAD is what gets pushed.
 - The record is the author's own: presubmit is not a security boundary. The merge gate is.
 
 ### Placeholders: `{base}`, `{target}`, `{affected}`
@@ -217,13 +217,13 @@ command = "cargo clippy --all-targets -- -D warnings"
   - the failures arc's test reader finds in the output (tests, compile errors, denied lints), each in its own words;
   - the output itself: the start and the end, with the number of bytes cut stated where they were cut.
   When no line names a failure, only the output is shown. A check that could not start says why. The run still runs every check before it exits 11.
-- Under `--json`, `checks` lists every check in order. Each is an object with `name`, `command`, `result` (`passed`, `passed_before`, `failed`, `timed_out`, `not_started`) and `duration_ms`. A failed check adds `exit_code`, `signal`, `failures` (`[{unit, excerpt}]`, or `null` when none is named) and `output` (`null` when it printed nothing). A timed-out check adds `timeout_seconds`, `failures` and `output`. A check that did not start adds `why`. `passed` says whether all of them passed.
+- Under `--json`, `checks` lists every check in order. Each is an object with `name`, `command`, `result` (`passed`, `passed_before`, `failed`, `timed_out`, `not_started`). A passed check adds `duration_ms`. A failed check adds `duration_ms`, `exit_code`, `signal`, `failures` (`[{unit, excerpt}]`, or `null` when none is named) and `output` (`null` when it printed nothing). A timed-out check adds `timeout_seconds`, `failures` and `output`. A check that did not start adds `why`. `passed` says whether all of them passed.
 
 ### What `arc submit` does with the results
 
 - A failed check does not stop `arc submit`: it still pushes the branch and sends the PR to review, then exits 11 after naming the checks that did not pass.
 - Before it sends the PR to review, `arc submit` writes the results on the pushed commit as a git note under `refs/notes/arc-presubmit`, and pushes it to origin on top of the notes already there. The note is JSON: `{"checks": [{"name", "kind": "passed"|"passed_before"|"failed"|"not_run", "took_ms", "reason"}]}`. `not_run` is a check that ran past its timeout or could not start, and `reason` is what the terminal said. The PR's page and the review board show the note; a commit without one shows "no record".
-- If origin does not accept the note, arc says so in one line, and `--json`'s `presubmit_note` says `not_pushed` with git's words. Nothing fails because of it. `arc presubmit` and `--dry-run` write no note.
+- If origin does not accept the note, arc says so in one line, and `--json`'s `presubmit_note` says `not_pushed` with git's words. Nothing fails because of it. `arc presubmit` writes no note.
 - After the checks, `arc submit` pushes the branch itself. It never pushes over commits the remote branch has and HEAD does not: such a push is refused, never forced. arc checks for this before any check runs, along with these other refusals: a PR already open when you did not pass `--pr`; a `--pr` that is not the branch's open PR; a PR aimed at another branch; an origin with no default branch.
 
 ### The file itself
@@ -249,7 +249,7 @@ web = "http://<board-host>:<port>"
 
 - The file has exactly this one key. A misspelt key is refused, not ignored.
 - Clients ask the board for every other address (where the chat server is, where this repo's test history goes), so those are written only once, on the pipeline machine.
-- Without `client.toml`, the bridge hooks let every stop through, and `arc tap` writes to the repo's own `.arc/tap.db`.
+- Without `client.toml`, the bridge hooks let every stop through, and `arc tap` fails with "not connected": there is no local store to fall back to.
 - On the pipeline machine, `arc-server tenant url web` prints the address to put here ([Set up the pipeline](onboarding.md#32-clients-and-agent-machines)).
 
 ## `~/.arc/machine.toml` — the pipeline machine
@@ -310,7 +310,7 @@ name     = "dummy"
 
 | Key | Default | What it does |
 |---|---|---|
-| `address` | none | this machine's IP address (not a host name); the addresses of the board, the chat server and the test-history store are built from it |
+| `address` | none | this machine's IP address (not a host name). With `expose = true`, the addresses of the board, the chat server and the test-history store are built from it; with `expose = false`, the services listen on `127.0.0.1` and `address` is not used |
 | `expose` | `false` | `true`: listen on `address`, so other machines can reach the board and the chat server; `false`: listen on loopback only. `true` without `address` is refused |
 | `path` | the service manager's | the `PATH` for every gate step and deploy step. Put the toolchains your `merge.yml` needs here |
 | `[machine.web] port` | `8787` | the board's port; `client.toml` names `http://<address>:<port>` |
@@ -334,10 +334,10 @@ name     = "dummy"
 | `review.max_rounds` | `5` | how many replies a reviewer may give without an LGTM; at the limit it counts as an LGTM and the reviewer stops |
 | `review.react_turns` | `24` | how many model calls the `react` reviewer may make on one review |
 | `review.reviewer_timeout_secs` | `3600` | how long a reviewer may run before it is killed and called again |
-| `review.reviewer_attempts` | `3` | how many calls in a row may end without a reply before the review stops and says so in the PR's chat channel |
-| `review.fixer_client` | `author` | who answers the findings: `author` (they are sent to the author's agent session over the chat server), `claude` (`claude -p` fixes them in a worktree of the PR's head), `tars` (arc's own fixer), `nothing` (the author runs `arc submit` again) |
+| `review.reviewer_attempts` | `3` | how many calls in a row may end without a reply before the review stops; with `bridge.enabled = true` it says so in the PR's chat channel |
+| `review.fixer_client` | `author` | who answers the findings: `author` (they are sent to the author's agent session over the chat server; needs `bridge.enabled = true`), `claude` (`claude -p` fixes them in a worktree of the PR's head), `tars` (arc's own fixer), `nothing` (the author runs `arc submit` again) |
 | `review.model_config` | the clone's `.arc/config.toml` | another file whose `[roles]` the real reviewers use |
-| `bridge.enabled` | `false` | `true`: the merge server posts each round's result into the PR's chat channel, as `merger@<owner>:<name>` |
+| `bridge.enabled` | `false` | `true`: the services talk on the chat server. The merge server posts each round's result into the PR's chat channel (as `merger@<owner>:<name>`), findings reach the author's agent session (`review.fixer_client = author`), a review that gives up says so, and the nightly release is announced. With `false`, none of this happens |
 | `github.mirror` | `true` | `false`: reviews are not posted on the PR and the issue board is not copied to GitHub issues; both stay in arc |
 | `[tenant.tap]` | absent | the central test-history store; set `tap.port`, `tap.gate_token` and `tap.tokens` in one `tenant set` |
 | `[tenant.release]` | absent | the nightly release; set `release.clone`, `release.build` and `release.artifact` in one `tenant set` ([Releases and deploys](release.md#the-nightly-release)) |
@@ -350,7 +350,7 @@ name     = "dummy"
 
 When a new version of a PR enters review, every rule whose label the PR has adds its reviewer. A rule without `label` applies only when no labelled rule does. The set of reviewers is then fixed for that version. Every label a rule names must exist on GitHub (`gh label create arc-bypass`). `dummy` runs no model and says LGTM. `basic` and `react` use the `[roles]` from the `.arc/config.toml` in the tenant's clone (at least `critic_l4`, or `default`) and the providers in that machine's `~/.tars/config.toml`.
 
-**Changing a value.** The merge server reads `machine.toml` again every round, but the review service and the board read it only when they start. So run `arc-server tenant check`, then restart them (`systemctl --user restart arc-review@<owner>-<name> arc-web`).
+**Changing a value.** Run `arc-server tenant check`, then restart the services: `systemctl --user restart arc-server@<owner>-<name> arc-review@<owner>-<name> arc-web`. Some values take effect without a restart (each merge round and each review reads the file again), but the merge queue's own settings (`queue.*`, `[[machine.disk]]`), the review service's (routes, `review.gate`, `max_rounds`, `reviewer_attempts`, `fixer_client`, `github.mirror`) and the board's are read only when the service starts.
 
 ---
 
