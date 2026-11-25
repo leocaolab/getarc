@@ -1,85 +1,87 @@
 # Rot — what it is, why it hurts, how arc handles it
 
-Most review tools ask one question: *is this line correct?* arc asks a second one that no single file can answer — *is the system's shape decaying?* That decay is what arc calls **rot**, and finding it is a distinct capability (`arc rot`) with its own rubric, signals, and workflow. This page is the whole idea in one place.
-
-## What rot is
-
-> **Rot is structural decay: a problem whose root lives in the *shape* of the system — its types, module boundaries, dependency direction, cohesion — not in any single line, and which therefore can only be seen across files and fixed across files.**
-
-Four properties separate rot from an ordinary defect:
-
-1. **It is emergent — cross-file.** You cannot see it in one file. A god-module, the same idiom reinvented in five places, a dependency pointing the wrong way, one concept modelled as three different structs in three crates — each is invisible per file and only appears on the system map.
-2. **The root is structural, not local.** The symptom may be a single line, but the rot is the structural weakness that *forces* that line. Fix the line and the rot remains.
-3. **The fix spans many sites.** Widening a return type and updating every caller, splitting a module, inverting a dependency, extracting a shared type — never a one-line patch.
-4. **It accumulates.** "Rot" is literal: as a codebase grows, modules bloat, duplication creeps, layers blur, types weaken. It is decay over time, not a bug that was always wrong.
-
-### The altitude model — L4 vs L5
-
-arc sorts every problem by **altitude**, and rot is the upper one:
-
-| | **L4 — contract** | **L5 — rot** |
-|---|---|---|
-| what | a local, per-file correctness/quality violation | structural decay, emergent across files |
-| root | in this line / this function | in the system's shape (types, layers, cohesion) |
-| fix | local, in place | a restructuring across many sites |
-| found by | `arc local-review` | `arc rot` |
-
-The dividing line is not the *symptom* — it is the *altitude of the root*. The same surface symptom can be either, depending on where its cause lives.
-
-**Worked example — a swallowed error.** A `catch` that drops an error and returns nothing:
-
-- If that one handler merely forgot to propagate, it is **L4** (`l4_contracts::swallowed-exception`). Local. The fix is local: log it, propagate it, or return a value that carries the failure.
-- But if the handler swallows *because the function returns a bare primitive* (`Vec`, `dict`, `bool`) with no channel to carry a failure, it is **L5 rot** (`l5-R-swallowed-error-primitive-return`). The swallow is only the symptom; the rot is the weak return type. The fix is structural: widen the return to `Result`/`Option` and update every caller.
-
-Same symptom, two altitudes. That is the whole distinction in one example: **L4 asks "is this line right?"; rot asks "is the system's skeleton decaying?"**
-
-## Why rot hurts
-
-Rot rarely breaks the build — which is exactly why it is dangerous. It erodes the system's *capacity to change* while every individual test stays green:
-
-- **Silent-failure blast radius.** A swallowed error behind a primitive return runs the whole system on hollow data — downstream sees no failure, only a black hole, and the fault surfaces far from its cause.
-- **Change amplification.** A god-module that accreted unrelated responsibilities means every feature touches it; edits collide, blast radius grows, and no change stays local.
-- **Divergent fixes.** The same logic reinvented across files means a bug fixed in one copy stays alive in the other four. Behaviour drifts apart silently.
-- **Illegal states.** Weak, stringly-typed, or duplicated domain types let the code represent states that should be impossible; the compiler stops helping and correctness slips to runtime.
-- **Lost testability and reuse.** A dependency pointing the wrong way (a pure core reaching into the shell, a lower tier named in a higher one) means the piece can no longer be tested or reused in isolation.
-
-None of these is a bug you can point at. They are the interest payment on structural debt — and they compound, until the system hits the "we have to rewrite it" wall.
-
-## How arc detects it
-
-`arc rot` is the L5 pass. Because rot is *emergent*, a prompt alone cannot find it — you cannot read one file and judge a cross-file pattern. So arc leads with **deterministic signals** that surface candidates, then has the LLM judge them:
+To find structural problems across your whole repo, run:
 
 ```bash
 arc rot              # whole-repo structural review (L5): signals → LLM judge
 arc rot --no-judge   # deterministic signals only — no LLM, cheap, CI-friendly
 ```
 
-The signals, by rot family:
+Most review tools ask one question: *is this line correct?* `arc rot` asks a second one that no single file can answer: *is the shape of the system getting worse?* arc calls that decay **rot**. This page explains what it is, why it matters, and what arc does about it.
 
-- **God-modules** — a blended complexity × fan-out score in the top ~5%, past a ~300-line floor.
-- **Cross-file duplication (reinvention)** — the same idiom in ≥3 files after α-normalization (variables/literals normalized, callee/type names kept).
-- **Duplicated domain types** — one concept modelled by same-named `struct`/`enum` in ≥2 crates.
-- **Structural signals** — a dependency pointing down (a lower tier named in a higher-tier consumer), driver/wiring seams hiding real logic, inheritance fan-out (god-traits), hardcoded policy constants.
+## What rot is
 
-The signal narrows thousands of structural candidates to a handful; the LLM then *confirms* rather than re-derives. `--no-judge` gives you the signal alone — a cheap, deterministic **rot score to trend in CI**.
+> **Rot is structural decay: a problem whose cause lies in the *shape* of the system — its types, module boundaries, which way dependencies point, what belongs together — not in any single line. You can only see it across files, and only fix it across files.**
 
-> Dead-code detection currently lives in `experimental_lab`, off the rot path until it clears a precision bar — `arc rot` does not report it yet.
+Four things set rot apart from an ordinary bug:
 
-## How arc handles it
+1. **You can't see it in one file.** A module that does everything, the same logic written five times, a dependency pointing the wrong way, one concept modelled as three different structs in three crates — each looks fine file by file and only shows up when you look at the whole system.
+2. **The cause is structural.** The symptom may be one line, but rot is the weakness in the structure that *forces* that line. Fix the line and the rot is still there.
+3. **The fix touches many places.** Widening a return type and updating every caller, splitting a module, reversing a dependency, pulling out a shared type — never a one-line patch.
+4. **It builds up over time.** As a codebase grows, modules bloat, copies spread, layers blur and types weaken. Nothing was wrong on day one.
 
-Here arc is deliberately conservative. **It detects and quantifies rot; it does not auto-refactor it.**
+### Two levels: L4 and L5
 
-Rot findings are printed as **suggestions** — **opt-in**. They are kept nowhere but that run's report: they go on no PR, so `arc fix` never sweeps them, because a structural change is large-scale by nature and must be a decision, not a reflex. To act on one, make the restructuring yourself (or have your coding agent make it) on a branch, then `arc local-review` / `arc submit` it like any change:
+arc sorts every problem by where its cause lives. Rot is the upper level:
+
+| | **L4 — contract** | **L5 — rot** |
+|---|---|---|
+| what | a problem inside one file | structural decay across files |
+| cause | in this line or this function | in the system's shape (types, layers, what belongs together) |
+| fix | in place | restructuring across many places |
+| found by | `arc local-review` | `arc rot` |
+
+What decides the level is not the symptom but where its cause is. The same symptom can be either.
+
+**Example: a swallowed error.** A `catch` drops an error and returns nothing.
+
+- If that one handler simply forgot to pass the error on, it is **L4** (`l4_contracts::swallowed-exception`). The fix is local: log it, pass it on, or return a value that carries the failure.
+- If the handler swallows the error *because the function returns a bare value* (`Vec`, `dict`, `bool`) that has no way to carry a failure, it is **L5 rot** (`l5-R-swallowed-error-primitive-return`). The swallow is only the symptom; the cause is the weak return type. The fix is structural: change the return type to `Result` / `Option` and update every caller.
+
+Same symptom, two levels. **L4 asks "is this line right?"; rot asks "is the system's skeleton decaying?"**
+
+## Why rot hurts
+
+Rot rarely breaks the build, which is why it is dangerous. Every test stays green while the system gets harder and harder to change:
+
+- **Failures go silent and spread.** An error swallowed behind a bare return value means the rest of the system runs on empty data. Nothing downstream sees a failure, and the fault shows up far from where it started.
+- **Every change touches the same place.** A module that has collected unrelated jobs gets touched by every feature. Edits collide, and no change stays small.
+- **Copies drift apart.** When the same logic exists in five files, a bug fixed in one copy lives on in the other four.
+- **Impossible states become possible.** Weak, string-based or duplicated types let the code represent states that should never exist. The compiler stops helping, and mistakes show up at runtime instead.
+- **Pieces can't be tested or reused alone.** A dependency pointing the wrong way (pure logic reaching into IO, a lower layer naming a higher one) ties the piece to everything around it.
+
+None of these is a bug you can point at. They are the interest on structural debt, and they compound until the team hits the "we have to rewrite it" wall.
+
+## How arc finds it
+
+Because rot only shows across files, an LLM reading one file at a time cannot find it. So `arc rot` first runs **deterministic checks** that find candidates, then asks the LLM to judge each one.
+
+What the checks look for:
+
+- **Modules that do too much** — a combined size × fan-out score in the top ~5%, and at least ~300 lines.
+- **The same code in several files** — the same pattern in ≥3 files after α-normalization (variable names and literals ignored, called functions and type names kept).
+- **Duplicated types** — one concept defined as same-named `struct` / `enum` in ≥2 crates.
+- **Other structural signs** — a dependency pointing down (a lower layer named after a higher-layer caller), "driver" or "wiring" code hiding real logic, traits or types that too much is forced through (god-traits), and hard-coded policy constants.
+
+The checks narrow thousands of possible spots to a handful; the LLM then confirms them instead of searching from scratch. `--no-judge` skips the LLM and prints the check results alone — a cheap, repeatable **rot score you can track in CI**.
+
+> Dead-code detection lives in `experimental_lab` until it is accurate enough; `arc rot` does not report dead code yet.
+
+## What arc does about it
+
+arc is deliberately careful here. **It finds and measures rot; it does not refactor it for you.**
+
+`arc rot` prints its findings as **suggestions** in that run's report, and keeps them nowhere else. They are not added to any PR, so `arc fix` never touches them: a structural change is big by nature and should be a decision, not a reflex. To act on one, make the change yourself (or have your coding agent make it) on a branch, then `arc local-review` / `arc submit` it like any other change:
 
 ```bash
 arc rot --file <path>       # the suggestions for one file or directory
 arc rot --no-judge          # cheap rot signal to trend over time
 ```
 
-The honest reading: **`arc rot` gives you a rot score to watch, not a refactor button.**
+In short: **`arc rot` gives you a rot score to watch, not a refactor button.**
 
-Why not auto-fix rot the way arc fixes an L4 finding? Because the remedy is a *plan*, not a patch — move this, split that, invert this dependency, in this order, with this blast radius. That plan-level capability (the neuro-symbolic **refactor** engine) is experimental and off the main path; longer term the plan it produces is meant to be executed by a dedicated refactor loop — the mechanical moves by AST rewrite, the semantic ones by an LLM. Until then, rot is surfaced and scored, and *you* decide the restructuring.
+Why not fix rot automatically, the way `arc fix` handles an L4 finding? Because the fix is a *plan*, not a patch: move this, split that, reverse this dependency, in this order, touching these places. arc's **refactor** engine, which produces such plans, is experimental and not part of the main workflow. The longer-term idea is a dedicated refactor loop that carries out the plan — mechanical moves by rewriting the syntax tree, the rest by an LLM. Until then, arc shows and scores rot, and *you* decide how to restructure.
 
 ---
 
-*See also: [Custom rubrics](custom-rubrics.md) to add your own rot axes · [The commands](commands.md) · Finding model.*
+*See also: [Custom rubrics](custom-rubrics.md) to add your own rules · [The commands](commands.md).*
