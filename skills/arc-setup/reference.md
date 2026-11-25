@@ -70,7 +70,18 @@ critic_l5 = "<critic id>"     # `arc rot` structural judge
 fixer     = "<fixer id>"      # must be set explicitly; never falls back to default
 ```
 
-Checks run by the Fixer before committing a fix come from the repo's committed `presubmit.toml`.
+## `presubmit.toml` (stage `presubmit`)
+*See `docs/user-guide/configuration.md` § `<repo>/presubmit.toml`.* Committed, at the repo root. `arc submit` runs it before it pushes; `arc fix` gives the fixer the same checks; `arc presubmit` runs it alone. It needs `timeout_seconds` (per check, 1–86400) and at least one `[[checks]]` with `name` and `command`. A misspelt key is refused.
+
+```toml presubmit.toml
+timeout_seconds = 1800
+
+[[checks]]
+name = "test"
+command = "python3 -m pytest -q"
+```
+
+A command may use `{target}`, `{base}` and `{affected}`; then the run needs `--target origin/<target>` and `--base "$(git merge-base HEAD origin/<target>)"`. Checks run through `sh -c` at the repo root, on a clean tree.
 
 ## Merge gate (`.github/workflows/merge.yml`)
 *See `docs/user-guide/merge-gate.md`.* Executed by a self-hosted merge runner (not GitHub Actions) on both the base branch and the merged tree; a PR lands only if the merged run adds no new failures. Because it is read from the target branch, a PR modifying `merge.yml` is judged by the existing copy on `main`.
@@ -99,16 +110,47 @@ jobs:
 
 Validate each job with: `arc workflow .github/workflows/merge.yml --job <job> --list`.
 
+## The pipeline machine (stages `suite` … `tenant_services`)
+*See `docs/user-guide/onboarding.md` §2–§4 and `docs/user-guide/configuration.md` § `~/.arc/machine.toml`.* Every service reads `~/.arc/machine.toml` and nothing else; `arc-server tenant` with no arguments prints its subcommands.
+
+`[machine]`, written by hand before anything starts:
+
+```toml machine.toml
+[machine]
+address = "10.0.0.5"     # this machine's IP, as the coding machines reach it
+expose  = true           # listen on address; without it the board and the chat server listen on 127.0.0.1 only
+path    = ["/home/ci/.cargo/bin", "/usr/local/bin", "/usr/bin", "/bin"]   # PATH for every gate and deploy step
+```
+
+`arc-server install <clone>` appends the `[[tenant]]` (`id`, `name`, `home`; never edit `id`). The review routes go under it by hand; for a repo nobody else reviews, the one rule routes every PR to the dummy reviewer, which says LGTM:
+
+```toml machine.toml#tenant
+[[tenant.review.route]]
+reviewer = "dummy"
+name     = "dummy"
+```
+
+A model reviewer is `reviewer = "react"` (or `basic`); it uses the clone's `.arc/config.toml` `[roles]` (`critic_l4`, else `default`) and this machine's `~/.tars/config.toml`. A rule with `label = "arc-bypass"` counts only for PRs wearing that label; the label must exist on GitHub.
+
+| Unit | Written by | Start |
+|---|---|---|
+| `arc-bridge.service` | `arc-bridge install` | `systemctl --user enable --now arc-bridge.service` |
+| `arc-web.service` | `arc-web install` | `systemctl --user enable --now arc-web.service`; `restart` after each registered repo |
+| `arc-server@<owner>-<name>.service` (and the `arc-rot@` units) | `arc-server install <clone>` | `systemctl --user enable --now arc-server@<owner>-<name>.service` |
+| `arc-review@<owner>-<name>.service` | `arc-review install` | `systemctl --user enable --now arc-review@<owner>-<name>.service` |
+
+Run `systemctl --user daemon-reload` after an `install`. `arc-server tenant check <owner/name>` checks a tenant (`ok` / `skip` / `warn` / `FAIL` per line); `arc-server tenant url web` prints the address for `~/.arc/client.toml`; `arc-server tenant show` prints every value in effect and where it came from.
+
 ## Deploy (`[release]` + `.arc/delivery.toml`)
 *See `docs/user-guide/release.md`.* Runs on the merge machine in its clone of the repo.
 - Define a deploy job (in any workflow file) with a `concurrency:` group that builds in `$RUNNER_TEMP`, deploys `${ARC_DEPLOY_REF:-main}`, writes the shipped commit SHA to `$ARC_SHIPPED_SHA`, and marks live rollout steps with `phase: deploy`.
-- In `.arc/config.toml`: `[release] workflow = "<file>"`, `job = "<job>"`.
+- In the tenant clone's `.arc/config.toml` on the merge machine: `[release] workflow = "<file>"`, `job = "<job>"`.
 - In `.arc/delivery.toml` (committed): one `[builds.<id>]` referencing the same `workflow` and `job` (`from = "main"`, `on = "merge"` to deploy after each merge), plus `[targets.<id>]` (`kind = "service"|"binary"`, `promote = "auto"|"manual"`, `from = "<build id>"`).
 - Validate with `arc workflow <file> --job <job> --list`. Never run the deploy job without `--list`.
 
-## Bridge (agent participant)
-*See `docs/user-guide/coding-agents.md`.* Requires the pipeline's `arc-bridge` server (see `docs/user-guide/onboarding.md`).
-- `~/.arc/client.toml`, one key: `web = "http://<board-host>:<port>"`.
+## Bridge (stage `client`)
+*See `docs/user-guide/coding-agents.md`.* Needs the pipeline's `arc-web` and `arc-bridge` (stages `board` … `tenant_services`).
+- `~/.arc/client.toml`, one key: `web = "http://<board-host>:<port>"`, the value `arc-server tenant url web` prints on the pipeline machine.
 - **Claude Code hooks** (in `~/.claude/settings.json` or `.claude/settings.json`; `arc` does not install these automatically):
 
 ```json

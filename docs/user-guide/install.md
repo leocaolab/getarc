@@ -4,7 +4,7 @@
 
 ### Agent setup
 
-Paste this into your coding agent (Claude Code, Codex, or another) in the repository you want arc in. It installs arc, sets up the providers and runs `arc init`, and asks before it touches anything global.
+Paste this into your coding agent (Claude Code, Codex, or another) in the repository you want arc in. It installs all of arc with you — the CLI here, then the pipeline machine (the server suite, the board, the repo registered with its review routes) — and ends with a first PR the pipeline landed, asking before it touches anything global.
 
 ```text wrap
 Set up A.R.C. (arc) in this repository with the arc-setup skill. If you're in Claude Code, run `claude plugin marketplace add leocaolab/getarc`, then `claude plugin install arc@getarc`. If you're in another agent, run `npx skills add leocaolab/getarc --skill arc-setup` and select your agent. Use one installation method. You can read the skill directly at https://github.com/leocaolab/getarc/blob/main/skills/arc-setup/SKILL.md (raw: https://raw.githubusercontent.com/leocaolab/getarc/main/skills/arc-setup/SKILL.md). Then use the arc-setup skill to install and configure arc here.
@@ -61,12 +61,12 @@ In the repo you want arc on, paste this into Claude Code, Codex or another codin
 Install the arc-setup skill. If you're in Claude Code, run `claude plugin marketplace add leocaolab/getarc`, then `claude plugin install arc@getarc`. If you're in another agent, run `npx skills add leocaolab/getarc --skill arc-setup` and select your agent. Use one installation method. You can read the skill directly at https://github.com/leocaolab/getarc/blob/main/skills/arc-setup/SKILL.md (raw: https://raw.githubusercontent.com/leocaolab/getarc/main/skills/arc-setup/SKILL.md). Then use the arc-setup skill to install and configure arc in this repository.
 ```
 
-The [arc-setup skill](https://github.com/leocaolab/getarc/blob/main/skills/arc-setup/SKILL.md) installs the binary, then the providers in tars, `arc init`'s roles and a first run, asking before anything global. What each skill and plugin does: [Skills and plugins](skills.md).
+The [arc-setup skill](https://github.com/leocaolab/getarc/blob/main/skills/arc-setup/SKILL.md) installs the binary, then the providers in tars, `arc init`'s roles, `presubmit.toml` and the merge gate, then walks you through the pipeline machine ([Set up the pipeline](onboarding.md)) to a first landed PR, asking before anything global. What each skill and plugin does: [Skills and plugins](skills.md).
 
 | Step | Asks | Writes |
 |---|---|---|
 | `install.sh` | nothing | the `arc` binary, in `~/.local/bin` (or `--to`) |
-| the arc-setup skill | which models to use — when `claude` is on your PATH it proposes Claude Code (no API key) — and before every global write | `~/.tars/config.toml`, `.arc/config.toml`, then a first run |
+| the arc-setup skill | which models to use — when `claude` is on your PATH it proposes Claude Code (no API key) — and before every global write | `~/.tars/config.toml`, `.arc/config.toml`, `presubmit.toml`, `merge.yml`; on the pipeline machine `~/.arc/machine.toml` and the units; `~/.arc/client.toml` and the agent hooks |
 | `arc init` (in a terminal) | which provider reviews and which fixes, from those already in `~/.tars/config.toml`; with none there it stops and says so | `.arc/config.toml`, `.arc/.gitignore` |
 
 ### GitHub's CLI (`gh`)
