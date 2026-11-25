@@ -43,8 +43,7 @@ Inspect `arc fix … --json` for `transitions` (how each finding was resolved), 
 All fixes are committed on the current branch, and the pre-fix HEAD is saved at `refs/arc/before-fix/<branch>`. Pushing is an outward action — ask the user first:
 ```bash
 git log --oneline refs/arc/before-fix/<branch>..HEAD   # review commits from this run
-git push                                                # personal edition: push directly
-git push && arc submit                                  # team edition: push and submit for pipeline review
+arc submit                                              # push and hand the branch to the pipeline's review
 git reset --hard refs/arc/before-fix/<branch>           # undo the entire fix run
 ```
-In the team edition, the pipeline review results appear on the PR's review page (and arrive in your session if `arc bridge` is enabled).
+The pipeline's review results appear on the PR's review page (and arrive in your session if `arc bridge` is enabled).

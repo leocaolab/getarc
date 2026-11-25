@@ -91,7 +91,7 @@
       "id": "agents",
       "title": "Coding agents: Fixer CLI and bridge hooks",
       "optional": true,
-      "asks": ["Which coding agent do you use (Claude Code, Codex CLI, agy)? Do you have an arc-bridge server address from an operator?"],
+      "asks": ["Which coding agent do you use (Claude Code, Codex CLI, agy)? Is your pipeline machine up yet (its board address is what ~/.arc/client.toml needs)?"],
       "verify": "arc bridge inbox",
       "criteria": [
         {"id": "fixer_cli_present", "level": "advice", "says": "the fixer provider's agent CLI (claude / codex / agy) is on PATH"},
@@ -109,7 +109,7 @@
         {"id": "rot_offline_runs", "level": "required", "says": "`arc rot --no-judge` exits 0 here (binary, repo and [review] exclude all read)"},
         {"id": "origin_remote", "level": "info", "says": "the repo has an origin remote (`arc submit` pushes to it)"},
         {"id": "gh_authed", "level": "info", "says": "`gh auth status` succeeds (`arc submit` opens the PR through gh)"},
-        {"id": "review_service_here", "level": "info", "says": "this machine's ~/.arc/machine.toml serves this repo as a tenant (team edition), so a review service here takes the PR `arc submit` opens; `arc local-review` / `arc fix` need none"}
+        {"id": "review_service_here", "level": "info", "says": "this machine's ~/.arc/machine.toml serves this repo as a tenant, so a review service here takes the PR `arc submit` opens; `arc local-review` / `arc fix` need none"}
       ],
       "sources": ["crates/review/cli/src/workflow/local_review/mod.rs (the clone's own review.db)", "crates/apps/cli/src/cli/dispatch.rs (writer_of)", "crates/review/cli/src/bootstrap/record.rs", "crates/review/cli/src/workflow/submit/mod.rs (QUEUE_REMOTE)"]
     }

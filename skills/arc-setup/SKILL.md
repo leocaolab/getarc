@@ -36,7 +36,6 @@ The scripts require `python3` (3.11+ for TOML checks; older versions report `ok:
 5. **When the probe and the user disagree, show the fact and ask.** For example, if they say they have no bridge server but `~/.arc/client.toml` configures one, show what the file contains and let them decide. Never silently override either side.
 6. **Keep questions minimal and batched.** Only ask when the probe cannot determine the answer and the stage requires user input. Batch all questions for a stage into one message.
 7. **Stop on failure.** Go to *Troubleshooting*; never skip ahead or paper over a failure with a different command.
-8. **Be clear about what is not public.** The team edition's review server, merge server, release page, and `arc bridge` server are not publicly released. Any stage requiring them needs an operator — never act as if the user can install them from `getarc`.
 
 ## Stages
 
@@ -48,7 +47,7 @@ Follow `next` from `probe.py`. For each stage: probe → ask (if needed) → app
 
 **2. `binary`**
 - If `arc` is missing or lacks required subcommands, run `fetch_arc.py --stage-dir <scratch>` first (downloads without installing) and show the user the version and `missing_verbs`.
-- **Release selection:** `getarc`'s latest release (default) is what this skill targets. Only pass `--version <tag>` if the user asks for a specific release, or `--from URL` if they provide a mirror or local directory (`file:///…`); these two flags are mutually exclusive. Note that releases also include `arc-suite-<platform>.tar.gz` (the operator-hosted server suite — not installed by this skill) and `arc-skills.tar.gz` (this plugin).
+- **Release selection:** `getarc`'s latest release (default) is what this skill targets. Only pass `--version <tag>` if the user asks for a specific release, or `--from URL` if they provide a mirror or local directory (`file:///…`); these two flags are mutually exclusive. Note that releases also include `arc-suite-<platform>.tar.gz` (the server suite for the pipeline machine — see `docs/user-guide/onboarding.md`) and `arc-skills.tar.gz` (this plugin).
 - **If `missing_verbs` is empty:** ask where to install. Suggest `~/.local/bin` (no `sudo` needed). If that directory isn't on `PATH`, show the shell profile line needed to add it and let the user approve editing it. Then run `--install-to` and re-probe.
 - **If `missing_verbs` is non-empty:** the latest public release predates this skill. Stop and report the release tag, missing verbs, and release URL. Do not install it or substitute old commands.
 
@@ -80,10 +79,10 @@ Ask whether a self-hosted merge machine will land/deploy this repo; skip if not.
 
 **7. `smoke`**
 Run read-only checks first — `arc rot --no-judge` must exit `0`. Then summarize what works right now:
-- **Personal edition** needs no server: `arc local-review` and `arc fix` work locally using `.arc/review.db`. Both require an `origin` remote (to diff against its default branch) and an identity — either running inside a coding agent session or having `gh auth login` configured (otherwise they fail with `cannot tell who is submitting`). If `gh_authed` is `false`, explain the impact: inside an agent session, local commands still work; from a plain terminal, `local-review` and `fix` will refuse, and `arc submit` cannot run. To fix it, the user should install `gh` (https://cli.github.com) and run `gh auth login` themselves (it's interactive, so never run it for them).
-- If `review_service_here` is `false` (normal for personal setups), note plainly that no team review service is watching this repo from this machine, though the personal edition works fine.
+- `arc local-review` and `arc fix` need no server: they work locally using `.arc/review.db`. Both require an `origin` remote (to diff against its default branch) and an identity — either running inside a coding agent session or having `gh auth login` configured (otherwise they fail with `cannot tell who is submitting`). If `gh_authed` is `false`, explain the impact: inside an agent session, local commands still work; from a plain terminal, `local-review` and `fix` will refuse, and `arc submit` cannot run. To fix it, the user should install `gh` (https://cli.github.com) and run `gh auth login` themselves (it's interactive, so never run it for them).
+- If `review_service_here` is `false` (normal on a coding machine), this machine does not run the review service; `arc submit` hands the PR to the pipeline machine.
 - Note which providers haven't made a live LLM call yet (arc has no standalone ping command, and `arc rot` only calls `critic_l5` if it finds structural suspects).
-- `arc submit` pushes the branch, opens a PR, and queues it for a team review service. It is an outward action — always ask before running it, and warn the user if no review service is watching the repo.
+- `arc submit` pushes the branch, opens a PR, and hands it to the pipeline's review service. It is an outward action — always ask before running it.
 
 ## Troubleshooting
 
@@ -102,5 +101,4 @@ End with a summary table covering every stage:
 | `prereq` … `smoke` | `done` / `already there` / `skipped (<why>)` / `failed` / `needs an operator` | Verify command & output, or raw error |
 
 Then give the next useful command:
-- **Personal edition:** on a feature branch, run `arc local-review`, then `arc fix`, then `git push` (and `arc rot` for a whole-repo structural check).
-- **Team edition** (once an operator's review service is watching the repo): `arc submit`.
+- On a feature branch: `arc local-review`, then `arc fix`, then `arc submit` (and `arc rot` for a whole-repo structural check).

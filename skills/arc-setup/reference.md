@@ -107,7 +107,7 @@ Validate each job with: `arc workflow .github/workflows/merge.yml --job <job> --
 - Validate with `arc workflow <file> --job <job> --list`. Never run the deploy job without `--list`.
 
 ## Bridge (agent participant)
-*See `docs/user-guide/coding-agents.md`.* Requires an operator-hosted `arc-bridge` server.
+*See `docs/user-guide/coding-agents.md`.* Requires the pipeline's `arc-bridge` server (see `docs/user-guide/onboarding.md`).
 - `~/.arc/client.toml`, one key: `web = "http://<board-host>:<port>"`.
 - **Claude Code hooks** (in `~/.claude/settings.json` or `.claude/settings.json`; `arc` does not install these automatically):
 
