@@ -729,8 +729,7 @@ skill 让你的编码 agent 替你驱动 arc。它们从不重新实现 arc:跑 
 | `automate` | 「每次提交都跑 arc」「用 arc 卡合并」 | post-commit hook(`arc hook install`),或合并门禁的 `merge.yml` |
 | `maintain` | 「arc 坏了」「重置 arc」 | 诊断失败的命令、清本地状态、换 provider 角色 |
 
-每个 skill 先跑同一套前置检查(`plugins/arc-skills/reference/preflight.md`),按同一套方式分 finding
-(`plugins/arc-skills/reference/triage.md`)。安装 agent 的路线是数据:`skills/arc-setup/roadmap.json`(各阶段和验收条件)、
+每个 skill 先跑同一套前置检查(`plugins/arc-skills/reference/preflight.md`),要查什么就读这本手册 —— 它随插件一起发布(插件的 `docs/`)。安装 agent 的路线是数据:`skills/arc-setup/roadmap.json`(各阶段和验收条件)、
 `known_issues.json`(真实报错 → 原因和解法),加三个只读的 Python 脚本(`probe.py`、`diagnose.py`、`fetch_arc.py`;只要 `python3` 标准库)。
 
 **审阅 skill —— 我们自己审代码、写代码用的方法。** 同一个 `arc-skills` 插件里还带着 arc 团队自己每天用的审阅方法。

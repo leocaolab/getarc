@@ -39,8 +39,8 @@ Always show the user the `arc reset` listing before running `--yes`.
 Edit `[roles]` in `.arc/config.toml` (`critic_l4`, `critic_l5`, `critic`, `default`, `fixer` — each mapped to a provider ID in `~/.tars/config.toml`), or run `arc init --force` in an interactive terminal. Keep the fixer on a different model family from the critic when possible, and always specify `fixer` explicitly. Re-run `probe.py --stage roles` afterward.
 
 ## Check run progress
-- **Personal edition:** `arc local-review --show` prints the branch's local PR and the status of every finding.
-- **Team edition:**
+- **Before submit:** `arc local-review --show` prints the branch's local PR and the status of every finding.
+- **On the pipeline:**
   ```bash
   curl <web>/api/r/<owner>/<name>/progress/<b/N|PR|branch>   # check PR progress (`web` is in ~/.arc/client.toml)
   ```

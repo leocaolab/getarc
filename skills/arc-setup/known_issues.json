@@ -150,8 +150,8 @@
       "stage": "smoke",
       "pattern": "is not a tenant in .*machine\\.toml",
       "source": "crates/infra/fs/src/tenants.rs:64 (StoreError::NotATenant)",
-      "cause": "a team-edition lookup found no tenant for this repo in this machine's ~/.arc/machine.toml: no review service serves it here. `arc local-review` and `arc fix` never ask (they use the clone's own .arc/review.db); this comes from arc's services, which are not publicly released.",
-      "fix": "not fixable by the install: report it. Registering a tenant is the operator's (`arc-server tenant add`), on a machine running arc's services."
+      "cause": "a pipeline lookup found no tenant for this repo in this machine's ~/.arc/machine.toml: no review service serves it here. `arc local-review` and `arc fix` never ask (they use the clone's own .arc/review.db); this comes from arc's services.",
+      "fix": "on the pipeline machine, register the repo with `arc-server install <clone>` (or `arc-server tenant add <clone>`); see docs/user-guide/onboarding.md."
     },
     {
       "id": "hook_no_review",
@@ -198,8 +198,8 @@
       "stage": "agents",
       "pattern": "no arc-bridge server is configured",
       "source": "crates/bridge/cli/src/workflow/collect.rs (and history.rs / talk.rs); docs/user-guide/coding-agents.md",
-      "cause": "~/.arc/client.toml names no board. The bridge server is an operator's, not publicly released.",
-      "fix": "only with an address from the operator: write `web = \"http://<host>:<port>\"` to ~/.arc/client.toml (ask first — global file)."
+      "cause": "~/.arc/client.toml names no board, so the client does not know where the pipeline is.",
+      "fix": "on the pipeline machine `arc-server tenant url web` prints the address; write `web = \"http://<host>:<port>\"` to ~/.arc/client.toml (ask first — global file)."
     }
   ]
 }

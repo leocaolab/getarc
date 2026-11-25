@@ -26,7 +26,7 @@ arc hook uninstall     # remove the hook
 - The hook is read-only: it never edits or commits code. To apply fixes, run `arc fix`.
 
 **B) Gate every merge — `.github/workflows/merge.yml`**
-In the team edition, a self-hosted merge runner executes `.github/workflows/merge.yml` on both the base branch and the merged tree, landing the PR only if it introduces no new failures. Writing and validating this file is stage 5 of **`arc-skills:arc-setup`** (see `docs/user-guide/merge-gate.md`, and validate jobs with `arc workflow .github/workflows/merge.yml --job <job> --list`). Note that the merge server itself is operator-hosted and not publicly released.
+The pipeline's merge machine executes `.github/workflows/merge.yml` on both the base branch and the merged tree, landing the PR only if it introduces no new failures. Writing and validating this file is stage 5 of **`arc-skills:arc-setup`** (see `docs/user-guide/merge-gate.md`, and validate jobs with `arc workflow .github/workflows/merge.yml --job <job> --list`).
 
 ## 3. What automation does not do
 `arc` has no built-in cron scheduler, and GitHub Actions never triggers `merge.yml` (its only trigger is `workflow_dispatch`). Also remember that `arc local-review` exits `0` even when it finds issues — any unattended script gating on findings must inspect `--json` (see `preflight.md`).

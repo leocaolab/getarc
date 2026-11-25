@@ -61,13 +61,13 @@ Each skill is called by name (`arc:<skill>` from getarc, `arc-skills:<skill>` ot
 | Skill | Ask for it with | What it does |
 |---|---|---|
 | `arc-setup` | "install arc", "set up arc" | the install agent: binary from getarc, providers in tars, `arc init` roles, optional merge gate / deploy / agent hooks, then a smoke test. It probes what is already there, does only what is missing, verifies each stage with one command and stops with the real error when one fails |
-| `review` | "review my changes", "arc local-review this" | runs `arc local-review` and shows the real findings first, triaged into core and noise. Read-only |
+| `review` | "review my changes", "arc local-review this" | runs `arc local-review` and shows the reviewer's findings as arc prints them. Read-only |
 | `fix` | "fix the real issues", "arc fix" | runs `arc fix` after a local review: the Fixer answers the local PR's findings, one commit per fix on the current branch. It pushes nothing |
 | `rot` | "fix the rot", "arc rot" | works through `arc rot`'s structural suggestions as multi-file refactors; it edits and commits, so it confirms first |
 | `automate` | "run arc on every commit", "gate merges on arc" | the post-commit hook (`arc hook install`), or the merge gate's `merge.yml` |
 | `maintain` | "arc is failing", "reset arc" | diagnoses a failing command, resets local state, swaps a provider role |
 
-Every skill runs the same preflight first (the plugin's `reference/preflight.md`) and sorts findings the same way (`reference/triage.md`). The install agent's route is data: `skills/arc-setup/roadmap.json` (stages and their completion criteria), `known_issues.json` (real error lines → cause and fix), and three read-only Python scripts (`probe.py`, `diagnose.py`, `fetch_arc.py`; `python3` only, standard library).
+Every skill runs the same preflight first (the plugin's `reference/preflight.md`) and reads this user guide, which ships inside the plugin (`docs/`). The install agent's route is data: `skills/arc-setup/roadmap.json` (stages and their completion criteria), `known_issues.json` (real error lines → cause and fix), and three read-only Python scripts (`probe.py`, `diagnose.py`, `fetch_arc.py`; `python3` only, standard library).
 
 ## The review skills
 

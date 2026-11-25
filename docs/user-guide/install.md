@@ -1,5 +1,17 @@
 # Install
 
+## Quickstart
+
+### Agent setup
+
+Paste this into your coding agent (Claude Code, Codex, or another) in the repository you want arc in. It installs arc, sets up the providers and runs `arc init`, and asks before it touches anything global.
+
+```text wrap
+Set up A.R.C. (arc) in this repository with the arc-setup skill. If you're in Claude Code, run `claude plugin marketplace add leocaolab/getarc`, then `claude plugin install arc@getarc`. If you're in another agent, run `npx skills add leocaolab/getarc --skill arc-setup` and select your agent. Use one installation method. You can read the skill directly at https://github.com/leocaolab/getarc/blob/main/skills/arc-setup/SKILL.md (raw: https://raw.githubusercontent.com/leocaolab/getarc/main/skills/arc-setup/SKILL.md). Then use the arc-setup skill to install and configure arc here.
+```
+
+The rest of this page is the whole install by hand.
+
 arc is one tool with two halves: the `arc` CLI, on every machine where people or agents write code, and the **server suite**, on one machine you own, which runs the pipeline — review, merge, release. Installing arc means installing both. Everything ships as release binaries from **[getarc releases](https://github.com/leocaolab/getarc/releases/latest)**; no source is needed.
 
 The whole path, in order:
