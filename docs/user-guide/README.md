@@ -1,8 +1,29 @@
 # A.R.C. — User Guide
 
-**Let your coding agents write the code. arc checks it before it lands.**
+**A development platform for small startups, built for agents and run on your own computer. Agents do the work; people manage it.**
 
-A.R.C. (Adversarial Resolution Cycle) is a code-review tool. Two models work against each other: a **Critic** reads your change and points out problems (each one is a **finding**), and a **Fixer** edits the code and answers each finding. They go back and forth until the Critic says LGTM ("looks good to me"), or a person steps in. arc keeps every finding and every answer in `<repo>/.arc/` (SQLite), with a timeline of events that is only ever added to.
+## What arc is
+
+arc is where your coding agents work, from a task to code in production. It is made for a small startup: fewer than 10 people, often working remotely. It runs on one computer you own.
+
+| | What arc does |
+|---|---|
+| **Project management** | An issue board that you and your agents both work from: plans, tasks, questions an agent needs a person to answer ([Working on the board](working-on-the-board.md)). |
+| **Review** | A **Critic** model reads each change and points out problems (each one is a **finding**). A **Fixer** edits the code and answers each finding. They go back and forth until the Critic says LGTM ("looks good to me"), or a person steps in. This runs on your machine before you submit, and on the pipeline for every PR ([Review on the pipeline](pipeline-review.md)). |
+| **Merge** | A merge queue runs your own `merge.yml` on the newest `main` and lands a PR only when its reviewers said LGTM and nothing new fails ([Merge](merge-gate.md)). |
+| **Release** | A nightly release, and deploys when you ask for one ([Releases and deploys](release.md)). |
+
+## Why arc, and not GitHub, Jira or Linear
+
+Those tools were made for people. arc is made for a team where agents write most of the code.
+
+1. **Agents are noisy.** An agent writes a lot: many findings, many replies, many rounds on the same PR, many issues. On GitHub, Jira or Linear all of it goes into the timelines and notifications people read. In arc it goes on arc's own board, and people read the outcome.
+2. **Agents can leak.** An agent copies what it sees (logs, config, internal discussion) into what it writes. In arc, what agents write stays on your computer. Reviews and issues are copied to GitHub by default; set `github.mirror = false` for a repo and they stay only in arc ([Configuration](configuration.md#tenant--once-per-repo)).
+3. **arc keeps much more of what happened.** Every test result, every review with each finding and each answer, every issue, every merge and its log, and your agents' conversations. All of it is on your own computer, for you to search, to build your own RAG on, or for anything else ([Your data](data.md)).
+4. **One computer instead of a cloud bill.** The whole pipeline runs on one machine you own. A team that works remotely joins its machines into one company network with Tailscale. On our own repos, from Sep 7 to Oct 12, the merge checks took 2,776 runs, about 189 machine-hours; on GitHub's 16-core runners that is about $446 a month for merge checks alone.
+5. **Most important: infrastructure made for agents, managed by people.** An agent takes a task from the board, writes the code, gets it reviewed, answers the findings and lands it, without a person watching each step. Every command speaks `--json` and has fixed exit codes, so an agent can read what happened ([arc for coding agents](for-agents.md)). People set the rules, answer the questions agents ask, and decide what ships.
+
+## Two parts
 
 arc has two parts, and you install both:
 
@@ -53,7 +74,7 @@ To install by hand, start at [Install](install.md).
 
 [Troubleshooting](troubleshooting.md)
 
-## What arc is (and is not)
+## How arc reviews, in short
 
 - **It reviews your code, in 9 languages:** Rust, Python, TS, JS, Go, Java, C, C++, Swift. arc picks the language support by the language of the repo it reviews.
 - **It reports; it does not block on its own.** A finding does not fail your build. arc tells you what it found, and you (or the Fixer) decide what to do. On the pipeline, two things decide whether a PR lands: the reviewers' LGTM and your own `merge.yml`.

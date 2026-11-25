@@ -2,10 +2,36 @@
 
 > English: [`user-guide/README.md`](user-guide/README.md)
 
-**让 agent 放手写代码,由 arc 把关。**
+**给小创业团队的开发平台:为 agent 而建,跑在你自己的电脑上。agent 干活,人来管。**
 
-把一个长任务交给编码 agent,最怕的是代码跑通了,坑也埋下了。arc 让两个模型对着干:评审员(Critic)挑毛病,
-修复者(Fixer)逐条改、逐条答,来回几轮,直到评审员说 LGTM(Looks Good To Me),或者轮数用完、交给人拍板。
+## arc 是什么
+
+arc 是你的编码 agent 干活的地方:从一条任务,到代码上线。它给小创业团队用 —— 10 个人以下,常常各在各地;
+整套东西跑在你自己的一台电脑上。
+
+| | arc 做什么 |
+|---|---|
+| **项目管理** | 一块 issue 看板,你和 agent 都在上面干活:计划、任务、agent 要人回答的问题(§18)。 |
+| **评审** | 评审员(Critic)读每个改动、挑出问题,每个问题叫一条 **finding**;修复者(Fixer)改代码、逐条回答。来回几轮,直到评审员说 LGTM(Looks Good To Me),或者交给人拍板。提交前在你机器上跑一遍,流水线上每个 PR 再跑一遍(§4、§13)。 |
+| **合并** | 合并队列在最新的 `main` 上跑你自己的 `merge.yml`;评审员说了 LGTM、又没有新失败,PR 才落地(§14)。 |
+| **发布** | 每晚发布一次;要部署时随时可以部署(§15)。 |
+
+## 为什么用 arc,而不用 GitHub、Jira、Linear
+
+那些工具是给人用的。arc 给的是「代码大多由 agent 写」的团队。
+
+1. **agent 太吵。** agent 写得多:一堆 finding、一堆回复、同一个 PR 来回好多轮、一堆 issue。放在 GitHub、Jira、Linear 上,
+   这些全都涌进人要看的时间线和通知里。放在 arc 里,它们留在 arc 自己的看板上,人只看结果。
+2. **agent 会泄密。** agent 看到什么就往外写什么:日志、配置、内部讨论。在 arc 里,agent 写的东西都留在你自己的电脑上。
+   评审和 issue 默认会同步一份到 GitHub;某个仓设 `github.mirror = false`,就只留在 arc 里(§1)。
+3. **arc 留下的信息多得多。** 每一次测试结果、每一轮评审里的每条 finding 和每个回答、每个 issue、每一次合并和它的日志,
+   还有 agent 的对话,全都在你自己的电脑上。你可以拿来搜、搭自己的 RAG,或者做别的(§19)。
+4. **一台电脑,不用付云服务的账单。** 整条流水线跑在你自己的一台机器上。团队远程办公,就用 Tailscale 把各人的机器连成一个公司内网。
+   我们自己的几个仓,9 月 7 日到 10 月 12 日跑了 2,776 轮合并检查,约 189 个机器小时;换成 GitHub 16 核的托管机器,光合并检查每月就是约 446 美元。
+5. **最重要的:这是给 agent 用的基础设施,由人来管。** agent 从看板上领一条任务,写代码、送评审、回答 finding、落地,
+   不用人一步一步盯着。每条命令都能出 `--json`,退出码固定,agent 读得懂发生了什么。人定规矩、回答 agent 提的问题、决定发什么。
+
+## 两部分
 
 arc 分两部分,一起装:
 
@@ -31,31 +57,6 @@ curl -fsSL https://github.com/leocaolab/getarc/releases/latest/download/install.
 
 指定版本或目录、Claude Code 插件、VS Code 扩展,见 §0。
 
-## 为什么用 arc
-
-**1. 不花 CI 的钱。** 评审、合并检查、发布都跑在你自己的机器上。合并机在本机执行仓库里的
-`.github/workflows/merge.yml`,落地一个 PR 不用一分钟 GitHub Actions。构建目录在两轮之间保持热的:同一项检查,
-冷启动 80–156 秒,热目录 11 秒。我们自己的几个仓库,9 月 7 日到 10 月 12 日跑了 2,776 轮合并检查,约 189 个机器小时;
-换成 GitHub 16 核的托管机器,光合并检查每月就是约 446 美元。
-
-**2. 从写完到落地,不用人盯。** agent 写完跑 `arc submit`;评审员提 finding,作者改代码、用 `arc submit --fix-answers` 逐条回答,
-直到每位评审员都说 LGTM。LGTM 只认那一个 commit:评审服务给它发一张 pass,合并机只收 pass 等于 PR 当前 head 的改动,
-再推一次就要重新评。合并机把 PR 合到 main 最新的 commit 上跑检查,没有新失败才落地;每晚的发布再把落地的东西发出去。
-
-**3. 模型随你换,记录留在你手里。** arc 不带模型,也不替你保管 key。它用你在 `~/.tars/config.toml` 里定义的
-provider:登录好的 Claude Code、Codex CLI、agy,Anthropic、OpenAI、Gemini、Bedrock 的 API,或者本地的 MLX、vLLM、llama.cpp。
-换模型改一行:
-
-```toml config.toml
-# <repo>/.arc/config.toml
-[roles]
-critic = "gemini_flash"    # ~/.tars/config.toml 里定义的 provider id
-fixer  = "claude_fixer"
-```
-
-代码只发给你选的模型。本机评审的记录在仓库的 `.arc/review.db` 里;合并队列、发布历史、agent 的对话都在你自己的流水线机器上。
-`arc local-review` 只在本机跑:不开 PR、不发评论、不触发 GitHub Actions。
-
 ## 四步上手
 
 1. **配模型。** 在 `~/.tars/config.toml` 里定义 provider,在仓库里跑 `arc init` 指定谁评审、谁修复(§1)。
@@ -66,6 +67,7 @@ fixer  = "claude_fixer"
 ## arc 不做什么
 
 - **不是格式检查器。** 格式交给 `clippy`、`ruff`、`eslint`、`gofmt`;arc 看的是语义上的坑和结构上的腐烂。
+- **不带模型。** 模型(provider)在 `~/.tars/config.toml` 里由你自己定义:登录好的 Claude Code、Codex CLI、agy,各家 API,或者本地模型;换模型改一行(§1)。
 - **只报告,不卡你。** finding 本身不让构建失败;怎么处理由你(或 Fixer)定。真正挡住落地的是评审员的 LGTM 和你的 `merge.yml`。
 - **审的是你的代码,8 种语言。** Rust、Python、TypeScript、JavaScript、Go、Java、C、C++,按目标仓库的语言启用。
 
@@ -280,7 +282,7 @@ arc 的设置按「这是谁的事实」分开:每个文件装一类事实,归�
 
 写代码的机器上:`~/.tars/config.toml`、仓里的 `.arc/config.toml`(`arc init` 写)和 `~/.arc/client.toml`。仓里提交的:`presubmit.toml`(可选)、
 `merge.yml`,要发布时再加 `delivery.toml`。合并机上:`~/.arc/machine.toml`、它自己的 `~/.tars/config.toml`,以及每个仓在那台机器上的 clone 里的
-`.arc/config.toml`。`arc` 自己的运行输入走命令行参数,不读环境变量;它替你读的唯一一个环境变量,是 tars provider 点名的 API key。
+`.arc/config.toml`。`arc` 自己的运行输入走命令行参数,不读环境变量;它读的环境变量只有两个:tars provider 点名的 API key,和 `TARS_HOME`(见下)。
 
 ### 1.2 最小可用配置
 
@@ -307,7 +309,7 @@ tools = "default"        # 修复要改文件;默认的 "disabled" 改不了
 timeout_secs = 900       # 默认 300
 ```
 
-`arc init` 把评审角色放到 `claude_critic`、修复放到 `claude_fixer`。用已登录的 Codex CLI 也一样:`type = "codex_cli"`、填 Codex 的模型 id,
+`arc init` 会问谁评审、谁修复:分别选 `claude_critic` 和 `claude_fixer`(两个问题都直接回车,两边都会取列表里的第一个)。用已登录的 Codex CLI 也一样:`type = "codex_cli"`、填 Codex 的模型 id,
 修复那块写 `sandbox = "workspace-write"`(默认 `"read-only"` 改不了文件),`timeout_secs` 默认 600。每个 CLI 类型都还认 `executable`
 (默认 `claude`、`codex`),二进制不在 `PATH` 上或不叫这个名字时用。这样两个角色同一家模型;评审换另一家(下面这种要 key 的)更独立。
 
@@ -321,7 +323,7 @@ default_model = "flash@latest"
 auth = { kind = "secret", secret = { source = "env", var = "GEMINI_API_KEY" } }
 ```
 
-在跑 arc 的 shell 里 export provider 点名的变量(`export GEMINI_API_KEY=…`)。`type` 是 `openai`、`openai_compat`、`anthropic`、`gemini`、`bedrock`、
+在跑 arc 的 shell 里 export provider 点名的变量(`export GEMINI_API_KEY=…`)。`type` 是 `openai`、`openai_compat`、`anthropic`、`gemini`、
 `vllm`、`mlx`、`llamacpp`、`claude_cli`、`claude_sdk`、`codex_cli`、`opencode`、`antigravity` 之一;`default_model` 写具体的模型 id,或
 `<系列>@latest` 取一个系列里最新的;`auth` 的 `source = "env"` 从环境变量读 key,`source = "file", path = "…"` 从文件读,`{ kind = "none" }`
 给本地服务;CLI 类型用你自己的登录,不写 `auth`。
@@ -345,6 +347,7 @@ exclude = ["**/tests/**", "**/docs/**", "**/node_modules/**", "**/dist/**"]
 
 - `.arc/config.toml` 里没有 `[providers]`;还带着这一节的文件会被拒绝,报错点名每个 `[providers.<id>]` 块:定义搬到 tars 配置,`[roles]` 照旧。
 - `[review] exclude` 是评审和 `arc rot` 跳过的全部路径(arc 没有内置的),每项是相对仓根的 glob:`*` 不跨目录,`**` 跨任意层。
+  `enable`、`disable`、`experimental` 选哪些规则跑,本机和流水线都按它(§10);`confidence_floor` 能写,但没有地方读它。
   `max_rounds`(默认 5)和 `react_turns`(默认 24)只管**本机**这一轮(`arc local-review`、`arc fix`);流水线上的评审用 `machine.toml` 里的同名键。
 - `[test] junit` 是你的运行器写 JUnit XML 的路径(`arc tap init` 帮你设好并打印它);`[release]` 用 `workflow` + `job` 指名部署 job,写在合并机上那个 clone 里(§15)。
 
@@ -437,7 +440,7 @@ name     = "dummy"
 
 | 键 | 默认 | 做什么 |
 |---|---|---|
-| `address` | 无 | 这台机器的 IP(不是主机名);看板、聊天服务器、测试历史的地址都由它推出 |
+| `address` | 无 | 这台机器的 IP(不是主机名)。`expose = true` 时,看板、聊天服务器、测试历史的地址都由它推出;`expose = false` 时服务只听 `127.0.0.1`,不用它 |
 | `expose` | `false` | `true`:在 `address` 上监听,别的机器才连得上看板和聊天服务器;`false`:只听 loopback。`true` 而没写 `address` 拒绝加载 |
 | `path` | 服务管理器的 | 门禁每一步和部署每一步的 `PATH`;`merge.yml` 要的工具链放这里 |
 | `[machine.web] port` | `8787` | 看板的端口;`client.toml` 写 `http://<address>:<port>` |
@@ -461,10 +464,10 @@ name     = "dummy"
 | `review.max_rounds` | `5` | 一位评审员不给 LGTM 最多回几轮;到上限算它 LGTM,不再评 |
 | `review.react_turns` | `24` | `react` 评审员一次评审最多调几次模型 |
 | `review.reviewer_timeout_secs` | `3600` | 评审员跑多久没交回就杀掉、重叫 |
-| `review.reviewer_attempts` | `3` | 连续几次叫起都没交回,评审就停下,并在 PR 的聊天频道里说明 |
-| `review.fixer_client` | `author` | 谁回答 finding:`author`(经聊天服务器送进作者的 agent 会话)、`claude`(在 head 的 worktree 里 `claude -p` 修)、`tars`(arc 自己的 fixer)、`nothing`(作者自己再 `arc submit`) |
+| `review.reviewer_attempts` | `3` | 连续几次叫起都没交回,评审就停下;`bridge.enabled = true` 时在 PR 的聊天频道里说明 |
+| `review.fixer_client` | `author` | 谁回答 finding:`author`(经聊天服务器送进作者的 agent 会话,要 `bridge.enabled = true`)、`claude`(在 head 的 worktree 里 `claude -p` 修)、`tars`(arc 自己的 fixer)、`nothing`(作者自己再 `arc submit`) |
 | `review.model_config` | clone 的 `.arc/config.toml` | 另一份文件,真评审员用它的 `[roles]` |
-| `bridge.enabled` | `false` | `true`:合并服务器把每一轮的判决发进 PR 的聊天频道,署名 `merger@<owner>:<name>` |
+| `bridge.enabled` | `false` | `true`:各服务在聊天服务器上说话 —— 合并服务器把每一轮的结果发进 PR 的聊天频道(署名 `merger@<owner>:<name>`)、finding 送进作者的 agent 会话(`review.fixer_client = author`)、评审放弃时说一声、每晚发布会通告。`false`:这些都没有 |
 | `github.mirror` | `true` | `false`:评审不贴到 PR 上,issue 板不镜像到 GitHub issue;两样都只留在 arc 里 |
 | `[tenant.tap]` | 无 | 集中的测试历史库;`tap.port`、`tap.gate_token`、`tap.tokens` 一条 `tenant set` 写齐 |
 | `[tenant.release]` | 无 | 每晚发布;`release.clone`、`release.build`、`release.artifact` 一条 `tenant set` 写齐(§15) |
@@ -475,8 +478,7 @@ name     = "dummy"
 `dummy` 不调模型、说 LGTM;`basic` 和 `react` 用租户 clone 的 `.arc/config.toml` 的 `[roles]`(至少 `critic_l4`,或 `default`)和那台机器
 `~/.tars/config.toml` 里的 provider。
 
-改了值:合并服务器每一轮重读 `machine.toml`,评审服务和看板只在启动时读,所以先 `arc-server tenant check`,再重启它们
-(`systemctl --user restart arc-review@<owner>-<name> arc-web`)。英文页:[Configuration](user-guide/configuration.md)。
+改了值:先 `arc-server tenant check`,再重启服务:`systemctl --user restart arc-server@<owner>-<name> arc-review@<owner>-<name> arc-web`。有些值不重启也生效(每一轮合并、每一次评审都重读文件),但合并队列自己的设置(`queue.*`、`[[machine.disk]]`)、评审服务的设置(路由、`review.gate`、`max_rounds`、`reviewer_attempts`、`fixer_client`、`github.mirror`)和看板,只在服务启动时读。英文页:[Configuration](user-guide/configuration.md)。
 
 ---
 
