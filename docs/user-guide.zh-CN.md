@@ -764,6 +764,7 @@ skill 让你的编码 agent 替你驱动 arc。它们从不重新实现 arc:跑 
 | `agent-brief` | 「派个 agent 去做」 | 给编码 agent 的 brief:任务、你的裁定原话、问题放最后;agent 先交模型再写代码 |
 | `loop-scheduler` | 「把这个 milestone 放进 loop」 | `arc issues loop start`:会话每停一次就拿到 milestone 的下一条 issue,直到做完 |
 | `supervisor` | 由第二个会话加载 | 读工作会话的每次停下,决定:放它走、答掉小问题、或在板上问人 |
+| `dev-velocity` | 「我们开发速度怎么样」「一个 PR 要多久」 | 从流水线读出这个仓每周的数:落地的 PR、合并尝试、一次就过、落地用时、评审轮次、issue 开了几条修了几条;和 arc-web 的「指标 → 速度」一样 |
 
 **审阅 skill —— 我们自己审代码、写代码用的方法。** 同一个 `arc-skills` 插件里还带着 arc 团队自己每天用的审阅方法。
 它们不需要 `arc` 二进制:只有 Markdown 和规则集 ——

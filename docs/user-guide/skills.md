@@ -90,6 +90,7 @@ The same plugin carries the skills arc's own team uses to take a big piece of wo
 | `agent-brief` | "send an agent to build this" | the brief for a coding agent: the task, your decisions in your own words, and the problem last; the agent hands in its model before code |
 | `loop-scheduler` | "loop this milestone" | `arc issues loop start`: each time the session stops, it gets the next issue of the milestone, until none is left |
 | `supervisor` | loaded by the second session | reads each stop of the working session and decides: let it go, answer a small question, or ask a person on the board ([how to set it up](bridge.md#the-supervisor-optional-claude-code)) |
+| `dev-velocity` | "how fast are we shipping?", "how long does a PR take?" | the repo's numbers from the pipeline, week by week: PRs landed, merge attempts, landed first try, time to land, review rounds, issues opened and fixed; the same as arc-web's Metrics → Velocity |
 
 ## The review skills
 
