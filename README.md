@@ -174,10 +174,10 @@ Two caveats on the numbers: "Prompts" counts one-word nudges like `"continue"` a
 
 ## Get started
 
-arc rolls out in two steps, each useful on its own:
+arc has two parts, and installing arc means installing both ([install guide](docs/user-guide/install.md)):
 
-1. **On your dev machine (Personal edition)** — the `arc` CLI. Reviews your branch, runs an automated fixer over the findings, and lets you push. No server required; takes about ten minutes.
-2. **On a spare machine (Team edition)** — the full pipeline: review service, merge runner, releaser, issue board, and `arc bridge`. Agents submit PRs, arc reviews and merges them on your hardware, and results route back to the agents. Even a solo developer with two machines can run this setup.
+1. **The `arc` CLI, on every machine where people or agents write code** — reviews your branch, runs an automated fixer over the findings, and submits your PRs.
+2. **The server suite, on one machine you own** — the pipeline: review service, merge runner, releaser, issue board, and `arc bridge`. Agents submit PRs, arc reviews and merges them on your hardware, and results route back to the agents. You can also write code on that same machine; the two parts only need to reach each other over the network.
 
 ### Step 1 — the CLI
 
@@ -218,7 +218,7 @@ arc fix            # resolve findings one commit per fix until LGTM
 git push           # push when ready
 ```
 
-When run inside a coding agent session, arc needs no extra identity setup. When run from a plain terminal, it identifies you via GitHub CLI — install [`gh`](https://cli.github.com) and run `gh auth login` once (`arc submit` in the team edition always requires `gh`).
+When run inside a coding agent session, arc needs no extra identity setup. When run from a plain terminal, it identifies you via GitHub CLI — install [`gh`](https://cli.github.com) and run `gh auth login` once (`arc submit` always requires `gh`).
 
 #### Skills
 
@@ -260,8 +260,8 @@ One server can host multiple repositories; add them one at a time.
 | `install.sh` | One-line CLI installer | macOS arm64, Linux x86_64 |
 | `arc-darwin-arm64.tar.gz` | `arc` CLI binary | macOS (Apple Silicon) |
 | `arc-linux-x64.tar.gz` | `arc` CLI binary (statically linked, runs on any distro) | Linux x86_64 |
-| `arc-suite-darwin-arm64.tar.gz` | Team edition server suite | macOS (Apple Silicon) |
-| `arc-suite-linux-x64.tar.gz` | Team edition server suite (requires glibc ≥ 2.43; `arc-web` / `arc-tap` require libstdc++ from GCC 13) | Linux x86_64 |
+| `arc-suite-darwin-arm64.tar.gz` | Server suite | macOS (Apple Silicon) |
+| `arc-suite-linux-x64.tar.gz` | Server suite (requires glibc ≥ 2.43; `arc-web` / `arc-tap` require libstdc++ from GCC 13) | Linux x86_64 |
 | `arc-skills.tar.gz` | Skills bundle for `claude --plugin-dir` | any |
 | `arc-vscode.vsix` | VS Code extension (browse findings by file and view reviewer–fixer debates) | any |
 | `SHA256SUMS` | Checksums for all release files | — |
